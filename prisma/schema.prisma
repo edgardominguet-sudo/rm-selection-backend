@@ -1,0 +1,491 @@
+// Esquema de base de datos del backend de RM Selection.
+//
+// Idea general: el backend es la única fuente de verdad del Ranking del
+// Día. Descarga catálogos, resuelve automáticamente qué Hip corresponde a
+// qué jornada, dispara el análisis con IA 12 horas antes de cada sesión, y
+// guarda tanto el resultado de cada Hip como el ranking ya armado — la app
+// de iOS solo lee esta base a través de la API, nunca vuelve a correr IA
+// por su cuenta.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SaleHouse {
+  FASIG_TIPTON
+  KEENELAND
+  OBS
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  BUYER
+}
+
+enum ObservationCategory {
+  CONFORMATION
+  MOVEMENT
+  PEDIGREE
+  GENERAL
+}
+
+// Un "equipo de trabajo" o comprador independiente. Hoy existe una sola
+// Organization (tu equipo, todos viendo el mismo análisis) — pero el día
+// que RM Selection sume compradores que no deben ver las decisiones,
+// observaciones ni puntajes de otros (porque cada uno puede tener su
+// propio caballo referente y por lo tanto sus propios resultados sobre el
+// mismo Hip), no hace falta ninguna migración estructural: alcanza con dar
+// de alta una Organization nueva. Todo lo que es "catálogo puro" (Sale,
+// Hip) queda A PROPÓSITO fuera de esta tabla — ver comentario en Hip.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users                   User[]
+  analysisResults         AnalysisResult[]
+  currentHipAnalyses      CurrentHipAnalysis[]
+  rankingSnapshots        RankingSnapshot[]
+  rankingSnapshotVersions RankingSnapshotVersion[]
+  referenceHorses         ReferenceHorse[]
+  decisions               UserDecision[]
+  observations            HipObservation[]
+}
+
+// Un usuario de RM Selection. Hoy hay uno solo (vos), pero se modela desde
+// ahora — sin esto, "sincronizar entre dispositivos" y "cuentas futuras" no
+// tienen dónde anclarse, y agregarlo más adelante significaría migrar datos
+// reales en vez de partir de una base limpia.
+model User {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  email       String?  @unique
+  // Reemplaza a la clave compartida suelta (APP_API_KEY): la misma clave
+  // ahora identifica a un usuario concreto, así cada decisión/observación
+  // que se guarda queda asociada a alguien desde el primer día, sin tener
+  // que construir login todavía. Login real (email/contraseña, magic link)
+  // se agrega el día que haga falta una segunda persona con cuenta propia.
+  apiKey      String?  @unique
+  displayName String?
+  role        UserRole @default(OWNER)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  devices     Device[]
+  decisions   UserDecision[]
+  observations HipObservation[]
+}
+
+// Un dispositivo (iPhone/iPad) desde el que un usuario usa la app. Deja
+// lista la base para notificaciones push futuras ("se actualizó el
+// ranking") y para saber desde qué dispositivo se tomó cada decisión —
+// capturar esto desde el día uno es gratis; reconstruirlo después de que ya
+// existan decisiones/observaciones sin esa procedencia no lo es.
+model Device {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  platform    String    // "ios" (hoy); deja lugar a otras plataformas a futuro.
+  deviceName  String?   // ej. "iPad de Ramon"
+  appVersion  String?
+  // Token de notificaciones push (APNs) — nil hasta que se construya esa
+  // integración; la columna ya queda lista para no migrar de nuevo después.
+  pushToken   String?
+  lastSeenAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  decisions   UserDecision[]
+  observations HipObservation[]
+}
+
+// Qué tan utilizable es el catálogo estructurado de una venta:
+// - FULL: hay una API de catálogo que se puede consultar directo (Keeneland
+//   siempre; Fasig-Tipton cuando se conoce el ID numérico interno). El
+//   scheduler la sincroniza y analiza normalmente.
+// - PENDING_ID: se detectó el anuncio público (nombre, fechas) pero falta
+//   resolver el ID interno que pide la API de catálogo — hoy pasa con
+//   Fasig-Tipton, cuyo ID numérico no aparece en ninguna página pública,
+//   solo se puede obtener inspeccionando la app oficial/portal del
+//   comprador. No se adivina por fuerza bruta (violaría el acceso
+//   autorizado) — queda visible en /api/v1/alerts hasta que alguien cargue
+//   el ID real vía POST /sales.
+// - UNAVAILABLE: la casa de ventas no tiene ningún método de acceso
+//   estructurado y autorizado todavía (hoy, OBS). Se detecta y alerta el
+//   anuncio igual, pero no hay forma de sincronizar catálogo hasta que OBS
+//   publique una API o método de acceso — ver saleHouses/discovery/obsDiscovery.ts.
+enum SaleCatalogAccess {
+  FULL
+  PENDING_ID
+  UNAVAILABLE
+}
+
+// Una venta concreta (ej. "Fasig-Tipton — Saratoga 2026"). Hasta ahora se
+// daba de alta a mano; ahora también puede crearla sola el descubrimiento
+// automático (ver saleDiscoveryService.ts) apenas la casa de ventas la
+// anuncia públicamente — a partir de ahí, todo lo demás (catálogo,
+// sesiones, Hips, ranking) se resuelve solo, igual que antes.
+//
+// Sale y Hip quedan GLOBALES — sin organizationId — a propósito: son datos
+// de catálogo público (nombre, consignatario, fotos tal como las publica
+// la casa de ventas), iguales para cualquier organización que los mire. Si
+// se scopearan por organización, cada organización nueva dispararía un
+// scraping duplicado del mismo catálogo público. Lo que SÍ varía por
+// organización es la EVALUACIÓN de ese catálogo (AnalysisResult y todo lo
+// derivado) — ver comentario en AnalysisResult.
+model Sale {
+  id                 String     @id @default(cuid())
+  house              SaleHouse
+  name               String
+  // ID interno que usa la API de catálogo de la casa de ventas. Para
+  // ventas con catalogAccess distinto de FULL, esto es un identificador
+  // SINTÉTICO (derivado del slug del anuncio público, no un ID real de
+  // catálogo) — solo sirve para no duplicar la fila en @@unique([house,
+  // externalSaleId]) hasta que se resuelva el ID de verdad.
+  externalSaleId     String
+  // Solo Keeneland: año + slug de la venta en la URL pública del
+  // "Schedule of Sale", para poder resolver fecha de sesión por Hip sin
+  // que el usuario cargue nada a mano (ver saleHouses/keenelandSchedule.ts).
+  scheduleYear       Int?
+  scheduleSlug       String?
+  isActive           Boolean    @default(true)
+  // Último momento en que se volvió a consultar el catálogo completo de
+  // esta venta contra la casa de ventas. El scheduler decide CUÁNDO toca
+  // volver a chequear según qué tan cerca esté la próxima jornada (ver
+  // scheduler.ts / pollingPolicy.ts) — no chequea a un intervalo fijo
+  // siempre, para no golpear la API de la casa de ventas más de lo
+  // necesario cuando falta mucho, y chequear mucho más seguido cuando la
+  // subasta está por arrancar o en curso.
+  lastCatalogCheckAt DateTime?
+  // null = dada de alta a mano (POST /sales, como hasta ahora). No-null =
+  // la creó sola el descubrimiento automático, y este es el momento en que
+  // se detectó el anuncio público por primera vez.
+  discoveredAt       DateTime?
+  // Link a la página/anuncio público donde se detectó — para poder
+  // verificarla a simple vista desde /api/v1/alerts o el panel.
+  announcementUrl    String?
+  catalogAccess      SaleCatalogAccess @default(FULL)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  hips                    Hip[]
+  rankingSnapshots        RankingSnapshot[]
+  rankingSnapshotVersions RankingSnapshotVersion[]
+  alerts                  SaleAlert[]
+
+  @@unique([house, externalSaleId])
+}
+
+// Registro de "novedades" — lo que la app le muestra al usuario cuando el
+// descubrimiento automático encuentra una venta nueva o empieza a
+// sincronizarla. Global (no por organización), igual que Sale: el hecho de
+// que una casa de ventas anunció algo es un dato del mundo externo, no una
+// evaluación privada de ningún equipo — todas las organizaciones lo ven
+// igual. La app hace lectura delta con ?since= (mismo patrón que
+// /me/decisions y /me/observations).
+enum SaleAlertKind {
+  NEW_SALE_DETECTED
+  SYNC_STARTED
+  CATALOG_NOW_AVAILABLE
+}
+
+model SaleAlert {
+  id        String        @id @default(cuid())
+  saleId    String
+  sale      Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  kind      SaleAlertKind
+  message   String
+  createdAt DateTime      @default(now())
+
+  @@index([createdAt])
+}
+
+// Un Hip Number dentro de una venta, con los datos del catálogo tal como
+// los publica la casa de ventas y la fecha de sesión ya resuelta.
+model Hip {
+  id                String   @id @default(cuid())
+  saleId            String
+  sale              Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  hipNumber         String
+  horseName         String?
+  sex               String?
+  consignor         String?
+  sire              String?
+  dam               String?
+  damSire           String?
+
+  // Fecha (día calendario) de la jornada en la que está programado
+  // subastarse, ya resuelta — ver saleHouses/*.ts. Null = no se pudo
+  // resolver todavía.
+  sessionDate       DateTime?
+
+  // Media tal como viene del catálogo (fotos y video), en JSON:
+  // [{ kind: "photo"|"video", url: string, caption?: string }]
+  mediaJson         Json     @default("[]")
+  // Nota: la huella (hash) de la media analizada YA NO vive acá — bajo
+  // multi-tenant, cada organización puede haber analizado el Hip en un
+  // momento distinto, así que esa huella se guarda por-organización en
+  // AnalysisResult.mediaHash (comparado vía el puntero CurrentHipAnalysis).
+  // Ver analysis/mediaFingerprint.ts.
+
+  // Resultado oficial de venta (precio, comprador, RNA/PS), tal como lo
+  // va publicando la casa de ventas en vivo: { priceRaw?, purchaser?,
+  // soldAsCode? }. Se actualiza en cada chequeo de catálogo, sin
+  // necesidad de reanalizar nada — no afecta el puntaje del Método RM.
+  saleResultJson    Json?
+
+  lastCatalogSyncAt DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Historial completo de análisis de este Hip, de CUALQUIER organización
+  // (cada fila ya sabe a qué organización pertenece vía
+  // AnalysisResult.organizationId). El puntero al análisis "vigente" ya NO
+  // vive acá — un mismo Hip puede tener un análisis vigente distinto por
+  // organización (referentes distintos → puntajes distintos sobre las
+  // mismas fotos), así que ese puntero pasó a la tabla CurrentHipAnalysis.
+  analysisHistory   AnalysisResult[]
+  currentAnalyses   CurrentHipAnalysis[]
+
+  decisions         UserDecision[]
+  observations      HipObservation[]
+
+  @@unique([saleId, hipNumber])
+  @@index([saleId, sessionDate])
+}
+
+// Resultado de análisis con IA para un Hip: las 26 subcategorías del
+// Método RM, el puntaje general y la clasificación sugerida. YA NO se
+// sobrescribe — cada reanálisis (ej. porque apareció una foto/video nuevo
+// antes de la subasta) agrega una fila nueva, y el puntero en
+// CurrentHipAnalysis se actualiza para apuntar a la más reciente. Así queda
+// historial completo de cómo evolucionó la evaluación de cada Hip, no solo
+// el último puntaje.
+//
+// Scopeado por organizationId (a diferencia de Sale/Hip, que son
+// catálogo global): el mismo Hip puede tener un AnalysisResult distinto
+// por organización, porque cada organización puede tener su propio
+// caballo referente (ver ReferenceHorse) y por lo tanto llegar a un
+// puntaje distinto sobre exactamente las mismas fotos.
+model AnalysisResult {
+  id             String       @id @default(cuid())
+  hipId          String
+  hip            Hip          @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Punteros que apuntan a ESTA fila como el análisis vigente de su
+  // Hip+organización (normalmente una sola, ver CurrentHipAnalysis).
+  currentFor     CurrentHipAnalysis[]
+
+  // Número de versión secuencial dentro del Hip+organización (1, 2, 3...)
+  // — más legible que ordenar por timestamp para mostrar "análisis #3".
+  version               Int      @default(1)
+  // Por qué se disparó este análisis: "initial" | "media_changed" | "manual".
+  triggerReason         String   @default("initial")
+  // Huella de la media (fotos/video) que se usó en ESTE análisis puntual —
+  // permite saber después exactamente qué contenido produjo qué puntaje,
+  // más preciso que solo guardar el hash "actual" en Hip.
+  mediaHash             String?
+
+  // Las 26 subcategorías (functional.*, limb.*, gait.*) puntaje 0-10.
+  conformationScoresJson Json
+  overallScore          Float
+  classification        String   // "Comprar" | "Revisar" | "Descartar"
+  summary               String?
+
+  // Diagnóstico técnico (opcional, para depurar calidad del análisis):
+  // cuántos fotogramas de marcha se pudieron usar y de qué duración.
+  gaitFrameCount        Int?
+  gaitVideoDurationSec  Float?
+
+  analyzedAt            DateTime @default(now())
+  // Modelo usado (para poder re-analizar todo si se cambia de versión).
+  model                  String
+
+  @@index([overallScore])
+  @@index([hipId, analyzedAt])
+  @@index([organizationId, hipId, analyzedAt])
+}
+
+// Puntero al análisis VIGENTE de un Hip PARA UNA ORGANIZACIÓN dada — evita
+// tener que hacer `ORDER BY version DESC LIMIT 1` en cada lectura del
+// ranking/ficha. Reemplaza al viejo `Hip.currentAnalysisId` (que solo podía
+// apuntar a UN análisis vigente por Hip en total): bajo multi-tenant, un
+// mismo Hip puede tener un análisis vigente distinto por organización.
+model CurrentHipAnalysis {
+  id             String         @id @default(cuid())
+  hipId          String
+  hip            Hip            @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  analysisResultId String
+  analysisResult AnalysisResult @relation(fields: [analysisResultId], references: [id], onDelete: Cascade)
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([hipId, organizationId])
+}
+
+// Decisión final del usuario sobre un Hip ("Comprar"/"Revisar"/"Descartar"
+// + notas). Antes vivía SOLO en SwiftData local (por eso no sincronizaba
+// entre el iPad y el iPhone) — ahora el servidor es la fuente de verdad;
+// el dispositivo queda como caché offline. Resolución de conflictos: el
+// más reciente gana (por updatedAt) — alcanza para el patrón de uso real
+// (un comprador, normalmente un dispositivo activo a la vez).
+model UserDecision {
+  id             String       @id @default(cuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Denormalizado desde User.organizationId: se podría derivar siempre vía
+  // userId → User, pero tenerlo acá también permite filtrar/indexar
+  // decisiones por organización directamente (y es una segunda barrera de
+  // defensa: un bug que arme mal el `where` de una query no puede filtrar
+  // datos de otra organización sin este campo).
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hipId      String
+  hip        Hip       @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  deviceId   String?
+  device     Device?   @relation(fields: [deviceId], references: [id])
+
+  finalCall  String    // "Comprar" | "Revisar" | "Descartar"
+  notes      String?
+  decidedAt  DateTime  @default(now())
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  // Tombstone en vez de borrado físico: un dispositivo que estaba offline
+  // cuando se borró una decisión en otro necesita enterarse del borrado en
+  // la próxima sincronización, no solo de altas/cambios.
+  deletedAt  DateTime?
+
+  @@unique([userId, hipId])
+}
+
+// Observación de texto libre del usuario sobre un Hip — mismo criterio de
+// sincronización que UserDecision (servidor como fuente de verdad,
+// tombstone para borrados). Las observaciones generadas por IA siguen
+// viviendo en AnalysisResult.summary, no acá — esta tabla es solo para las
+// que escribe la persona.
+model HipObservation {
+  id         String               @id @default(cuid())
+  userId     String
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Ver comentario equivalente en UserDecision.organizationId.
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hipId      String
+  hip        Hip                  @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  deviceId   String?
+  device     Device?              @relation(fields: [deviceId], references: [id])
+
+  text       String
+  category   ObservationCategory?
+
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+  deletedAt  DateTime?
+
+  @@index([userId, hipId])
+}
+
+// El ranking ya armado y ordenado para una venta+jornada — lo que la app
+// de iOS lee directamente, sin tener que recalcular nada. Se regenera
+// automáticamente 12 horas antes de la sesión y cada vez que un Hip
+// afectado se reanaliza.
+model RankingSnapshot {
+  id             String       @id @default(cuid())
+  saleId         String
+  sale           Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  // Cada organización arma su propio ranking sobre el mismo catálogo
+  // (Sale/Hip global), porque cada una puede tener su propio caballo
+  // referente y por lo tanto su propio orden/puntaje.
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Día calendario de la jornada que representa este ranking.
+  sessionDate    DateTime
+
+  // [{ rank, hipNumber, overallScore, classification }], ya ordenado.
+  entriesJson    Json
+  totalHipsToday Int
+
+  generatedAt    DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, saleId, sessionDate])
+}
+
+// Historial de versiones del ranking: una fila nueva CADA VEZ que se
+// recalcula (a diferencia de RankingSnapshot, que se sobrescribe y solo
+// guarda la versión vigente). Permite mostrar más adelante "cómo cambió el
+// top 20 a lo largo del día" — reconstruir esto de forma retroactiva sin
+// haberlo capturado no sería posible, así que se guarda desde ahora aunque
+// todavía no haya ninguna pantalla que lo muestre.
+model RankingSnapshotVersion {
+  id             String       @id @default(cuid())
+  saleId         String
+  sale           Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  sessionDate    DateTime
+  entriesJson    Json
+  totalHipsToday Int
+  // Por qué se disparó esta actualización del ranking: "initial" |
+  // "media_changed" | "scheduled_refresh".
+  triggerReason  String   @default("initial")
+
+  generatedAt    DateTime @default(now())
+
+  @@index([organizationId, saleId, sessionDate, generatedAt])
+}
+
+// Registro de cada ciclo del scheduler — visibilidad operativa mínima
+// (Railway rota los logs, esto no). Sirve para poder responder "¿qué pasó
+// anoche a las 3am, por qué no se generó el ranking?" sin depender de
+// haber tenido los logs abiertos en ese momento.
+model SchedulerRun {
+  id             String    @id @default(cuid())
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  salesProcessed Int       @default(0)
+  analysesRun    Int       @default(0)
+  errorMessage   String?
+
+  @@index([startedAt])
+}
+
+// Fotos (y, opcionalmente, video de marcha) del caballo referente del
+// Método RM — el patrón oficial contra el que se compara cada Hip. Se
+// carga una sola vez desde un panel de administración simple; el backend
+// la usa en cada análisis, así que no hace falta configurarla por
+// dispositivo como pasaba en la versión on-device.
+//
+// Scopeada por organización: cada organización puede definir su propio
+// patrón referente (por eso AnalysisResult también está scopeado — el
+// mismo Hip puede puntuar distinto para cada una).
+model ReferenceHorse {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // "default" hoy — un solo patrón activo a la vez por organización. Se
+  // deja como string (no un booleano "isActive") por si en el futuro RM
+  // Selection quiere patrones distintos por raza/tipo de venta dentro de
+  // una misma organización.
+  key            String       @default("default")
+  photoUrls      Json         @default("[]") // string[]
+  gaitVideoUrl   String?
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, key])
+}
