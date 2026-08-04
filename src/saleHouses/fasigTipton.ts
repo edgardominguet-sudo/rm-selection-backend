@@ -89,10 +89,23 @@ export class FasigTiptonClient implements SaleHouseClient {
 
     const url = `https://www.fasigtipton.com/django/api/horses/?sale=${externalSaleId}`;
     const response = await fetch(url, { headers: { Accept: "application/json" } });
+    // Se lee como texto primero (en vez de response.json() directo) a
+    // propósito: un 200 con body vacío/cortado (le pasó a Fasig-Tipton
+    // alguna vez) hacía que JSON.parse tirara "Unexpected end of JSON
+    // input" sin decir nada de qué vino en la respuesta — así, el mensaje
+    // de error queda con el status Y los primeros caracteres del body
+    // real, para poder diagnosticar sin tener que agregar logs sueltos
+    // cada vez que pasa.
+    const rawBody = await response.text();
     if (!response.ok) {
-      throw new Error(`Fasig-Tipton catalog fetch failed (${response.status}) for sale ${externalSaleId}`);
+      throw new Error(`Fasig-Tipton catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
     }
-    const entries = (await response.json()) as RawEntry[];
+    let entries: RawEntry[];
+    try {
+      entries = JSON.parse(rawBody) as RawEntry[];
+    } catch (err) {
+      throw new Error(`Fasig-Tipton catalog devolvió un body no-JSON (status ${response.status}) para sale ${externalSaleId}. Primeros 500 caracteres: ${JSON.stringify(rawBody.slice(0, 500))}`);
+    }
     this.cache.set(externalSaleId, { entries, fetchedAt: Date.now() });
     return entries;
   }

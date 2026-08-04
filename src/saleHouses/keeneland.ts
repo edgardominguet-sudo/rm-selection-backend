@@ -74,10 +74,20 @@ export class KeenelandClient implements SaleHouseClient {
 
     const url = `https://www.keeneland.com/json/sale_api/get/catalog/${externalSaleId}`;
     const response = await fetch(url, { headers: { Accept: "application/json" } });
+    // Mismo criterio que en FasigTiptonClient.fetchRaw: leer como texto
+    // primero para que un 200 con body vacío/cortado quede con un mensaje
+    // de error que muestre status + los primeros caracteres del body real,
+    // en vez de un "Unexpected end of JSON input" ciego.
+    const rawBody = await response.text();
     if (!response.ok) {
-      throw new Error(`Keeneland catalog fetch failed (${response.status}) for sale ${externalSaleId}`);
+      throw new Error(`Keeneland catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
     }
-    const raw = (await response.json()) as Record<string, RawEntry>;
+    let raw: Record<string, RawEntry>;
+    try {
+      raw = JSON.parse(rawBody) as Record<string, RawEntry>;
+    } catch (err) {
+      throw new Error(`Keeneland catalog devolvió un body no-JSON (status ${response.status}) para sale ${externalSaleId}. Primeros 500 caracteres: ${JSON.stringify(rawBody.slice(0, 500))}`);
+    }
     const entries = Object.values(raw);
     this.cache.set(externalSaleId, { entries, fetchedAt: Date.now() });
     return entries;
