@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json",
-    "start": "prisma migrate deploy && node dist/index.js",
+    "start": "prisma migrate deploy && npm run db:seed && node dist/index.js",
     "dev": "prisma generate && ts-node-dev --respawn --transpile-only src/index.ts",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
