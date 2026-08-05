@@ -14,6 +14,20 @@ function startOfCalendarDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
+// Pedido explícito del usuario: 2 horas después de terminada la venta del
+// día, el Ranking del Día de esa jornada se borra solo. Esta versión no
+// modela la hora exacta de cierre de una sesión (ver comentario en
+// pollingPolicy.ts) — "terminada la jornada" se toma como el final del día
+// calendario de esa sesión (medianoche), igual criterio que ya usa el
+// resto de este archivo (dayStart/dayEnd). El margen de 2h se suma después.
+const RANKING_RETENTION_HOURS_AFTER_SESSION = 2;
+
+/** Momento a partir del cual el Ranking del Día de una jornada se considera vencido (fin de esa jornada + margen) y debe dejar de regenerarse / borrarse. */
+function sessionExpiresAt(sessionDate: Date): Date {
+  const dayEnd = new Date(startOfCalendarDay(sessionDate).getTime() + 24 * 60 * 60 * 1000);
+  return new Date(dayEnd.getTime() + RANKING_RETENTION_HOURS_AFTER_SESSION * 60 * 60 * 1000);
+}
+
 /**
  * Paso 1 de cada ciclo: sincroniza el catálogo completo de una venta
  * contra la casa de ventas correspondiente (solo si ya toca según
@@ -343,10 +357,30 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
     for (const { sessionDate } of sessionDates) {
       if (!sessionDate) continue;
       const withinLeadWindow = now.getTime() >= sessionDate.getTime() - leadMs;
-      if (!withinLeadWindow) continue;
+      // Jornada ya terminada (+ margen de 2h): no volver a generar su
+      // Ranking del Día — si ya se borró (ver cleanupExpiredRankingSnapshots)
+      // debe quedar borrado, no resucitar en el próximo tick.
+      const expired = now.getTime() >= sessionExpiresAt(sessionDate).getTime();
+      if (!withinLeadWindow || expired) continue;
       await analyzeAndRankSession(sale.id, organization.id, sessionDate, budget);
     }
   }
+}
+
+/**
+ * Borra el Ranking del Día "vigente" (RankingSnapshot, lo único que lee la
+ * app — ver GET /ranking) de cualquier jornada cuya ventana de retención ya
+ * venció (2h después de terminada esa jornada). NO toca
+ * RankingSnapshotVersion: ese historial de cómo evolucionó el ranking a lo
+ * largo del día queda intacto para auditoría / features futuras (ver
+ * ARCHITECTURE.md sección 1b) — solo se borra la lista que la app muestra
+ * hoy. Se llama una vez por ciclo del scheduler (cada 5 min), sobre todas
+ * las ventas/organizaciones a la vez.
+ */
+export async function cleanupExpiredRankingSnapshots(): Promise<number> {
+  const cutoff = new Date(Date.now() - (24 + RANKING_RETENTION_HOURS_AFTER_SESSION) * 60 * 60 * 1000);
+  const { count } = await db.rankingSnapshot.deleteMany({ where: { sessionDate: { lte: cutoff } } });
+  return count;
 }
 
 export { pollIntervalMinutes };

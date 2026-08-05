@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import { db } from "./db";
 import { config } from "./config";
-import { processSale, AnalysisBudget } from "./rankingService";
+import { processSale, AnalysisBudget, cleanupExpiredRankingSnapshots } from "./rankingService";
 import { runSaleDiscovery } from "./saleDiscoveryService";
 
 // Evita que dos ciclos corran superpuestos: si analizar todos los Hips
@@ -67,6 +67,17 @@ async function runCycle(): Promise<void> {
         console.error(`[scheduler] Error procesando venta ${sale.name}:`, err);
         firstError = firstError ?? `${sale.name}: ${message}`;
       }
+    }
+    // Pedido explícito del usuario: 2h después de terminada la jornada,
+    // borrar el Ranking del Día de esa venta. Va en un try/catch propio —
+    // un fallo acá nunca debe impedir que se registre el resto del ciclo.
+    try {
+      const deleted = await cleanupExpiredRankingSnapshots();
+      if (deleted > 0) {
+        console.log(`[scheduler] Ranking del Día: ${deleted} jornada(s) vencida(s) borradas (2h post-venta).`);
+      }
+    } catch (err) {
+      console.error("[scheduler] Error borrando Ranking del Día vencido:", err);
     }
   } finally {
     await db.schedulerRun.update({
