@@ -6,11 +6,21 @@ import { requireUser } from "./auth";
 export const router = Router();
 
 // Ventas dadas de alta (para que la app arme el selector inicial sin
-// tener que hardcodear IDs de venta en el cliente).
+// tener que hardcodear IDs de venta en el cliente), ordenadas
+// cronológicamente por fecha real de venta — juntas, sin importar la casa
+// — de la más próxima a la más lejana. Las que todavía no tienen ninguna
+// fecha resuelta (caso raro: alta manual sin startDate) quedan al final
+// en vez de romper el orden.
 router.get("/sales", async (_req, res) => {
   const sales = await db.sale.findMany({
     where: { isActive: true },
-    select: { id: true, house: true, name: true },
+    select: { id: true, house: true, name: true, externalSaleId: true, startDate: true, catalogAccess: true },
+  });
+  sales.sort((a, b) => {
+    if (a.startDate && b.startDate) return a.startDate.getTime() - b.startDate.getTime();
+    if (a.startDate) return -1;
+    if (b.startDate) return 1;
+    return 0;
   });
   res.json(sales);
 });
@@ -261,21 +271,27 @@ router.get("/alerts", async (req, res) => {
 // crea una fila NUEVA en vez de "arreglar" la vieja — conviene desactivar
 // la vieja (isActive=false) a mano una vez confirmado el ID correcto.
 router.post("/sales", async (req, res) => {
-  const { house, name, externalSaleId, scheduleYear, scheduleSlug } = req.body as {
+  const { house, name, externalSaleId, scheduleYear, scheduleSlug, startDate } = req.body as {
     house: "FASIG_TIPTON" | "KEENELAND" | "OBS";
     name: string;
     externalSaleId: string;
     scheduleYear?: number;
     scheduleSlug?: string;
+    // Opcional: fecha real de la venta, "YYYY-MM-DD" o ISO completo, si se
+    // conoce al darla de alta a mano — alimenta el orden cronológico de
+    // GET /sales. Si no se manda, queda null hasta que syncCatalog la
+    // resuelva sola a partir de los Hips (ver rankingService.ts).
+    startDate?: string;
   };
   if (!house || !name || !externalSaleId) {
     res.status(400).json({ error: "Faltan campos requeridos: house, name, externalSaleId." });
     return;
   }
+  const parsedStartDate = startDate ? new Date(startDate) : undefined;
   const sale = await db.sale.upsert({
     where: { house_externalSaleId: { house, externalSaleId } },
-    create: { house, name, externalSaleId, scheduleYear, scheduleSlug },
-    update: { name, scheduleYear, scheduleSlug, isActive: true },
+    create: { house, name, externalSaleId, scheduleYear, scheduleSlug, startDate: parsedStartDate },
+    update: { name, scheduleYear, scheduleSlug, isActive: true, ...(parsedStartDate ? { startDate: parsedStartDate } : {}) },
   });
   res.json(sale);
 });

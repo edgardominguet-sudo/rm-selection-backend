@@ -57,6 +57,14 @@ export class KeenelandDiscoveryClient implements SaleDiscoveryClient {
       });
     }
 
-    return Array.from(seen.values());
+    // RM Selection evalúa yearlings — Keeneland también organiza ventas de
+    // otro tipo en la misma página de "Upcoming Sales" (ej. "January
+    // Horses of All Ages Sale", ventas de breeding stock, horses of racing
+    // age) que no le sirven de nada a la app pero antes se registraban
+    // igual con catalogAccess FULL, así que el scheduler las sincronizaba
+    // sin parar aunque nunca fueran a tener un catálogo relevante. Se
+    // descartan acá, antes de darlas de alta — así ni siquiera generan una
+    // fila en Sale ni una alerta de "Novedades".
+    return Array.from(seen.values()).filter((sale) => /yearling/i.test(sale.name));
   }
 }

@@ -152,6 +152,15 @@ model Sale {
   // catálogo) — solo sirve para no duplicar la fila en @@unique([house,
   // externalSaleId]) hasta que se resuelva el ID de verdad.
   externalSaleId     String
+  // Fecha real de la jornada (o del primer día, si la venta dura varios)
+  // tal como la publica la casa de ventas. Se completa apenas se detecta
+  // el anuncio (con la fecha que trae el anuncio público) y se refina
+  // sola más precisa una vez que el catálogo trae Hips con sessionDate
+  // resuelto (ver syncCatalog en rankingService.ts) — así el orden
+  // cronológico entre casas queda bien desde el día uno, sin depender de
+  // que el catálogo ya esté disponible. Null solo si todavía no se pudo
+  // leer ninguna fecha confiable (no se inventa).
+  startDate          DateTime?
   // Solo Keeneland: año + slug de la venta en la URL pública del
   // "Schedule of Sale", para poder resolver fecha de sesión por Hip sin
   // que el usuario cargue nada a mano (ver saleHouses/keenelandSchedule.ts).

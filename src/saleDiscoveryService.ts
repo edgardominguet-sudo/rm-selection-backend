@@ -82,6 +82,13 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
         house,
         name: announcement.name,
         externalSaleId: announcement.externalSaleId,
+        // Fecha tal como la trae el anuncio público — se va a refinar
+        // sola con la fecha real de sesión apenas el catálogo esté
+        // disponible (ver syncCatalog en rankingService.ts), pero esto ya
+        // alcanza para ordenar cronológicamente entre casas desde el
+        // momento en que se detecta el anuncio, incluso antes de que haya
+        // catálogo.
+        startDate: announcement.startDate,
         scheduleYear: announcement.scheduleYear,
         scheduleSlug: announcement.scheduleSlug,
         discoveredAt: new Date(),

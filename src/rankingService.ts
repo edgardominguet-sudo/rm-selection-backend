@@ -60,6 +60,18 @@ export async function syncCatalog(sale: Sale): Promise<void> {
       },
     });
   }
+
+  // Refina Sale.startDate con la fecha REAL de sesión más próxima, ahora
+  // que el catálogo ya la resolvió por Hip — más precisa que la fecha
+  // aproximada que traía el anuncio público (o que un startDate viejo, si
+  // la casa de ventas corrió la fecha). Si todavía no hay ninguna
+  // sessionDate resuelta (catálogo publicado pero sin fechas todavía),
+  // no se toca lo que ya había — nunca se borra una fecha buena por una
+  // desconocida.
+  const earliestSessionDate = [...sessionDates.values()].sort((a, b) => a.getTime() - b.getTime())[0];
+  if (earliestSessionDate && earliestSessionDate.getTime() !== sale.startDate?.getTime()) {
+    await db.sale.update({ where: { id: sale.id }, data: { startDate: earliestSessionDate } });
+  }
 }
 
 /** La próxima jornada sin terminar de una venta (o null si no hay ninguna resuelta). */
