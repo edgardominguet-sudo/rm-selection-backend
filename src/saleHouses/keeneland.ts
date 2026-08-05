@@ -1,4 +1,4 @@
-import { NormalizedHip, SaleHouseClient, CatalogMediaItem } from "../types";
+import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
 
 // Forma cruda de la API interna de Keeneland
@@ -81,6 +81,13 @@ export class KeenelandClient implements SaleHouseClient {
     const rawBody = await response.text();
     if (!response.ok) {
       throw new Error(`Keeneland catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
+    }
+    // 200 con body vacío = "todavía no publicamos el catálogo de este
+    // sale" (le pasa a Keeneland con sales anunciados con anticipación,
+    // ej. "January Horses of All Ages Sale") — no es un error real, ver
+    // CatalogNotYetPublishedError en types.ts.
+    if (rawBody.trim().length === 0) {
+      throw new CatalogNotYetPublishedError("Keeneland", externalSaleId);
     }
     let raw: Record<string, RawEntry>;
     try {

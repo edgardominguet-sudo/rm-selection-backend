@@ -1,4 +1,4 @@
-import { NormalizedHip, SaleHouseClient, CatalogMediaItem } from "../types";
+import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
 
 // Forma cruda de la API interna de Fasig-Tipton
 // (GET https://www.fasigtipton.com/django/api/horses/?sale={saleID}).
@@ -99,6 +99,13 @@ export class FasigTiptonClient implements SaleHouseClient {
     const rawBody = await response.text();
     if (!response.ok) {
       throw new Error(`Fasig-Tipton catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
+    }
+    // 200 con body vacío = casi siempre "todavía no publicamos el
+    // catálogo de este sale", no un error real — se distingue con un
+    // tipo de error propio para que el scheduler lo loguee tranquilo en
+    // vez de como error (ver CatalogNotYetPublishedError en types.ts).
+    if (rawBody.trim().length === 0) {
+      throw new CatalogNotYetPublishedError("Fasig-Tipton", externalSaleId);
     }
     let entries: RawEntry[];
     try {

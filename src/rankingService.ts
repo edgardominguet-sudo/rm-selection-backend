@@ -7,7 +7,7 @@ import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { analyzeHip, MissingReferenceHorseError, NoPhotosError } from "./analysis/anthropicClient";
 import { overallScore, classify } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
-import { CatalogMediaItem } from "./types";
+import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 
 function startOfCalendarDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -279,7 +279,17 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
     try {
       await syncCatalog(sale);
     } catch (err) {
-      console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
+      // Catálogo todavía no publicado (200 con body vacío) es un estado
+      // ESPERADO para ventas anunciadas con anticipación — se loguea
+      // aparte, sin nivel "error", para no ensuciar los logs con algo que
+      // no hay que arreglar, solo esperar a que la casa de ventas publique.
+      // Cualquier otro fallo (red, HTTP no-2xx, JSON roto de verdad) sigue
+      // yendo como error real.
+      if (err instanceof CatalogNotYetPublishedError) {
+        console.log(`[scheduler] ${sale.name}: ${err.message} Se reintenta según el intervalo normal.`);
+      } else {
+        console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
+      }
       await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
       return;
     }

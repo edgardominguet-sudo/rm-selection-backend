@@ -43,6 +43,20 @@ export interface SaleHouseClient {
   ): Promise<Map<string, Date>>;
 }
 
+// Se lanza cuando una casa de ventas contesta 200 OK pero con el body
+// completamente vacío al pedir el catálogo de un sale — en la práctica,
+// significa "todavía no publicamos el catálogo de esta venta", no un error
+// de verdad (no es una caída de red, ni un 404/500, ni JSON corrupto). El
+// scheduler la trata distinto: log informativo en vez de error, para no
+// llenar los logs de "errores" repetidos por una venta que legítimamente
+// no tiene datos todavía (ver rankingService.ts processSale).
+export class CatalogNotYetPublishedError extends Error {
+  constructor(house: string, externalSaleId: string) {
+    super(`${house} todavía no publicó el catálogo del sale ${externalSaleId} (200 con body vacío).`);
+    this.name = "CatalogNotYetPublishedError";
+  }
+}
+
 export interface ConformationScoresJson {
   functional: Record<string, number>;
   limb: Record<string, number>;
