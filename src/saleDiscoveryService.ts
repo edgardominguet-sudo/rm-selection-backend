@@ -74,7 +74,34 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
   const existing = await db.sale.findUnique({
     where: { house_externalSaleId: { house, externalSaleId: announcement.externalSaleId } },
   });
-  if (existing) return false;
+  if (existing) {
+    // Autocuración: filas dadas de alta antes de que el descubrimiento
+    // supiera resolver scheduleYear/scheduleSlug (o alguna corrida vieja
+    // que no los haya podido leer) quedan con esos campos null para
+    // siempre — sin ellos, resolveKeenelandHipDates() nunca puede resolver
+    // ninguna sessionDate, así que la venta queda con startDate:null y
+    // afuera de la ventana de análisis, sin ningún error visible en los
+    // logs (no es un fallo, simplemente nunca avanza). Como este anuncio
+    // sí trae esos datos ahora, se completan solos en la fila existente; y
+    // como el bloqueo real era la falta de esos campos (no el intervalo de
+    // pollingPolicy), resetear lastCatalogCheckAt fuerza a que el próximo
+    // tick del scheduler (máx. 5 min) reintente el catálogo ya mismo en
+    // vez de esperar hasta el próximo chequeo programado.
+    const missingScheduleInfo =
+      (!!announcement.scheduleYear && !existing.scheduleYear) ||
+      (!!announcement.scheduleSlug && !existing.scheduleSlug);
+    if (missingScheduleInfo) {
+      await db.sale.update({
+        where: { id: existing.id },
+        data: {
+          scheduleYear: existing.scheduleYear ?? announcement.scheduleYear,
+          scheduleSlug: existing.scheduleSlug ?? announcement.scheduleSlug,
+          lastCatalogCheckAt: null,
+        },
+      });
+    }
+    return false;
+  }
 
   await db.$transaction(async (tx) => {
     const createdSale = await tx.sale.create({
