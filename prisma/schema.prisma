@@ -233,6 +233,17 @@ model Hip {
   dam               String?
   damSire           String?
 
+  // Criador, año de nacimiento y color — NINGUNO de los dos viene en las
+  // APIs de catálogo de Keeneland ni Fasig-Tipton (ver comentario en
+  // syncCatalog, rankingService.ts): quedan nil hasta que exista una
+  // segunda fuente (lectura de la página de catálogo pública, o carga a
+  // mano) que sí los traiga. No se inventan ni se infieren — ver Historial
+  // de Ventas más abajo (HorseSaleHistory), que los usa como parte de la
+  // identificación del caballo entre ventas.
+  breeder           String?
+  foalYear          Int?
+  color             String?
+
   // Fecha (día calendario) de la jornada en la que está programado
   // subastarse, ya resuelta — ver saleHouses/*.ts. Null = no se pudo
   // resolver todavía.
@@ -269,8 +280,93 @@ model Hip {
   decisions         UserDecision[]
   observations      HipObservation[]
 
+  // Historial de Ventas (ver HorseSaleHistory más abajo): apariciones
+  // anteriores de este mismo caballo que se muestran cuando se abre ESTE
+  // Hip (saleHistoryEntries), y las veces que ESTE Hip fue, a su vez, la
+  // fuente de una entrada de historial de otro Hip más nuevo del mismo
+  // caballo (saleHistorySourceFor) — dos relaciones separadas hacia Hip
+  // porque HorseSaleHistory apunta a un Hip "actual" y, opcionalmente, a
+  // otro Hip "fuente" (ver comentario en ese modelo).
+  saleHistoryEntries   HorseSaleHistory[] @relation("HipSaleHistory")
+  saleHistorySourceFor HorseSaleHistory[] @relation("HistorySourceHip")
+
   @@unique([saleId, hipNumber])
   @@index([saleId, sessionDate])
+}
+
+// De dónde salió una entrada del Historial de Ventas:
+// - INTERNAL_HIP: RM Selection ya tenía este mismo caballo cargado como
+//   otro Hip (de una venta anterior) y lo cruzó solo — la fuente más
+//   confiable, porque es catálogo real que la propia RM Selection importó.
+// - CATALOG_NOTE: se leyó de la página pública de catálogo (HTML), donde
+//   el consignatario suele anotar una venta anterior del mismo ejemplar.
+// - MANUAL: cargado a mano por el usuario.
+// - LICENSED_LOOKUP: fuente de pago/licencia (ej. Equineline), solo si en
+//   algún momento se autoriza — ver plan de Historial de Ventas.
+enum SaleHistorySource {
+  INTERNAL_HIP
+  CATALOG_NOTE
+  MANUAL
+  LICENSED_LOOKUP
+}
+
+// Qué tan segura es la identificación de que la entrada de historial
+// corresponde al MISMO caballo (ver principio de evidencia — nunca se
+// mezclan dos caballos distintos a propósito):
+// - CONFIRMED: identificadores fuertes coinciden (sire+dam+sexo+foalYear,
+//   o lo publica el propio consignatario en la nota de catálogo).
+// - LIKELY: coincidencia parcial (ej. sire+dam+sexo sin foalYear
+//   confirmado) — se muestra, pero marcada como sin confirmar.
+// - UNVERIFIED: cargada sin ningún cruce automático (ej. manual sin
+//   evidencia adjunta).
+enum SaleHistoryVerification {
+  CONFIRMED
+  LIKELY
+  UNVERIFIED
+}
+
+// Una aparición anterior de un caballo en otra venta, asociada al Hip
+// ACTUAL sobre el que se está consultando el Historial de Ventas (ver
+// GET /api/v1/hips/sale-history). Cero, una o varias filas por Hip — nunca
+// se sobrescribe, y nunca se inventa un precio o resultado que no venga de
+// una fuente real (ver `source`/`priceRaw`/`resultCode`).
+model HorseSaleHistory {
+  id    String @id @default(cuid())
+  hipId String
+  hip   Hip    @relation("HipSaleHistory", fields: [hipId], references: [id], onDelete: Cascade)
+
+  // Si la aparición anterior es otro Hip que RM Selection ya tiene en su
+  // propia base (caso INTERNAL_HIP, el más confiable — ver comentario en
+  // SaleHistorySource), se guarda la referencia directa acá en vez de
+  // duplicar sus datos a mano.
+  sourceHipId String?
+  sourceHip   Hip?    @relation("HistorySourceHip", fields: [sourceHipId], references: [id], onDelete: SetNull)
+
+  saleHouse      SaleHouse? // null = casa fuera de Keeneland/Fasig-Tipton/OBS
+  saleHouseLabel String? // texto libre cuando saleHouse es null (ej. "Barretts")
+  saleName       String
+  saleYear       Int
+  hipNumberAtSale String?
+  // Tal cual lo publicó la casa de ventas — nunca inferido ni calculado.
+  priceRaw       String?
+  // "SOLD" | "RNA" | "OUT" | etc., tal cual publicado.
+  resultCode     String?
+  purchaser      String?
+
+  source       SaleHistorySource
+  verification SaleHistoryVerification
+  // Qué identificadores coincidieron y por qué se consideró válido este
+  // cruce (ej. {"sire": true, "dam": true, "foalYear": false}) — para
+  // poder auditar o corregir un cruce que se haya hecho mal.
+  matchBasis   Json?
+
+  queriedAt       DateTime  @default(now())
+  lastConfirmedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([hipId, saleHouse, saleYear, hipNumberAtSale])
+  @@index([hipId])
 }
 
 // Resultado de análisis con IA para un Hip: las 26 subcategorías del

@@ -8,6 +8,7 @@ import { analyzeHip, MissingReferenceHorseError, NoPhotosError } from "./analysi
 import { overallScore, classify } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
+import { resolveSaleHistoryForHip } from "./saleHistoryService";
 
 function startOfCalendarDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -30,7 +31,7 @@ export async function syncCatalog(sale: Sale): Promise<void> {
 
   for (const hip of hips) {
     const sessionDate = sessionDates.get(hip.hipNumber) ?? null;
-    await db.hip.upsert({
+    const savedHip = await db.hip.upsert({
       where: { saleId_hipNumber: { saleId: sale.id, hipNumber: hip.hipNumber } },
       create: {
         saleId: sale.id,
@@ -59,6 +60,25 @@ export async function syncCatalog(sale: Sale): Promise<void> {
         lastCatalogSyncAt: new Date(),
       },
     });
+
+    // Historial de Ventas (ver saleHistoryService.ts): cruce interno
+    // contra el resto del catálogo que ya tenemos importado, solo la
+    // primera vez que este Hip queda con historial sin resolver — un Hip
+    // que ya tiene alguna entrada (aunque sea "sin confirmar") no se
+    // vuelve a cruzar en cada sync, para no repetir el mismo trabajo en
+    // cada ciclo del scheduler. Envuelto en try/catch a propósito: un
+    // fallo acá nunca debe tirar abajo la sincronización del resto del
+    // catálogo de esta venta.
+    if (savedHip.sire && savedHip.dam) {
+      try {
+        const existingHistoryCount = await db.horseSaleHistory.count({ where: { hipId: savedHip.id } });
+        if (existingHistoryCount === 0) {
+          await resolveSaleHistoryForHip(savedHip.id);
+        }
+      } catch (err) {
+        console.error(`[sale-history] Error resolviendo historial para Hip ${savedHip.hipNumber}:`, err);
+      }
+    }
   }
 
   // Refina Sale.startDate con la fecha REAL de sesión más próxima, ahora

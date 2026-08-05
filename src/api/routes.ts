@@ -2,8 +2,22 @@ import { Router } from "express";
 import { db } from "../db";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
+import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
 
 export const router = Router();
+
+/**
+ * Resuelve un Hip a partir de los mismos identificadores que ya conoce la
+ * app (house + externalSaleId + hipNumber) — mismo criterio que /ranking,
+ * para no requerir que la app se entere de ningún id interno de la base.
+ * Devuelve `null` (sin responder nada) si la venta o el Hip no existen,
+ * dejando que el caller decida el 404.
+ */
+async function findHipByIdentity(house: string, externalSaleId: string, hipNumber: string) {
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) return null;
+  return db.hip.findUnique({ where: { saleId_hipNumber: { saleId: sale.id, hipNumber } } });
+}
 
 // Ventas dadas de alta (para que la app arme el selector inicial sin
 // tener que hardcodear IDs de venta en el cliente), ordenadas
@@ -129,6 +143,76 @@ router.get("/sales/:saleId/hips/:hipNumber", requireUser, async (req, res) => {
     currentAnalysis: pointer?.analysisResult ?? null,
     ...(analysisHistory ? { analysisHistory } : {}),
   });
+});
+
+// Historial de Ventas de un Hip: quién lo crió (si se pudo determinar) y
+// cero, una o varias apariciones anteriores de este mismo caballo en otra
+// venta — ver plan "RM Selection — Módulo de Historial de Ventas" y
+// saleHistoryService.ts. Catálogo global (como Sale/Hip), pero igual exige
+// usuario autenticado (mismo criterio que /ranking y /sales/:saleId/hips/:hipNumber)
+// en vez de dejarla totalmente abierta.
+//
+// La primera vez que se consulta un Hip sin ningún historial resuelto
+// todavía, esta ruta dispara una resolución best-effort antes de
+// responder (cruce interno contra el resto del catálogo ya importado) —
+// así la tarjeta "Historial de Ventas" de la app no necesita un paso
+// manual para el caso más común. Consultas siguientes solo leen lo ya
+// resuelto, sin volver a cruzar nada — para eso está POST .../refresh.
+router.get("/hips/sale-history", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  const hipNumber = req.query.hipNumber as string | undefined;
+
+  if (!house || !externalSaleId || !hipNumber) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId, hipNumber." });
+    return;
+  }
+
+  const hip = await findHipByIdentity(house, externalSaleId, hipNumber);
+  if (!hip) {
+    res.status(404).json({ error: "No se encontró ese Hip." });
+    return;
+  }
+
+  const existingCount = await db.horseSaleHistory.count({ where: { hipId: hip.id } });
+  if (existingCount === 0) {
+    try {
+      await resolveSaleHistoryForHip(hip.id);
+    } catch (err) {
+      // Best-effort: si el cruce interno falla por lo que sea, se sigue
+      // respondiendo con lo que haya (probablemente "sin ventas
+      // anteriores") en vez de devolver un error — el usuario siempre
+      // puede reintentar con el botón "Actualizar historial de ventas".
+      console.error("[sale-history] Error resolviendo historial:", err);
+    }
+  }
+
+  res.json(await readSaleHistory(hip.id));
+});
+
+// Botón manual "Actualizar historial de ventas": fuerza una resolución
+// nueva ahora mismo, en vez de esperar a que se dispare sola. Mismo
+// criterio de identificación que el GET de arriba.
+router.post("/hips/sale-history/refresh", requireUser, async (req, res) => {
+  const { house, externalSaleId, hipNumber } = req.body as {
+    house?: string;
+    externalSaleId?: string;
+    hipNumber?: string;
+  };
+
+  if (!house || !externalSaleId || !hipNumber) {
+    res.status(400).json({ error: "Faltan campos: house, externalSaleId, hipNumber." });
+    return;
+  }
+
+  const hip = await findHipByIdentity(house, externalSaleId, hipNumber);
+  if (!hip) {
+    res.status(404).json({ error: "No se encontró ese Hip." });
+    return;
+  }
+
+  await resolveSaleHistoryForHip(hip.id);
+  res.json(await readSaleHistory(hip.id));
 });
 
 // MARK: - Decisiones y observaciones del usuario (sincronización entre
