@@ -60,8 +60,6 @@ export async function syncCatalog(sale: Sale): Promise<void> {
       },
     });
   }
-
-  await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: new Date() } });
 }
 
 /** La próxima jornada sin terminar de una venta (o null si no hay ninguna resuelta). */
@@ -268,12 +266,24 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
   const upcoming = await nextSessionDate(sale.id);
 
   if (shouldCheckNow(now, sale.lastCatalogCheckAt, upcoming)) {
+    // lastCatalogCheckAt se actualiza pase lo que pase (éxito o error) —
+    // antes solo se actualizaba adentro de syncCatalog() al terminar bien,
+    // así que una venta que fallara SIEMPRE (ej. Keeneland todavía sin
+    // publicar el catálogo de un sale, devolviendo 200 con body vacío)
+    // nunca llegaba a esa línea y quedaba con lastCatalogCheckAt en null
+    // para siempre — shouldCheckNow() la volvía a intentar en CADA ciclo
+    // del scheduler en vez de respetar el intervalo normal de
+    // pollingPolicy, golpeando la API de la casa de ventas mucho más
+    // seguido de lo necesario para un catálogo que legítimamente no
+    // existe todavía.
     try {
       await syncCatalog(sale);
     } catch (err) {
       console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
+      await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
       return;
     }
+    await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
   }
 
   const leadMs = config.rankingLeadHours * 60 * 60 * 1000;
