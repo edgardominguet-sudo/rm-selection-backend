@@ -52,12 +52,14 @@ async function runCycle(): Promise<void> {
 
   try {
     const organizations = await db.organization.findMany({ select: { id: true } });
-    // catalogAccess: "FULL" — las ventas detectadas automáticamente sin ID
-    // de catálogo resuelto (PENDING_ID) o sin método de acceso conocido
-    // (UNAVAILABLE) no tienen nada que sincronizar todavía; se filtran acá
-    // para no contarlas como "procesadas" en SchedulerRun. Ver también el
-    // guard equivalente en rankingService.processSale.
-    const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: "FULL" } });
+    // catalogAccess FULL o MANUAL_CSV — ambas pueden tener Hips cargados
+    // (FULL los trae sola vía API; MANUAL_CSV los recibe por
+    // POST /sales/:saleId/catalog/import) y por lo tanto algo para
+    // analizar/rankear. PENDING_ID (falta ID real) y UNAVAILABLE (sin
+    // ningún camino, ni manual) no tienen nada que sincronizar todavía; se
+    // filtran acá para no contarlas como "procesadas" en SchedulerRun. Ver
+    // también el guard equivalente en rankingService.processSale.
+    const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: { in: ["FULL", "MANUAL_CSV"] } } });
     for (const sale of sales) {
       try {
         await processSale(sale, organizations, budget);

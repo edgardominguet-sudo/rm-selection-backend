@@ -3,6 +3,12 @@ import { db } from "../db";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
+import {
+  importManualCatalog,
+  EmptyManualCatalogError,
+  MissingHipNumberColumnError,
+  SaleNotFoundError,
+} from "../saleHouses/manualCatalogImport";
 
 export const router = Router();
 
@@ -28,15 +34,31 @@ async function findHipByIdentity(house: string, externalSaleId: string, hipNumbe
 router.get("/sales", async (_req, res) => {
   const sales = await db.sale.findMany({
     where: { isActive: true },
-    select: { id: true, house: true, name: true, externalSaleId: true, startDate: true, catalogAccess: true },
+    select: {
+      id: true,
+      house: true,
+      name: true,
+      externalSaleId: true,
+      startDate: true,
+      catalogAccess: true,
+      // Visibilidad operativa mínima ("¿hace cuánto se actualizó esto?",
+      // "¿ya tiene algún Hip cargado?") sin que la app tenga que inferirlo
+      // de otro lado — campos nuevos, aditivos: no rompen ningún cliente
+      // existente que decodifique esta respuesta ignorando claves que no
+      // conoce (ver SaleAlertSaleInfo.swift, mismo patrón).
+      lastCatalogCheckAt: true,
+      announcementUrl: true,
+      _count: { select: { hips: true } },
+    },
   });
-  sales.sort((a, b) => {
+  const withHipCount = sales.map(({ _count, ...rest }) => ({ ...rest, hipCount: _count.hips }));
+  withHipCount.sort((a, b) => {
     if (a.startDate && b.startDate) return a.startDate.getTime() - b.startDate.getTime();
     if (a.startDate) return -1;
     if (b.startDate) return 1;
     return 0;
   });
-  res.json(sales);
+  res.json(withHipCount);
 });
 
 /**
@@ -378,4 +400,65 @@ router.post("/sales", async (req, res) => {
     update: { name, scheduleYear, scheduleSlug, isActive: true, ...(parsedStartDate ? { startDate: parsedStartDate } : {}) },
   });
   res.json(sale);
+});
+
+// MARK: - Import manual de catálogo (SaleCatalogAccess.MANUAL_CSV, hoy OBS —
+// ver comentario en schema.prisma y saleHouses/manualCatalogImport.ts). El
+// mismo camino sirve para CUALQUIER venta, no solo MANUAL_CSV: una FULL
+// también puede recibir un import puntual (ej. corregir un dato, adelantar
+// fotos antes de que la API en vivo las publique) sin que eso cambie cómo
+// sigue sincronizándose el resto de su catálogo.
+//
+// Se manda el CSV como texto plano dentro de JSON (no multipart) — un
+// catálogo de unos pocos cientos de Hips entra de sobra en el límite de 2mb
+// que ya tiene configurado express.json() (ver index.ts), y evita sumar una
+// dependencia nueva (multer) solo para este caso.
+router.post("/sales/:saleId/catalog/import", requireUser, async (req, res) => {
+  const { saleId } = req.params;
+  const { csv, fileName } = req.body as { csv?: string; fileName?: string };
+
+  if (!csv || typeof csv !== "string") {
+    res.status(400).json({ error: 'Falta el campo "csv" (texto plano del archivo) en el body.' });
+    return;
+  }
+
+  try {
+    const outcome = await importManualCatalog(saleId, csv, {
+      fileName,
+      importedByUserId: req.user!.id,
+    });
+    res.json({
+      ok: true,
+      catalogImportId: outcome.catalogImport.id,
+      rowsParsed: outcome.catalogImport.rowCount,
+      hipsCreated: outcome.summary.created,
+      hipsUpdated: outcome.summary.updated,
+      catalogAccess: outcome.catalogAccess,
+      warnings: outcome.warnings,
+    });
+  } catch (err) {
+    if (err instanceof SaleNotFoundError) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    if (err instanceof EmptyManualCatalogError || err instanceof MissingHipNumberColumnError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error(`[catalog-import] Error importando catálogo de venta ${saleId}:`, err);
+    res.status(500).json({ error: "Error interno importando el catálogo. Revisá el formato del CSV e intentá de nuevo." });
+  }
+});
+
+// Auditoría de imports manuales de una venta — más reciente primero. Útil
+// para responder "¿cuándo se cargó esto por última vez y quién lo hizo?"
+// sin tener que revisar logs de Railway (mismo espíritu que SchedulerRun).
+router.get("/sales/:saleId/catalog/imports", requireUser, async (req, res) => {
+  const { saleId } = req.params;
+  const imports = await db.catalogImport.findMany({
+    where: { saleId },
+    orderBy: { createdAt: "desc" },
+    include: { importedByUser: { select: { displayName: true, email: true } } },
+  });
+  res.json(imports);
 });

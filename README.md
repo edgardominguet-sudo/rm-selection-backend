@@ -3,7 +3,7 @@
 Este servicio reemplaza el análisis "on-device" que hacía la app de iOS.
 Corre 24/7 en Railway, se encarga de:
 
-- Descargar automáticamente el catálogo de cada venta (Fasig-Tipton, Keeneland — OBS queda como punto de extensión, ver `src/saleHouses/obs.ts`).
+- Descargar automáticamente el catálogo de cada venta: Fasig-Tipton y Keeneland vía API en vivo; OBS (sin API pública) vía carga manual de CSV que entra por el mismo pipeline — ver `ARCHITECTURE.md` §1c y §6b más abajo.
 - Resolver sola la fecha de sesión de cada Hip (directo del catálogo en Fasig-Tipton; leyendo el "Schedule of Sale" público en Keeneland).
 - Chequear cada venta a distinta frecuencia según qué tan cerca esté la próxima jornada (cada 12h si falta un mes, hasta cada 5 min con la jornada en curso — ver `src/saleHouses/pollingPolicy.ts`).
 - Generar el Ranking del Día automáticamente 12 horas antes de cada jornada, y reanalizar solo los Hips cuya foto/video cambió desde el último análisis.
@@ -101,6 +101,41 @@ curl -X POST https://<tu-servicio>.up.railway.app/api/v1/sales \
   }'
 ```
 
+## 6b. Cargar el catálogo a mano (OBS y cualquier venta sin API pública)
+
+OBS no tiene ninguna API de catálogo pública (se investigó a fondo — ver
+`ARCHITECTURE.md` §1c), así que sus ventas quedan `catalogAccess: MANUAL_CSV`
+en vez de sincronizarse solas. Para que RM Selection empiece a analizarlas,
+subí el CSV/export del catálogo (el mismo que ya te manda o publica la casa
+de ventas a consignatarios/compradores) una vez que esté disponible:
+
+```bash
+curl -X POST https://<tu-servicio>.up.railway.app/api/v1/sales/<SALE_ID>/catalog/import \
+  -H "x-api-key: TU_APP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<EOF
+{
+  "fileName": "obs-october-2026.csv",
+  "csv": "Hip Number,Horse Name,Sex,Sire,Dam,Dam Sire,Consignor,Foal Year,Color,Session Date,Photo URL,Walking Video,UT Video\n1,,C,Into Mischief,Some Mare,Some Sire,Consignor Farm,2024,Bay,2026-10-06,https://.../foto1.jpg,https://.../walk1.mp4,https://.../ut1.mp4\n"
+}
+EOF
+```
+
+`<SALE_ID>` es el `id` interno que devuelve `GET /sales` (no el
+`externalSaleId`). Solo la columna "Hip Number" es obligatoria — el resto se
+usa si está presente, y las columnas de foto/video se pueden repetir tantas
+veces como haga falta ("Photo URL", "Photo URL 2", etc.) — ver
+`ARCHITECTURE.md` §1c para el formato completo y `GET
+/sales/<SALE_ID>/catalog/imports` para ver el historial de cargas. Cada
+import que subís reemplaza/actualiza los Hips por número de Hip — podés
+volver a subir el mismo archivo actualizado (ej. con fotos que se agregaron
+después) tantas veces como haga falta antes de la subasta; RM Selection
+detecta sola qué Hips tienen media nueva y solo reanaliza esos.
+
+Este mismo endpoint funciona para CUALQUIER venta (incluidas Fasig-Tipton o
+Keeneland) si en algún momento querés adelantar/corregir un dato a mano sin
+esperar al próximo chequeo automático.
+
 ## 7. Cargar el caballo referente
 
 El análisis necesita las fotos del patrón oficial del Método RM. Subí esas fotos a cualquier hosting (podés usar el mismo Railway con un bucket, o simplemente URLs públicas ya existentes) y cargalas — esto queda asociado a TU organización (la que sembraste en el paso 5), así que necesita el mismo `x-api-key`:
@@ -125,7 +160,7 @@ En Xcode, la URL base del backend y la `APP_API_KEY` se configuran en... (ver ca
 - **Frecuencia de chequeo variable** (`src/saleHouses/pollingPolicy.ts`): 30-15 días antes cada 12h, 15-7 días cada 6h, 7 días-24h cada 1h, últimas 24h cada 15 min, jornada en curso cada 5 min.
 - **Detección de cambios**: cada Hip guarda un hash (`analyzedMediaHash`) del último set de fotos/video que se analizó. Si el hash actual no coincide, se reanaliza SOLO ese Hip — nunca hace falta reanalizar toda la venta de nuevo.
 - **Video de Vimeo**: se resuelve la URL progresiva (mp4 directo) desde el endpoint público de configuración del reproductor (`player.vimeo.com/video/{id}/config`), sin necesitar token — más simple y confiable que el enfoque anterior en iOS (que necesitaba abrir un WebView oculto). Si un video no es embebible públicamente, el análisis sigue solo con fotos fijas (igual que antes).
-- **OBS**: no está implementado — no existe ninguna integración de catálogo conocida todavía para esa casa de ventas. `src/saleHouses/obs.ts` deja el punto de extensión listo (mismo contrato `SaleHouseClient`), pero tira error explícito en vez de simular datos.
+- **OBS**: sin API pública de catálogo (investigado a fondo — ver `ARCHITECTURE.md` §1c: su catálogo real vive en `obscatalog.com` pero se renderiza 100% vía JavaScript del lado del cliente, sin ningún endpoint público identificable). En vez de quedar sin sincronizar para siempre, sus ventas quedan `catalogAccess: MANUAL_CSV` — se detectan y alertan solas (RSS de `obssales.com`), y el catálogo se carga a mano vía `POST /sales/:saleId/catalog/import` (ver §6b más arriba); a partir de ahí, análisis y Ranking del Día funcionan exactamente igual que para Keeneland o Fasig-Tipton. `src/saleHouses/obs.ts` (integración por API en vivo) sigue siendo un stub, listo para completarse el día que OBS publique un método de acceso automático.
 - **Historial, usuarios y sincronización**: ver `ARCHITECTURE.md` para el diseño completo. En resumen: `AnalysisResult` ya no se sobrescribe (queda historial completo de cada reanálisis), cada recálculo del ranking queda registrado en `RankingSnapshotVersion`, y ya existen las rutas `/api/v1/me/decisions` y `/api/v1/me/observations` para que las decisiones y observaciones del usuario sincronicen entre el iPad y el iPhone — la app de iOS todavía no las llama (siguen viviendo en SwiftData local por ahora), eso queda como un proyecto aparte una vez que el backend esté funcionando en producción.
 - **Multi-tenant (`Organization`)**: hoy toda tu key seedeada cae en una sola organización compartida (ver paso 5). El esquema ya soporta dar de alta compradores independientes con datos, decisiones y caballo referente completamente separados, sin ninguna migración — ver `ARCHITECTURE.md` §1a. El catálogo (`Sale`/`Hip`) es lo único que queda global entre organizaciones, para no duplicar scraping del mismo catálogo público.
 - **Descubrimiento automático de ventas**: ya no hace falta dar de alta cada venta a mano (paso 6) — un cron aparte revisa cada 6h las páginas públicas de anuncios de Fasig-Tipton, Keeneland y OBS y las crea solo, avisando por `GET /api/v1/alerts` (la app lo muestra en la pantalla "Novedades", con campanita y contador). Igual podés seguir dando de alta ventas a mano con el paso 6 — por ejemplo, para completar el ID real de catálogo de una venta de Fasig-Tipton que quedó detectada pero sin sincronizar (ver `ARCHITECTURE.md` §1b para el detalle de qué puede y no puede automatizarse en cada casa de ventas).

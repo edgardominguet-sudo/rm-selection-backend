@@ -130,6 +130,110 @@ genere una clave de push (no se puede crear en su nombre), además de que la
 app pida permiso de notificaciones. El esquema ya deja `Device.pushToken`
 listo para ese paso — ver sección 6.
 
+## 1c. Catálogo manual (`MANUAL_CSV`) — casas de venta sin API pública
+
+Hasta acá, una venta sin API en vivo (Fasig-Tipton sin ID resuelto, OBS)
+quedaba en un callejón sin salida: se detectaba y se alertaba, pero nunca
+se podía analizar ni rankear hasta que alguien resolviera el acceso
+automático. `SaleCatalogAccess.MANUAL_CSV` (`saleHouses/manualCatalogImport.ts`,
+`POST /api/v1/sales/:saleId/catalog/import`) agrega un tercer camino, entre
+"automático" y "sin nada": el catálogo se sube a mano (CSV/export, el mismo
+formato que la casa de ventas ya distribuye a consignatarios/compradores),
+pero a partir de ahí el Hip generado entra por la **misma puerta**
+(`upsertNormalizedHips`, extraída de `syncCatalog`) que un Hip de Keeneland o
+Fasig-Tipton: mismo análisis con IA, mismo Ranking del Día, mismo Historial
+de Ventas, misma detección de "apareció una foto/video nuevo" en el próximo
+import (por hash de media, que no distingue el origen del Hip). Solo el paso
+de "traer el catálogo" es manual — todo lo de ahí en adelante sigue
+automático, igual que las demás casas.
+
+**Formato del CSV**: header con nombres de columna flexibles (case
+insensitive, ver `COLUMN_ALIASES` en `manualCatalogImport.ts`) — obligatoria
+solo "Hip Number" (o "Hip #", "Lot"). El resto se usa si está presente:
+Horse Name, Sex, Sire, Dam, Dam Sire, Consignor, Breeder, Foal Year, Color,
+Session Date, Sale Price, Buyer, Sale Status. Fotos/video: cualquier
+columna cuyo nombre empiece con "Photo" o "Video"/"Walking Video"/"UT
+Video" se toma como una URL de media — se pueden repetir tantas como haga
+falta (ej. Fotos múltiples, Walking Video + UT Video por separado, que es
+justamente el caso real de OBS). Una fila con datos faltantes o mal
+formados nunca tira abajo el import completo — se descarta esa fila con una
+advertencia (`warnings` en la respuesta, y guardado en `CatalogImport`).
+
+**Upgrade automático**: una venta que llegó a `PENDING_ID` o `UNAVAILABLE`
+y recibe un import con al menos un Hip válido pasa sola a `MANUAL_CSV` —
+demostró en la práctica tener un camino de catálogo funcionando, así que el
+scheduler empieza a analizarla/rankearla en el próximo ciclo sin ningún paso
+adicional. Una venta `FULL` nunca se degrada por esto: un import manual
+puede coexistir con la sincronización en vivo (ej. para adelantar fotos
+antes de que la API las publique) sin cambiar cómo sigue sincronizándose el
+resto del catálogo.
+
+**Auditoría**: cada import deja una fila en `CatalogImport` (quién, cuándo,
+cuántas filas, cuántos Hips creó/actualizó, advertencias) — `GET
+/api/v1/sales/:saleId/catalog/imports` para revisarlo sin depender de logs
+de Railway.
+
+**Investigación previa a esta decisión (2026-08-05)** — antes de resolver
+que MANUAL_CSV era el camino correcto, se investigó si había alguna forma
+automática que no se hubiera probado todavía:
+
+- **OBS**: su catálogo real vive en `obscatalog.com` (URLs del tipo
+  `/{mes}preview/{año}/`, ej. `/marpreview/2024/`), con una tabla que trae
+  exactamente los campos que hacen falta (Hip #, Walking Video, UT Video,
+  Photo, Foaling Date, Color, Sex, Name, Sire, Dam, Dam Sire, Consignor,
+  Barn) — pero se confirmó que esa tabla se llena 100% del lado del cliente
+  vía JavaScript/AJAX; el HTML que devuelve el servidor no trae ningún dato
+  (solo la tabla vacía y un "Loading…"), y no se pudo identificar ningún
+  endpoint JSON/XML público detrás sin ejecutar ese JavaScript (se
+  intentaron varios nombres de archivo típicos de esa época del sitio, sin
+  éxito). Si en algún momento se dispone de una herramienta que renderice
+  la página (navegador headless) se podría reintentar leyendo la tabla ya
+  poblada — hoy no hay evidencia de que viole ningún acceso restringido
+  (no está bajo ninguna ruta prohibida), solo falta la herramienta para
+  ejecutar el JavaScript.
+- **Fasig-Tipton**: se confirmó que el parámetro `sale_start_date` (que sí
+  acepta `django/api/filtered_pedigree_pdf/`, visible en URLs indexadas por
+  buscadores) NO funciona en `django/api/horses/` (devuelve vacío con
+  cualquier fecha probada, incluida una de una venta real ya pasada).
+  `django/api/sales/` existe (200 OK, no 404) pero devuelve `{}` con
+  cualquier combinación de filtros probada (`sale_start_date`, `year`,
+  `active`, sin filtro). No hay bypass público conocido — sigue en pie la
+  conclusión anterior: el ID numérico interno no está expuesto en ninguna
+  página pública, y no se adivina por fuerza bruta (no es un método de
+  acceso autorizado). MANUAL_CSV queda disponible como alternativa para
+  estas ventas también, si se quiere avanzar con el análisis antes de
+  conseguir el ID real — no hace falta esperar a nada para usarlo.
+
+## 1d. Cómo agregar una casa de ventas nueva
+
+La arquitectura ya separa "cómo se consigue el catálogo" (`SaleHouseClient`,
+`types.ts`) de "qué se hace con él" (`upsertNormalizedHips`, análisis,
+ranking) — agregar una casa de ventas nueva (ej. si Barretts volviera a
+operar, o para Arqana/Goffs/Magic Millions) sigue siempre este orden, y cada
+paso es opcional según qué tan buen acceso público tenga esa casa:
+
+1. **Agregar el valor al enum `SaleHouse`** (schema.prisma) + migración.
+   Único paso obligatorio siempre.
+2. **¿Tiene API de catálogo pública o un HTML que se pueda leer de forma
+   confiable?** Si sí: escribir un `SaleHouseClient` (`saleHouses/<casa>.ts`,
+   mismo contrato que `keeneland.ts`/`fasigTipton.ts`) y registrarlo en
+   `saleHouses/registry.ts`. La venta queda `FULL` y se sincroniza sola.
+3. **¿No tiene API pero sí un CSV/export estándar?** No hace falta ningún
+   código nuevo — se da de alta la venta con `catalogAccess: MANUAL_CSV`
+   (o queda así sola tras el primer `POST .../catalog/import` exitoso, ver
+   1c) y listo.
+4. **Descubrimiento automático de ventas nuevas (opcional)**: si la casa
+   tiene una página de calendario/anuncios o un feed RSS público, escribir
+   un `SaleDiscoveryClient` (`saleHouses/discovery/<casa>Discovery.ts`,
+   mismo contrato que los tres existentes) y registrarlo en
+   `saleDiscoveryService.ts`. Sin esto, la venta se puede dar de alta igual
+   a mano vía `POST /sales`.
+
+Ningún paso de estos afecta al resto del sistema: el análisis con IA, el
+Ranking del Día, el Historial de Ventas y la sincronización entre
+dispositivos trabajan siempre contra `NormalizedHip`/`Hip`, sin saber (ni
+necesitar saber) de qué casa de ventas vino cada uno.
+
 ## 2. Autenticación
 
 `x-api-key` identifica a un `User` real, que pertenece a una `Organization` (se

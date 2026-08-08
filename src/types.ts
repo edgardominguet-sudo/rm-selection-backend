@@ -26,6 +26,16 @@ export interface NormalizedHip {
   damSire?: string;
   media: CatalogMediaItem[];
   saleResult?: SaleResultData;
+  // Criador, año de nacimiento y color — ninguna API en vivo (Keeneland,
+  // Fasig-Tipton) los trae (ver comentario en Hip, schema.prisma), pero un
+  // import manual de catálogo (CSV/export, ver saleHouses/manualCatalogImport.ts)
+  // sí puede aportarlos, porque son columnas estándar de esos exports.
+  // Opcionales a propósito: cuando vienen undefined, upsertNormalizedHips
+  // (rankingService.ts) NO toca el valor ya guardado — nunca se borra un
+  // dato bueno cargado antes por no venir en esta fuente en particular.
+  breeder?: string;
+  foalYear?: number;
+  color?: string;
 }
 
 // Lo que debe poder hacer el cliente de cualquier casa de ventas.

@@ -83,6 +83,7 @@ model User {
   devices     Device[]
   decisions   UserDecision[]
   observations HipObservation[]
+  catalogImports CatalogImport[]
 }
 
 // Un dispositivo (iPhone/iPad) desde el que un usuario usa la app. Deja
@@ -111,20 +112,43 @@ model Device {
 // Qué tan utilizable es el catálogo estructurado de una venta:
 // - FULL: hay una API de catálogo que se puede consultar directo (Keeneland
 //   siempre; Fasig-Tipton cuando se conoce el ID numérico interno). El
-//   scheduler la sincroniza y analiza normalmente.
+//   scheduler la sincroniza sola (syncCatalog) y analiza normalmente.
+// - MANUAL_CSV: la casa de ventas NO tiene ninguna API pública de catálogo
+//   (hoy, OBS — se investigó a fondo el 2026-08-05: su catálogo real vive en
+//   obscatalog.com, pero se renderiza 100% del lado del cliente vía
+//   JavaScript/AJAX, sin ningún endpoint JSON/XML público identificable; no
+//   hay Content-Type de datos en el HTML servidor, solo una tabla vacía que
+//   se llena después. No hay forma automática y respetuosa de leerlo hoy).
+//   En vez de quedar en un callejón sin salida permanente, el catálogo se
+//   carga vía POST /sales/:saleId/catalog/import con un CSV/export (el mismo
+//   formato que ya usan estas casas de venta para consignatarios/compradores
+//   — ver saleHouses/manualCatalogImport.ts) — a partir de ahí, el Hip
+//   generado pasa por EXACTAMENTE el mismo camino que un Hip de Keeneland o
+//   Fasig-Tipton: análisis con IA, Ranking del Día, Historial de Ventas,
+//   detección de media nueva en el próximo import. Solo el paso de "traer el
+//   catálogo" es manual — todo lo de ahí en adelante sigue siendo automático.
 // - PENDING_ID: se detectó el anuncio público (nombre, fechas) pero falta
 //   resolver el ID interno que pide la API de catálogo — hoy pasa con
 //   Fasig-Tipton, cuyo ID numérico no aparece en ninguna página pública,
 //   solo se puede obtener inspeccionando la app oficial/portal del
-//   comprador. No se adivina por fuerza bruta (violaría el acceso
-//   autorizado) — queda visible en /api/v1/alerts hasta que alguien cargue
-//   el ID real vía POST /sales.
-// - UNAVAILABLE: la casa de ventas no tiene ningún método de acceso
-//   estructurado y autorizado todavía (hoy, OBS). Se detecta y alerta el
-//   anuncio igual, pero no hay forma de sincronizar catálogo hasta que OBS
-//   publique una API o método de acceso — ver saleHouses/discovery/obsDiscovery.ts.
+//   comprador. Se investigó de nuevo el 2026-08-05: el parámetro
+//   `sale_start_date` que sí acepta `django/api/filtered_pedigree_pdf/`
+//   (visible en URLs indexadas por buscadores) NO funciona en
+//   `django/api/horses/` (devuelve vacío); `django/api/sales/` existe (200,
+//   no 404) pero devuelve `{}` con cualquier filtro probado — no hay bypass
+//   público conocido. No se adivina el ID por fuerza bruta (violaría el
+//   acceso autorizado) — queda visible en /api/v1/alerts hasta que alguien
+//   cargue el ID real vía POST /sales. MANUAL_CSV queda disponible como
+//   alternativa si alguien quiere estos Hips analizados ANTES de conseguir
+//   el ID real (ver comentario arriba) — completar el ID real más adelante
+//   simplemente pasa la venta a FULL sin perder nada de lo ya importado.
+// - UNAVAILABLE: reservado para una casa de ventas sin NINGÚN camino de
+//   acceso, ni siquiera manual (ej. ni catálogo público ni export
+//   descargable en ningún formato) — hoy ninguna casa soportada cae en este
+//   caso; ver saleHouses/discovery/obsDiscovery.ts.
 enum SaleCatalogAccess {
   FULL
+  MANUAL_CSV
   PENDING_ID
   UNAVAILABLE
 }
@@ -190,8 +214,39 @@ model Sale {
   rankingSnapshots        RankingSnapshot[]
   rankingSnapshotVersions RankingSnapshotVersion[]
   alerts                  SaleAlert[]
+  catalogImports          CatalogImport[]
 
   @@unique([house, externalSaleId])
+}
+
+// Auditoría de cada carga manual de catálogo (ver SaleCatalogAccess.MANUAL_CSV
+// y saleHouses/manualCatalogImport.ts) — deja registro de cuándo se cargó,
+// quién lo cargó, cuántas filas trajo el archivo y cuántos Hips efectivamente
+// se crearon/actualizaron, más cualquier advertencia de filas descartadas
+// (ej. sin "Hip Number", fecha de sesión no parseable). Nunca se borra: es
+// el equivalente de SchedulerRun para el camino manual, útil para responder
+// "¿de dónde salió este dato?" o diagnosticar un import que trajo menos Hips
+// de los esperados.
+model CatalogImport {
+  id             String   @id @default(cuid())
+  saleId         String
+  sale           Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  importedByUserId String?
+  importedByUser User?    @relation(fields: [importedByUserId], references: [id], onDelete: SetNull)
+
+  fileName       String?
+  rowCount       Int
+  hipsCreated    Int
+  hipsUpdated    Int
+  // Filas descartadas o advertencias no fatales (ej. "fila 14: sin Hip
+  // Number, se descarta", "fila 30: Session Date no parseable, se usó la
+  // fecha de la venta"). Nunca detiene el import completo — una fila mala no
+  // debe tirar abajo las 200 buenas.
+  warningsJson   Json     @default("[]")
+
+  createdAt      DateTime @default(now())
+
+  @@index([saleId, createdAt])
 }
 
 // Registro de "novedades" — lo que la app le muestra al usuario cuando el

@@ -18,7 +18,7 @@ export interface DiscoveredSaleAnnouncement {
   /** Primer día de la venta — se usa para filtrar anuncios ya pasados. */
   startDate: Date;
   announcementUrl: string;
-  access: "FULL" | "PENDING_ID" | "UNAVAILABLE";
+  access: "FULL" | "MANUAL_CSV" | "PENDING_ID" | "UNAVAILABLE";
   /** Solo Keeneland: para resolveSessionDates (Schedule of Sale). */
   scheduleYear?: number;
   scheduleSlug?: string;

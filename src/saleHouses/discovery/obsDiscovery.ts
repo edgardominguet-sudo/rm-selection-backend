@@ -4,13 +4,27 @@ import { findFirstDateRange, stripHtmlTags } from "./dateParsing";
 // OBS (Ocala Breeders' Sales) no tiene ninguna API de catálogo estructurada
 // conocida — a diferencia de Fasig-Tipton y Keeneland, su plataforma de
 // pujas (bid.obssales.com / obsonline.com) es un sistema aparte del que no
-// hay documentación pública de acceso programático. Por eso este cliente
-// SOLO puede detectar el ANUNCIO de una venta nueva, nunca su catálogo —
-// toda venta que encuentra queda con catalogAccess UNAVAILABLE
-// permanentemente, hasta que OBS publique un método de acceso autorizado
-// (API pública, licencia de datos, etc.) y se construya un SaleHouseClient
-// real para esa casa (hoy src/saleHouses/obs.ts es un stub que tira error
-// a propósito en vez de inventar datos).
+// hay documentación pública de acceso programático. Se investigó a fondo
+// el 2026-08-05: el catálogo real de cada venta vive en obscatalog.com
+// (URLs del tipo /{mes}preview/{año}/, ej. /marpreview/2024/), con una
+// tabla que trae exactamente los campos que hacen falta (Hip #, Walking
+// Video, UT Video, Photo, Foaling Date, Color, Sex, Name, Sire, Dam, Dam
+// Sire, Consignor, Barn) — pero esa tabla se llena 100% del lado del
+// cliente vía JavaScript/AJAX; el HTML que devuelve el servidor no trae
+// ningún dato, y no se identificó ningún endpoint JSON/XML público
+// detrás. No hay forma automática y respetuosa de leerlo hoy.
+//
+// Por eso este cliente de descubrimiento SOLO detecta el ANUNCIO de una
+// venta nueva (nombre, fechas) — el catálogo en sí se carga a mano vía
+// POST /sales/:saleId/catalog/import con el CSV/export que el propio OBS
+// ya distribuye a consignatarios y compradores (ver
+// saleHouses/manualCatalogImport.ts): toda venta que este cliente
+// encuentra queda con catalogAccess MANUAL_CSV, NO con un callejón sin
+// salida permanente — una vez cargado el CSV, el resto del pipeline
+// (análisis, ranking, historial de ventas) funciona exactamente igual que
+// para Keeneland o Fasig-Tipton. Si en el futuro OBS publica una API real,
+// src/saleHouses/obs.ts (hoy un stub) se completa y la venta puede pasar a
+// FULL sin perder nada de lo ya importado a mano.
 //
 // Fuente elegida: el feed RSS estándar de WordPress (obssales.com/feed/),
 // en vez de scrapear el HTML del calendario. Es la opción más respetuosa
@@ -62,11 +76,14 @@ export class OBSDiscoveryClient implements SaleDiscoveryClient {
 
       results.push({
         name: title.trim(),
-        // Sintético: OBS no tiene ningún ID de catálogo real todavía.
+        // Sintético: OBS no tiene ningún ID de catálogo real todavía —
+        // igual sirve para identificar la venta de forma estable en
+        // Sale.externalSaleId (el import manual la referencia por
+        // Sale.id, no por este string).
         externalSaleId: `obs-${slugify(title)}`,
         startDate,
         announcementUrl: link.trim(),
-        access: "UNAVAILABLE",
+        access: "MANUAL_CSV",
       });
     }
 

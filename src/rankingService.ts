@@ -7,7 +7,7 @@ import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { analyzeHip, MissingReferenceHorseError, NoPhotosError } from "./analysis/anthropicClient";
 import { overallScore, classify } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
-import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
+import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
 
 function startOfCalendarDay(date: Date): Date {
@@ -28,27 +28,38 @@ function sessionExpiresAt(sessionDate: Date): Date {
   return new Date(dayEnd.getTime() + RANKING_RETENTION_HOURS_AFTER_SESSION * 60 * 60 * 1000);
 }
 
+export interface UpsertSummary {
+  created: number;
+  updated: number;
+}
+
 /**
- * Paso 1 de cada ciclo: sincroniza el catálogo completo de una venta
- * contra la casa de ventas correspondiente (solo si ya toca según
- * pollingPolicy — ver processSale) y guarda/actualiza cada Hip: datos de
- * catálogo, media, resultado de venta oficial (precio/comprador/RNA) y
- * fecha de sesión resuelta automáticamente.
+ * Guarda/actualiza en Postgres un lote de NormalizedHip ya resuelto —
+ * mismo camino sin importar de dónde vinieron los Hips: de una API en vivo
+ * (syncCatalog, más abajo) o de un CSV cargado a mano (ver
+ * saleHouses/manualCatalogImport.ts, camino MANUAL_CSV). A partir de este
+ * punto no hay ninguna diferencia entre ambos orígenes: mismo upsert, mismo
+ * cruce de Historial de Ventas, mismo hash de media para detectar cambios
+ * en el próximo análisis.
+ *
+ * Campos de segunda fuente (breeder/foalYear/color, ver NormalizedHip en
+ * types.ts) se pasan tal cual: si vienen `undefined` (la fuente no los
+ * trae), Prisma los omite del create/update en vez de sobreescribir con
+ * null — así un dato bueno cargado antes por otra fuente nunca se pierde.
  */
-export async function syncCatalog(sale: Sale): Promise<void> {
-  const client = clientFor(sale.house);
-  const hips = await client.fetchCatalog(sale.externalSaleId);
-  const sessionDates = await client.resolveSessionDates(sale.externalSaleId, hips, {
-    scheduleYear: sale.scheduleYear,
-    scheduleSlug: sale.scheduleSlug,
-  });
+export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[], sessionDates: Map<string, Date>): Promise<UpsertSummary> {
+  const existingHipNumbers = new Set(
+    (await db.hip.findMany({ where: { saleId }, select: { hipNumber: true } })).map((h) => h.hipNumber)
+  );
+  let created = 0;
+  let updated = 0;
 
   for (const hip of hips) {
     const sessionDate = sessionDates.get(hip.hipNumber) ?? null;
     const savedHip = await db.hip.upsert({
-      where: { saleId_hipNumber: { saleId: sale.id, hipNumber: hip.hipNumber } },
+      where: { saleId_hipNumber: { saleId, hipNumber: hip.hipNumber } },
       create: {
-        saleId: sale.id,
+        saleId,
         hipNumber: hip.hipNumber,
         horseName: hip.horseName,
         sex: hip.sex,
@@ -56,6 +67,9 @@ export async function syncCatalog(sale: Sale): Promise<void> {
         sire: hip.sire,
         dam: hip.dam,
         damSire: hip.damSire,
+        breeder: hip.breeder,
+        foalYear: hip.foalYear,
+        color: hip.color,
         sessionDate,
         mediaJson: hip.media as unknown as object,
         saleResultJson: (hip.saleResult ?? null) as unknown as object,
@@ -68,12 +82,17 @@ export async function syncCatalog(sale: Sale): Promise<void> {
         sire: hip.sire,
         dam: hip.dam,
         damSire: hip.damSire,
+        breeder: hip.breeder,
+        foalYear: hip.foalYear,
+        color: hip.color,
         sessionDate,
         mediaJson: hip.media as unknown as object,
         saleResultJson: (hip.saleResult ?? null) as unknown as object,
         lastCatalogSyncAt: new Date(),
       },
     });
+    if (existingHipNumbers.has(hip.hipNumber)) updated += 1;
+    else created += 1;
 
     // Historial de Ventas (ver saleHistoryService.ts): cruce interno
     // contra el resto del catálogo que ya tenemos importado, solo la
@@ -94,6 +113,28 @@ export async function syncCatalog(sale: Sale): Promise<void> {
       }
     }
   }
+
+  return { created, updated };
+}
+
+/**
+ * Paso 1 de cada ciclo: sincroniza el catálogo completo de una venta
+ * contra la casa de ventas correspondiente (solo si ya toca según
+ * pollingPolicy — ver processSale) y guarda/actualiza cada Hip vía
+ * upsertNormalizedHips: datos de catálogo, media, resultado de venta
+ * oficial (precio/comprador/RNA) y fecha de sesión resuelta automáticamente.
+ * Solo aplica a ventas catalogAccess FULL — ver manualCatalogImport.ts para
+ * el camino equivalente de ventas MANUAL_CSV.
+ */
+export async function syncCatalog(sale: Sale): Promise<void> {
+  const client = clientFor(sale.house);
+  const hips = await client.fetchCatalog(sale.externalSaleId);
+  const sessionDates = await client.resolveSessionDates(sale.externalSaleId, hips, {
+    scheduleYear: sale.scheduleYear,
+    scheduleSlug: sale.scheduleSlug,
+  });
+
+  await upsertNormalizedHips(sale.id, hips, sessionDates);
 
   // Refina Sale.startDate con la fecha REAL de sesión más próxima, ahora
   // que el catálogo ya la resolvió por Hip — más precisa que la fecha
@@ -298,49 +339,56 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
  */
 export async function processSale(sale: Sale, organizations: { id: string }[], budget: AnalysisBudget): Promise<void> {
   // Ventas detectadas automáticamente pero sin ID de catálogo real
-  // resuelto (PENDING_ID, ej. Fasig-Tipton) o sin ningún método de acceso
-  // conocido (UNAVAILABLE, ej. OBS) NO se intentan sincronizar — pegarle a
-  // la API de la casa de ventas con un ID inventado no es un método de
-  // acceso autorizado, y además fallaría en cada ciclo sin nunca poder
-  // actualizar lastCatalogCheckAt, generando reintentos infinitos cada 5
-  // minutos. Estas ventas quedan visibles (createdAt/discoveredAt,
-  // announcementUrl) pero inertes hasta que alguien complete el ID real vía
-  // POST /sales — ver comentario en Sale.catalogAccess, schema.prisma.
-  if (sale.catalogAccess !== "FULL") return;
+  // resuelto (PENDING_ID, ej. Fasig-Tipton sin completar) o sin NINGÚN
+  // camino de acceso conocido, ni siquiera manual (UNAVAILABLE) NO tienen
+  // nada que hacer todavía — ver comentario en Sale.catalogAccess,
+  // schema.prisma. FULL y MANUAL_CSV sí pueden llegar a tener Hips
+  // cargados (FULL los trae solo más abajo; MANUAL_CSV los recibe vía
+  // POST /sales/:saleId/catalog/import, ver manualCatalogImport.ts) — en
+  // cualquiera de los dos casos, la ventana de análisis/ranking de más
+  // abajo corre igual, sin diferenciar de dónde vino el catálogo.
+  if (sale.catalogAccess === "PENDING_ID" || sale.catalogAccess === "UNAVAILABLE") return;
 
   const now = new Date();
-  const upcoming = await nextSessionDate(sale.id);
 
-  if (shouldCheckNow(now, sale.lastCatalogCheckAt, upcoming)) {
-    // lastCatalogCheckAt se actualiza pase lo que pase (éxito o error) —
-    // antes solo se actualizaba adentro de syncCatalog() al terminar bien,
-    // así que una venta que fallara SIEMPRE (ej. Keeneland todavía sin
-    // publicar el catálogo de un sale, devolviendo 200 con body vacío)
-    // nunca llegaba a esa línea y quedaba con lastCatalogCheckAt en null
-    // para siempre — shouldCheckNow() la volvía a intentar en CADA ciclo
-    // del scheduler en vez de respetar el intervalo normal de
-    // pollingPolicy, golpeando la API de la casa de ventas mucho más
-    // seguido de lo necesario para un catálogo que legítimamente no
-    // existe todavía.
-    try {
-      await syncCatalog(sale);
-    } catch (err) {
-      // Catálogo todavía no publicado (200 con body vacío) es un estado
-      // ESPERADO para ventas anunciadas con anticipación — se loguea
-      // aparte, sin nivel "error", para no ensuciar los logs con algo que
-      // no hay que arreglar, solo esperar a que la casa de ventas publique.
-      // Cualquier otro fallo (red, HTTP no-2xx, JSON roto de verdad) sigue
-      // yendo como error real.
-      if (err instanceof CatalogNotYetPublishedError) {
-        console.log(`[scheduler] ${sale.name}: ${err.message} Se reintenta según el intervalo normal.`);
-      } else {
-        console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
+  if (sale.catalogAccess === "FULL") {
+    const upcoming = await nextSessionDate(sale.id);
+
+    if (shouldCheckNow(now, sale.lastCatalogCheckAt, upcoming)) {
+      // lastCatalogCheckAt se actualiza pase lo que pase (éxito o error) —
+      // antes solo se actualizaba adentro de syncCatalog() al terminar bien,
+      // así que una venta que fallara SIEMPRE (ej. Keeneland todavía sin
+      // publicar el catálogo de un sale, devolviendo 200 con body vacío)
+      // nunca llegaba a esa línea y quedaba con lastCatalogCheckAt en null
+      // para siempre — shouldCheckNow() la volvía a intentar en CADA ciclo
+      // del scheduler en vez de respetar el intervalo normal de
+      // pollingPolicy, golpeando la API de la casa de ventas mucho más
+      // seguido de lo necesario para un catálogo que legítimamente no
+      // existe todavía.
+      try {
+        await syncCatalog(sale);
+      } catch (err) {
+        // Catálogo todavía no publicado (200 con body vacío) es un estado
+        // ESPERADO para ventas anunciadas con anticipación — se loguea
+        // aparte, sin nivel "error", para no ensuciar los logs con algo que
+        // no hay que arreglar, solo esperar a que la casa de ventas publique.
+        // Cualquier otro fallo (red, HTTP no-2xx, JSON roto de verdad) sigue
+        // yendo como error real.
+        if (err instanceof CatalogNotYetPublishedError) {
+          console.log(`[scheduler] ${sale.name}: ${err.message} Se reintenta según el intervalo normal.`);
+        } else {
+          console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
+        }
+        await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
+        return;
       }
       await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
-      return;
     }
-    await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
   }
+  // MANUAL_CSV: no hay ninguna API contra la que chequear — el catálogo se
+  // actualiza solo cuando alguien sube un CSV nuevo (POST
+  // /sales/:saleId/catalog/import ya deja lastCatalogCheckAt al día en ese
+  // momento). El resto de esta función no distingue el origen del catálogo.
 
   const leadMs = config.rankingLeadHours * 60 * 60 * 1000;
   const sessionDates = await db.hip.findMany({

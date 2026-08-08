@@ -151,15 +151,17 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
   return true;
 }
 
-function buildDetectedMessage(house: SaleHouse, name: string, access: "FULL" | "PENDING_ID" | "UNAVAILABLE"): string {
+function buildDetectedMessage(house: SaleHouse, name: string, access: "FULL" | "MANUAL_CSV" | "PENDING_ID" | "UNAVAILABLE"): string {
   const houseName = { FASIG_TIPTON: "Fasig-Tipton", KEENELAND: "Keeneland", OBS: "OBS" }[house];
   switch (access) {
     case "FULL":
       return `${houseName} publicó una venta nueva: "${name}". RM Selection la detectó automáticamente y ya está sincronizando su catálogo.`;
     case "PENDING_ID":
       return `${houseName} publicó una venta nueva: "${name}". Se detectó el anuncio, pero todavía falta cargar el ID de catálogo para que empiece a sincronizarse.`;
+    case "MANUAL_CSV":
+      return `${houseName} publicó una venta nueva: "${name}". ${houseName} no tiene una API de catálogo pública, así que hace falta subir el CSV/export del catálogo (POST /sales/${"{"}saleId${"}"}/catalog/import) para que empiece a analizarse — a partir de ahí, todo sigue automático.`;
     case "UNAVAILABLE":
-      return `${houseName} publicó una venta nueva: "${name}". Por ahora no existe ningún método de acceso automático al catálogo de OBS, así que solo queda registrada la alerta.`;
+      return `${houseName} publicó una venta nueva: "${name}". Por ahora no existe ningún método de acceso (ni automático ni manual) al catálogo de esta venta, así que solo queda registrada la alerta.`;
   }
 }
 
