@@ -279,18 +279,30 @@ descargar desde un Hip:
   devuelve `503` explicando qué falta; el resto de la API sigue funcionando igual
   (mismo criterio que `ANTHROPIC_API_KEY`).
 
-**Importante — lo que falta y NO está bloqueado por el backend:**
+**Estado (2026-08-08, más tarde el mismo día — motor de sincronización de iOS
+construido):** `RMSelection/Services/SyncEngine.swift` ya existe y está conectado.
+Patrón outbox (`SyncOutboxEntry`, SwiftData): cada edición de decisión, observación,
+foto/video/reporte veterinario del usuario se guarda local igual que siempre y
+ADEMÁS se encola; el motor drena la cola sola (al reconectar — `NWPathMonitor`,
+cada 30s, y al volver a foreground) y hace `pull` de lo que cambió en el servidor,
+fusionándolo en el `HipRecord` local. Fotos/video se suben en dos fases directo a R2
+(`session.upload(for:fromFile:)`, sin cargar el archivo entero en memoria) y se
+descargan igual del lado del `pull`. Conflictos: un `pull` nunca sobrescribe una
+edición local todavía sin confirmar (se detecta por la propia cola de salida).
+Bootstrap de dispositivo nuevo: si un Hip todavía no existe localmente, se crea un
+registro mínimo a partir de la identidad (`house`/`externalSaleId`/`hipNumber`) que
+ya viaja en cada fila del delta. Estado visible en un chip junto al selector de
+idioma (`SyncStatusBadge`, en el header de la pantalla principal): Pendiente/
+Subiendo/Sincronizado/Error/Sin conexión.
 
-1. **Ramon debe crear el bucket de Cloudflare R2** (no se puede crear en su nombre)
-   y cargar las 4 variables en Railway. Hasta entonces, `/me/media` responde `503` de
-   forma controlada.
-2. **El motor de sincronización de iOS (`SyncEngine`)** — hoy decisiones/
-   observaciones/media/reportes viven embebidos como JSON dentro de `HipRecord`
-   (SwiftData local), no como llamadas a estas rutas. Este es el trabajo pendiente
-   más grande: push de cambios pendientes, pull delta (`?since=`), fusión en
-   SwiftData, estados Pendiente/Subiendo/Sincronizado/Error, reintento automático al
-   reconectar, y bootstrap de workspace completo en un dispositivo nuevo (login →
-   bajar todo lo existente antes de mostrar nada vacío).
+**Importante — lo único que sigue bloqueado, y solo para fotos/video/reportes:**
+
+**Ramon debe crear el bucket de Cloudflare R2** (no se puede crear en su nombre) y
+cargar las 4 variables en Railway. Hasta entonces, `/me/media` responde `503` de
+forma controlada — decisiones y observaciones ya sincronizan igual, sin depender de
+esto. Pendiente además: build real en Xcode para confirmar que compila (no hay
+toolchain de Swift disponible en el entorno donde se escribió este código) y la
+prueba de punta a punta con dos dispositivos reales.
 
 ## 4. Escalabilidad y robustez del scheduler
 
