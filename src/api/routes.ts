@@ -391,8 +391,17 @@ router.delete("/me/observations/:id", requireUser, async (req, res) => {
 // en sí, solo genera URLs firmadas.
 //
 // Paso 1: el dispositivo pide una URL de subida.
+//
+// `id` opcional: igual que en POST /me/observations, el cliente puede
+// mandar su propio id (en iOS, el mismo UUID que ya tiene MediaItem.id)
+// para que el mismo archivo tenga el mismo id en el cliente y en el
+// servidor — necesario para poder deduplicar en el `pull` (si no, un
+// dispositivo no podría saber si una fila que bajó es "la misma foto que
+// yo subí" o una nueva) y para que reintentar una subida interrumpida sea
+// un upsert idempotente en vez de crear un registro duplicado.
 router.post("/me/media", requireUser, async (req, res) => {
-  const { hipId, kind, contentType, byteSize, deviceId } = req.body as {
+  const { id: clientId, hipId, kind, contentType, byteSize, deviceId } = req.body as {
+    id?: string;
     hipId?: string;
     kind?: "PHOTO" | "VIDEO" | "VET_REPORT" | "PEDIGREE_CHART";
     contentType?: string;
@@ -403,13 +412,20 @@ router.post("/me/media", requireUser, async (req, res) => {
     res.status(400).json({ error: "Faltan campos requeridos: hipId, kind." });
     return;
   }
-  // Se genera el id ANTES del insert (en vez del cuid() automático de
-  // Prisma) para poder calcular storageKey en la misma escritura — evita
-  // una segunda ronda a la base solo para corregir la clave.
-  const id = randomUUID();
+  // Se genera/usa el id ANTES del insert para poder calcular storageKey en
+  // la misma escritura — evita una segunda ronda a la base solo para
+  // corregir la clave.
+  const id = clientId ?? randomUUID();
   const storageKey = buildStorageKey({ organizationId: req.user!.organizationId, hipId, kind, mediaAssetId: id, contentType });
-  const asset = await db.mediaAsset.create({
-    data: { id, userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, kind, contentType, byteSize, storageKey },
+  const data = { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, kind, contentType, byteSize, storageKey };
+  const asset = await db.mediaAsset.upsert({
+    where: { id },
+    create: { id, ...data },
+    // Reintento de una subida que no llegó a confirmarse: vuelve a
+    // PENDING_UPLOAD (no toca uploadStatus directamente porque el default
+    // de creación ya lo deja ahí, y un update explícito lo dejaría igual)
+    // y limpia un tombstone viejo si lo hubiera.
+    update: { ...data, deletedAt: null },
   });
   try {
     const uploadUrl = createUploadUrl(storageKey);
@@ -450,11 +466,15 @@ router.get("/me/media", requireUser, async (req, res) => {
       OR: [{ uploadStatus: "PROCESSED" }, { deletedAt: { not: null } }],
     },
     orderBy: { updatedAt: "asc" },
+    include: { hip: hipIdentitySelect },
   });
-  const withReadUrl = assets.map((a) => ({
-    ...a,
-    readUrl: a.deletedAt || a.uploadStatus !== "PROCESSED" ? null : resolveReadUrlSafe(a.storageKey),
-  }));
+  const withReadUrl = assets.map((a) => {
+    const withIdentity = withHipIdentity(a);
+    return {
+      ...withIdentity,
+      readUrl: a.deletedAt || a.uploadStatus !== "PROCESSED" ? null : resolveReadUrlSafe(a.storageKey),
+    };
+  });
   res.json(withReadUrl);
 });
 
@@ -489,8 +509,9 @@ router.get("/me/vet-reports", requireUser, async (req, res) => {
   const reports = await db.vetReport.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
+    include: { hip: hipIdentitySelect },
   });
-  res.json(reports);
+  res.json(reports.map(withHipIdentity));
 });
 
 router.post("/me/vet-reports", requireUser, async (req, res) => {
