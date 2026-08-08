@@ -61,16 +61,27 @@ export function blockAverages(scores: ConformationScores) {
   };
 }
 
-// Misma fórmula que RMSelectionReferenceComparisonService: 1/3 + 1/3 + 1/3,
-// cortes 8.6 Comprar, >6.5 Revisar, resto Descartar.
+// Cortes de clasificación — 8.6 Comprar, >6.5 Revisar, resto Descartar.
 export const CLASSIFICATION_THRESHOLDS = {
   comprarMinimo: 8.6,
   revisarMinimo: 6.5,
 };
 
+// CORRECCIÓN (2026-08-08 — puerto del fix ya aplicado en ConformationScores.swift
+// el 2026-08-06): un bloque no evaluado de verdad (ej. Marcha sin video del Hip,
+// ver anthropicClient.ts que fuerza gait.* a 0 en ese caso) NO se promedia como
+// si valiera 0. Antes esta función siempre dividía por 3, así que un bloque
+// faltante arrastraba el promedio para abajo de forma incorrecta — ej.
+// (10 + 10 + 0) / 3 = 6.67 en vez de (10 + 10) / 2 = 10. Un puntaje genuino
+// asignado por la IA mirando fotos/video reales prácticamente nunca da 0 en
+// TODAS las subcategorías de un bloque a la vez, así que ">0" es el mismo
+// indicador de "disponible" que usa la app — sin agregar un campo nuevo al
+// modelo ni romper compatibilidad con análisis ya guardados.
 export function overallScore(scores: ConformationScores): number {
   const { functionalAnatomy, limbAlignment, gait } = blockAverages(scores);
-  return (functionalAnatomy + limbAlignment + gait) / 3;
+  const available = [functionalAnatomy, limbAlignment, gait].filter((v) => v > 0);
+  if (available.length === 0) return 0;
+  return available.reduce((a, b) => a + b, 0) / available.length;
 }
 
 export type Classification = "Comprar" | "Revisar" | "Descartar";
