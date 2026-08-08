@@ -245,11 +245,55 @@ router.post("/hips/sale-history/refresh", requireUser, async (req, res) => {
   res.json(await readSaleHistory(hip.id));
 });
 
+// Resuelve la identidad que ya conoce la app (house + externalSaleId +
+// hipNumber, ver SaleOption.swift) al id interno (cuid) que usa el
+// servidor para TODO lo que un usuario sincroniza sobre un Hip —
+// decisiones, observaciones, medios, reportes veterinarios, puntaje
+// manual (ver MARK más abajo). Necesario porque la identidad de la app
+// nunca coincidía con el id de la base (a diferencia de /ranking o /sales,
+// que resuelven todo del lado del servidor sin exponer ningún id interno)
+// — sin esto, la app no tiene ningún hipId válido para mandar en esas
+// rutas. Se cachea del lado de la app (ver HipIdentityResolver.swift) para
+// no resolver esto en cada sincronización.
+router.get("/hips/resolve", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  const hipNumber = req.query.hipNumber as string | undefined;
+
+  if (!house || !externalSaleId || !hipNumber) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId, hipNumber." });
+    return;
+  }
+
+  const hip = await findHipByIdentity(house, externalSaleId, hipNumber);
+  if (!hip) {
+    res.status(404).json({ error: "No se encontró ese Hip." });
+    return;
+  }
+
+  res.json({ hipId: hip.id });
+});
+
 // MARK: - Decisiones y observaciones del usuario (sincronización entre
 // dispositivos — ver ARCHITECTURE.md sección 3). Estas rutas ya quedan
 // disponibles aunque la app de iOS todavía no las llame: cuando se haga el
 // trabajo del lado de iOS para romper decisiones/observaciones en
 // entidades sincronizables, el backend no va a necesitar otro deploy.
+
+// Identidad mínima del Hip (casa + id de venta + número) que se suma a
+// cada fila de decisión/observación en el delta — sin esto, un dispositivo
+// que TODAVÍA no descargó/abrió ese Hip localmente (ej. recién logueado)
+// no tendría ninguna forma de saber a qué Hip corresponde el hipId interno
+// que devuelve la base, y la decisión/observación bajada quedaría
+// huérfana sin poder mostrarse. Con esto, el dispositivo puede crear el
+// Hip localmente (con lo mínimo: número + identidad de venta) si todavía
+// no lo tenía, en vez de descartar el registro.
+const hipIdentitySelect = { select: { hipNumber: true, sale: { select: { house: true, externalSaleId: true } } } };
+
+function withHipIdentity<T extends { hip: { hipNumber: string; sale: { house: string; externalSaleId: string } } }>(row: T) {
+  const { hip, ...rest } = row;
+  return { ...rest, hipIdentity: { hipNumber: hip.hipNumber, house: hip.sale.house, externalSaleId: hip.sale.externalSaleId } };
+}
 
 // Todo lo que cambió desde `since` (o todo si no se manda) — patrón de
 // sincronización delta: el dispositivo pide "qué cambió" en vez de bajar
@@ -259,8 +303,9 @@ router.get("/me/decisions", requireUser, async (req, res) => {
   const decisions = await db.userDecision.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
+    include: { hip: hipIdentitySelect },
   });
-  res.json(decisions);
+  res.json(decisions.map(withHipIdentity));
 });
 
 router.put("/me/decisions/:hipId", requireUser, async (req, res) => {
@@ -292,12 +337,21 @@ router.get("/me/observations", requireUser, async (req, res) => {
   const observations = await db.hipObservation.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
+    include: { hip: hipIdentitySelect },
   });
-  res.json(observations);
+  res.json(observations.map(withHipIdentity));
 });
 
+// `id` opcional: el cliente puede mandar su propio UUID (así ya se genera
+// localmente en iOS, ver HipObservation.id) para que ESTE mismo id quede
+// como clave primaria en el servidor — necesario para que un reintento de
+// sincronización (ej. la respuesta del primer POST se perdió por la red,
+// pero el insert sí se hizo) sea un upsert idempotente en vez de crear una
+// fila duplicada. Sin `id`, se genera uno server-side (cuid), igual que
+// antes — mantiene compatibilidad con cualquier otro caller.
 router.post("/me/observations", requireUser, async (req, res) => {
-  const { hipId, text, category, deviceId } = req.body as {
+  const { id, hipId, text, category, deviceId } = req.body as {
+    id?: string;
     hipId: string;
     text: string;
     category?: "CONFORMATION" | "MOVEMENT" | "PEDIGREE" | "GENERAL";
@@ -307,9 +361,16 @@ router.post("/me/observations", requireUser, async (req, res) => {
     res.status(400).json({ error: "Faltan campos requeridos: hipId, text." });
     return;
   }
-  const observation = await db.hipObservation.create({
-    data: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, text, category, deviceId },
-  });
+  const data = { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, text, category, deviceId };
+  const observation = id
+    ? await db.hipObservation.upsert({
+        where: { id },
+        create: { id, ...data },
+        // Solo re-sincroniza (no pisa un borrado con datos viejos si el
+        // tombstone ya se guardó) — deletedAt: null solo si no estaba borrada.
+        update: { ...data },
+      })
+    : await db.hipObservation.create({ data });
   res.json(observation);
 });
 
