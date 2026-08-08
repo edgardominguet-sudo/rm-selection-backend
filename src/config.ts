@@ -43,4 +43,26 @@ export const config = {
   // chequear cada 6 horas alcanza de sobra y es respetuoso con sus
   // servidores. Formato cron estándar.
   discoveryIntervalCron: process.env.DISCOVERY_INTERVAL_CRON ?? "0 */6 * * *",
+
+  // Almacenamiento de objetos para medios cargados por el usuario (fotos de
+  // reporte veterinario, video/fotos propias) — sincronización
+  // multidispositivo, 2026-08-08. Cloudflare R2 (API compatible con S3),
+  // elegido por costo (sin cargo de egreso) y porque no exige ningún SDK
+  // nuevo más allá de @aws-sdk/client-s3. Todos opcionales a propósito: sin
+  // configurar, /me/media devuelve 503 en vez de romper el resto de la API
+  // (mismo criterio que anthropicApiKey arriba) — así el resto del deploy
+  // no queda bloqueado esperando que Ramon cree el bucket.
+  r2AccountId: process.env.R2_ACCOUNT_ID ?? "",
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+  r2BucketName: process.env.R2_BUCKET_NAME ?? "",
+  // URL pública (dominio propio o el *.r2.dev que da Cloudflare) desde
+  // donde se puede LEER un objeto ya subido sin firmar nada — evita
+  // generar una presigned URL de lectura en cada GET. Si no se configura,
+  // se cae a una presigned URL de lectura (más lenta pero funciona igual).
+  r2PublicBaseUrl: process.env.R2_PUBLIC_BASE_URL ?? "",
 };
+
+export function isObjectStorageConfigured(): boolean {
+  return Boolean(config.r2AccountId && config.r2AccessKeyId && config.r2SecretAccessKey && config.r2BucketName);
+}

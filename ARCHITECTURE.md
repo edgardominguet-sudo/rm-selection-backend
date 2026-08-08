@@ -245,16 +245,52 @@ distintos se registren solos — no se construye antes de que haga falta.
 
 ## 3. Sincronización entre dispositivos
 
-El servidor pasa a ser la fuente de verdad de decisiones/observaciones; SwiftData
-en el dispositivo queda como caché local. Resolución de conflictos: el más
-reciente gana (por `updatedAt`) — suficiente para el patrón de uso real (un
-comprador, normalmente un dispositivo activo a la vez durante la subasta); no vale
-la pena construir fusión más fina hasta que haga falta de verdad.
+El servidor pasa a ser la fuente de verdad de decisiones/observaciones/medios/
+puntajes; SwiftData en el dispositivo queda como caché local. Resolución de
+conflictos: el más reciente gana (por `updatedAt`) — suficiente para el patrón de
+uso real (un comprador, normalmente un dispositivo activo a la vez durante la
+subasta); no vale la pena construir fusión más fina hasta que haga falta de verdad.
 
-**Importante**: esto requiere un cambio del lado de iOS (hoy decisiones/observaciones
-viven embebidas como JSON dentro de `HipRecord`, no como entidades propias) — se
-deja como proyecto separado, después de que el backend esté estable en producción,
-no bloquea el deploy a Railway.
+**Estado (2026-08-08 — sincronización multidispositivo completa del lado del
+servidor):** además de `UserDecision`/`HipObservation` (ya existían), el esquema y
+las rutas `/api/v1/me/*` ahora cubren TODO lo que un usuario puede crear/modificar/
+descargar desde un Hip:
+
+- **`VetReport`**: reporte veterinario (metadata + notas; el archivo en sí es un
+  `MediaAsset`). `GET/POST/PUT/DELETE /me/vet-reports`.
+- **`MediaAsset`**: cualquier foto/video/reporte/gráfico de pedigree que el usuario
+  capture o cargue — subida en dos fases contra Cloudflare R2 (nunca pasa por este
+  servidor): `POST /me/media` crea el registro y devuelve una URL PUT firmada, el
+  dispositivo sube el archivo directo a esa URL, `PUT /me/media/:id/confirm` cierra
+  el ciclo. `GET /me/media?since=` (delta, con `readUrl` resuelta) y
+  `DELETE /me/media/:id` (tombstone + borrado best-effort del objeto en R2).
+- **Puntaje manual**: `PUT /me/hips/:hipId/manual-score` — un usuario puede
+  cargar/corregir a mano el puntaje de un Hip desde cualquier dispositivo. Se guarda
+  como una versión más de `AnalysisResult` (`source = MANUAL`, ver enum
+  `AnalysisSource`) en vez de una tabla paralela, así reusa el mismo puntero
+  `CurrentHipAnalysis` y el mismo historial versionado que ya usa el análisis de IA
+  — ninguna pantalla que ya lee "análisis vigente" necesita saber que existe esta
+  ruta nueva.
+- **Firma SigV4 propia** (`src/storage/r2Client.ts`) en vez de instalar
+  `@aws-sdk/client-s3`: evita sumar una dependencia nueva pesada solo para generar
+  URLs firmadas; usa únicamente el módulo `crypto` de Node. `R2_ACCOUNT_ID`,
+  `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (y opcional
+  `R2_PUBLIC_BASE_URL`) — ver `.env.example`. Sin estas 4 variables, `/me/media`
+  devuelve `503` explicando qué falta; el resto de la API sigue funcionando igual
+  (mismo criterio que `ANTHROPIC_API_KEY`).
+
+**Importante — lo que falta y NO está bloqueado por el backend:**
+
+1. **Ramon debe crear el bucket de Cloudflare R2** (no se puede crear en su nombre)
+   y cargar las 4 variables en Railway. Hasta entonces, `/me/media` responde `503` de
+   forma controlada.
+2. **El motor de sincronización de iOS (`SyncEngine`)** — hoy decisiones/
+   observaciones/media/reportes viven embebidos como JSON dentro de `HipRecord`
+   (SwiftData local), no como llamadas a estas rutas. Este es el trabajo pendiente
+   más grande: push de cambios pendientes, pull delta (`?since=`), fusión en
+   SwiftData, estados Pendiente/Subiendo/Sincronizado/Error, reintento automático al
+   reconectar, y bootstrap de workspace completo en un dispositivo nuevo (login →
+   bajar todo lo existente antes de mostrar nada vacío).
 
 ## 4. Escalabilidad y robustez del scheduler
 
@@ -300,27 +336,29 @@ Ya implementado, para que el proceso único sea confiable en producción:
 Organization/multi-tenant, UserDecision, HipObservation, historial de
 AnalysisResult scopeado por organización, CurrentHipAnalysis,
 RankingSnapshotVersion), el cambio de autenticación a nivel User+Organization,
-mover la API a `/api/v1`, toda la robustez del scheduler (punto 4), y el
-descubrimiento automático de ventas nuevas (punto 1b).
+mover la API a `/api/v1`, toda la robustez del scheduler (punto 4), el
+descubrimiento automático de ventas nuevas (punto 1b), y (2026-08-08) el modelo y
+las rutas completas de sincronización multidispositivo del lado del servidor:
+`VetReport`, `MediaAsset` + subida en dos fases contra R2, y puntaje manual
+(`AnalysisSource.MANUAL`) — ver punto 3.
 
 **Después** (documentado, no construido): login real multiusuario (registro propio
 por organización, no solo el owner sembrado a mano), notificaciones push
 (integración APNs), cola de trabajos (BullMQ/Redis), dashboard de administración,
 fusión de conflictos más fina que "el más reciente gana", filtrado de "qué
-organización sigue qué venta" (necesario solo cuando haya muchas organizaciones),
-copiar media de las casas de venta a almacenamiento propio (Cloudflare R2 o S3), y
-el trabajo del lado de iOS para romper decisiones/observaciones en entidades
-propias sincronizables.
+organización sigue qué venta" (necesario solo cuando haya muchas organizaciones), y
+el `SyncEngine` del lado de iOS (el backend ya expone todo lo que necesita, ver
+punto 3).
 
-**Decisión tomada sobre el storage de media**: por ahora el backend guarda
-únicamente las URLs originales que publica cada casa de ventas (`Hip.mediaJson`),
-sin copiar nada a almacenamiento propio. Riesgo aceptado: si una casa de ventas
-rota o da de baja una URL después de la venta, se pierde el acceso a esa foto/video
-puntual (el puntaje ya calculado en `AnalysisResult` NO se pierde, solo la imagen
-para volver a verla). Esto queda preparado para activarse más adelante sin
-rediseño: `mediaJson` ya es JSON flexible, así que el día que se sume
-almacenamiento propio alcanza con agregar un campo (`storedUrl` o similar) a cada
-item de ese JSON durante la descarga/análisis, sin migración de esquema. Requiere
-que el usuario cree la cuenta de Cloudflare R2/S3 primero (no se puede crear en su
-nombre) y revisar costos y condiciones de uso de cada casa de ventas antes de
-activarlo.
+**Decisión tomada sobre el storage de media del CATÁLOGO** (distinto de la media
+que el usuario carga a mano, ver punto 3): el backend sigue guardando únicamente
+las URLs originales que publica cada casa de ventas (`Hip.mediaJson`), sin copiar
+nada a almacenamiento propio. Riesgo aceptado: si una casa de ventas rota o da de
+baja una URL después de la venta, se pierde el acceso a esa foto/video puntual (el
+puntaje ya calculado en `AnalysisResult` NO se pierde, solo la imagen para volver a
+verla). Esto queda preparado para activarse más adelante sin rediseño: `mediaJson`
+ya es JSON flexible, así que el día que se sume almacenamiento propio para el
+catálogo alcanza con agregar un campo (`storedUrl` o similar) a cada item de ese
+JSON durante la descarga/análisis, sin migración de esquema — puede reusar el mismo
+`r2Client.ts` que ya existe para la media del usuario. Requiere revisar costos y
+condiciones de uso de cada casa de ventas antes de activarlo.

@@ -35,6 +35,41 @@ enum ObservationCategory {
   GENERAL
 }
 
+// De dónde salió un AnalysisResult — a pedido (2026-08-08, sincronización
+// multidispositivo): antes todo análisis era de IA. Ahora un usuario puede
+// cargar/corregir un puntaje a mano desde cualquier dispositivo, y ese
+// puntaje tiene que sincronizarse igual que uno de IA — se modela como una
+// versión más dentro del mismo historial (AnalysisResult), no como una
+// tabla paralela, así se reusa el mecanismo de versión/puntero vigente
+// (CurrentHipAnalysis) que ya existe y ya está bien probado.
+enum AnalysisSource {
+  AI
+  MANUAL
+}
+
+// Tipo de archivo multimedia que un usuario agrega a mano a un Hip (no el
+// que ya viene del catálogo de la casa de ventas — eso sigue viviendo en
+// Hip.mediaJson). Mismos 4 tipos que ya distingue la app en
+// MediaItem.Kind (iOS) — se mantiene la misma nomenclatura para que el
+// mapeo cliente/servidor sea directo.
+enum MediaKind {
+  PHOTO
+  VIDEO
+  VET_REPORT
+  PEDIGREE_CHART
+}
+
+// Estado de subida de un MediaAsset visto desde el backend — normalmente
+// un asset solo llega a existir en esta tabla cuando ya está en
+// PROCESSED (la app confirma después de subir el archivo al storage), pero
+// se deja el estado explícito para poder detectar/limpiar asset huérfanos
+// (se pidió una URL pre-firmada y nunca se confirmó la subida).
+enum MediaUploadStatus {
+  PENDING_UPLOAD
+  PROCESSED
+  FAILED
+}
+
 // Un "equipo de trabajo" o comprador independiente. Hoy existe una sola
 // Organization (tu equipo, todos viendo el mismo análisis) — pero el día
 // que RM Selection sume compradores que no deben ver las decisiones,
@@ -57,6 +92,8 @@ model Organization {
   referenceHorses         ReferenceHorse[]
   decisions               UserDecision[]
   observations            HipObservation[]
+  vetReports              VetReport[]
+  mediaAssets             MediaAsset[]
 }
 
 // Un usuario de RM Selection. Hoy hay uno solo (vos), pero se modela desde
@@ -84,6 +121,8 @@ model User {
   decisions   UserDecision[]
   observations HipObservation[]
   catalogImports CatalogImport[]
+  vetReports    VetReport[]
+  mediaAssets   MediaAsset[]
 }
 
 // Un dispositivo (iPhone/iPad) desde el que un usuario usa la app. Deja
@@ -107,6 +146,8 @@ model Device {
 
   decisions   UserDecision[]
   observations HipObservation[]
+  vetReports    VetReport[]
+  mediaAssets   MediaAsset[]
 }
 
 // Qué tan utilizable es el catálogo estructurado de una venta:
@@ -334,6 +375,8 @@ model Hip {
 
   decisions         UserDecision[]
   observations      HipObservation[]
+  vetReports        VetReport[]
+  mediaAssets       MediaAsset[]
 
   // Historial de Ventas (ver HorseSaleHistory más abajo): apariciones
   // anteriores de este mismo caballo que se muestran cuando se abre ESTE
@@ -452,6 +495,15 @@ model AnalysisResult {
   version               Int      @default(1)
   // Por qué se disparó este análisis: "initial" | "media_changed" | "manual".
   triggerReason         String   @default("initial")
+  // AI (default, siempre fue así) o MANUAL — a pedido (2026-08-08,
+  // sincronización multidispositivo): un usuario puede cargar/corregir un
+  // puntaje a mano desde cualquier dispositivo. Se guarda como una versión
+  // más en el mismo historial en vez de una tabla paralela, para reusar
+  // el puntero CurrentHipAnalysis y el mecanismo de versión que ya existe.
+  source                AnalysisSource @default(AI)
+  // Quién cargó el puntaje manual (null para análisis de IA).
+  enteredByUserId        String?
+  deviceId               String?
   // Huella de la media (fotos/video) que se usó en ESTE análisis puntual —
   // permite saber después exactamente qué contenido produjo qué puntaje,
   // más preciso que solo guardar el hash "actual" en Hip.
@@ -556,6 +608,87 @@ model HipObservation {
   deletedAt  DateTime?
 
   @@index([userId, hipId])
+}
+
+// Reporte veterinario cargado por el usuario sobre un Hip (foto del reporte
+// en papel + notas) — a pedido (2026-08-08, sincronización multidispositivo)
+// para que un reporte cargado en un dispositivo aparezca en todos los demás
+// de la misma cuenta. El archivo real vive en almacenamiento de objetos
+// (ver MediaAsset/mediaAssetId); este modelo es el registro/metadata.
+// Mismo criterio de sync que UserDecision/HipObservation: servidor como
+// fuente de verdad, tombstone para borrados.
+model VetReport {
+  id             String       @id @default(cuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Ver comentario equivalente en UserDecision.organizationId.
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hipId          String
+  hip            Hip          @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  deviceId       String?
+  device         Device?      @relation(fields: [deviceId], references: [id])
+
+  // La foto/escaneo del reporte, si ya se subió. Opcional porque el
+  // registro puede crearse antes de que termine la subida del archivo
+  // (ver MediaAsset.uploadStatus).
+  mediaAssetId   String?      @unique
+  mediaAsset     MediaAsset?  @relation(fields: [mediaAssetId], references: [id])
+
+  notes          String?
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+
+  @@index([userId, hipId])
+  @@index([hipId])
+}
+
+// Un archivo de medios (foto, video, reporte veterinario, gráfico de
+// pedigree) que el usuario capturó o cargó desde cualquier dispositivo —
+// a pedido (2026-08-08, sincronización multidispositivo). Antes de esto,
+// todos los medios vivían solo como archivos locales en el Documents del
+// dispositivo, sin ningún registro compartido; por eso no se veían en
+// otros dispositivos de la misma cuenta.
+//
+// Flujo de subida en dos fases (presigned URL contra almacenamiento de
+// objetos tipo S3/R2): el cliente crea este registro con uploadStatus =
+// PENDING_UPLOAD y recibe una URL firmada, sube el archivo directamente a
+// esa URL, y luego confirma para pasar a PROCESSED. Si la subida falla o
+// nunca se confirma, queda en PENDING_UPLOAD/FAILED y no se muestra a
+// otros dispositivos como disponible.
+model MediaAsset {
+  id             String             @id @default(cuid())
+  userId         String
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Ver comentario equivalente en UserDecision.organizationId.
+  organizationId String
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hipId          String
+  hip            Hip                @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  deviceId       String?
+  device         Device?            @relation(fields: [deviceId], references: [id])
+
+  kind           MediaKind
+  // Clave del objeto en el bucket (no la URL pública firmada, que expira);
+  // el backend genera la URL de lectura/escritura firmada a partir de esto
+  // cuando se necesita.
+  storageKey     String
+  // MIME type original, para poder servir/descargar el archivo correctamente.
+  contentType    String?
+  // Tamaño en bytes, informativo (progreso de subida, límites de cuota).
+  byteSize       Int?
+
+  uploadStatus   MediaUploadStatus  @default(PENDING_UPLOAD)
+  vetReport      VetReport?
+
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  deletedAt      DateTime?
+
+  @@index([userId, hipId])
+  @@index([hipId, kind])
 }
 
 // El ranking ya armado y ordenado para una venta+jornada — lo que la app

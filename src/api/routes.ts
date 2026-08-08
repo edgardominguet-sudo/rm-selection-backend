@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { Router } from "express";
 import { db } from "../db";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
@@ -9,6 +10,13 @@ import {
   MissingHipNumberColumnError,
   SaleNotFoundError,
 } from "../saleHouses/manualCatalogImport";
+import {
+  buildStorageKey,
+  createUploadUrl,
+  resolveReadUrl,
+  deleteObject,
+  ObjectStorageNotConfiguredError,
+} from "../storage/r2Client";
 
 export const router = Router();
 
@@ -312,6 +320,206 @@ router.delete("/me/observations/:id", requireUser, async (req, res) => {
     data: { deletedAt: new Date() },
   });
   res.json({ ok: true });
+});
+
+// MARK: - Medios del usuario (fotos/videos propios, reportes veterinarios)
+// — sincronización multidispositivo, 2026-08-08. Antes de esto, un archivo
+// capturado en un dispositivo NUNCA aparecía en los demás: vivía solo en el
+// Documents local de ESE dispositivo. Subida en dos fases contra
+// Cloudflare R2 (ver storage/r2Client.ts): el servidor nunca ve el archivo
+// en sí, solo genera URLs firmadas.
+//
+// Paso 1: el dispositivo pide una URL de subida.
+router.post("/me/media", requireUser, async (req, res) => {
+  const { hipId, kind, contentType, byteSize, deviceId } = req.body as {
+    hipId?: string;
+    kind?: "PHOTO" | "VIDEO" | "VET_REPORT" | "PEDIGREE_CHART";
+    contentType?: string;
+    byteSize?: number;
+    deviceId?: string;
+  };
+  if (!hipId || !kind) {
+    res.status(400).json({ error: "Faltan campos requeridos: hipId, kind." });
+    return;
+  }
+  // Se genera el id ANTES del insert (en vez del cuid() automático de
+  // Prisma) para poder calcular storageKey en la misma escritura — evita
+  // una segunda ronda a la base solo para corregir la clave.
+  const id = randomUUID();
+  const storageKey = buildStorageKey({ organizationId: req.user!.organizationId, hipId, kind, mediaAssetId: id, contentType });
+  const asset = await db.mediaAsset.create({
+    data: { id, userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, kind, contentType, byteSize, storageKey },
+  });
+  try {
+    const uploadUrl = createUploadUrl(storageKey);
+    res.json({ id: asset.id, storageKey, uploadUrl, expiresInSeconds: 900 });
+  } catch (err) {
+    if (err instanceof ObjectStorageNotConfiguredError) {
+      res.status(503).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+// Paso 2: el dispositivo confirma que el archivo ya se subió a la URL firmada.
+router.put("/me/media/:id/confirm", requireUser, async (req, res) => {
+  const { id } = req.params;
+  const asset = await db.mediaAsset.findFirst({ where: { id, userId: req.user!.id } });
+  if (!asset) {
+    res.status(404).json({ error: "MediaAsset no encontrado." });
+    return;
+  }
+  const updated = await db.mediaAsset.update({ where: { id }, data: { uploadStatus: "PROCESSED" } });
+  res.json(updated);
+});
+
+// Delta — mismo patrón que /me/decisions y /me/observations. Solo se
+// devuelven los assets ya PROCESSED (los PENDING_UPLOAD todavía no tienen
+// nada real para leer en otro dispositivo) más los tombstones, para que un
+// dispositivo que canceló una subida a mitad de camino se entere del borrado.
+router.get("/me/media", requireUser, async (req, res) => {
+  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const hipId = req.query.hipId as string | undefined;
+  const assets = await db.mediaAsset.findMany({
+    where: {
+      userId: req.user!.id,
+      ...(hipId ? { hipId } : {}),
+      ...(since ? { updatedAt: { gt: since } } : {}),
+      OR: [{ uploadStatus: "PROCESSED" }, { deletedAt: { not: null } }],
+    },
+    orderBy: { updatedAt: "asc" },
+  });
+  const withReadUrl = assets.map((a) => ({
+    ...a,
+    readUrl: a.deletedAt || a.uploadStatus !== "PROCESSED" ? null : resolveReadUrlSafe(a.storageKey),
+  }));
+  res.json(withReadUrl);
+});
+
+function resolveReadUrlSafe(storageKey: string): string | null {
+  try {
+    return resolveReadUrl(storageKey);
+  } catch {
+    return null;
+  }
+}
+
+router.delete("/me/media/:id", requireUser, async (req, res) => {
+  const { id } = req.params;
+  const asset = await db.mediaAsset.findFirst({ where: { id, userId: req.user!.id } });
+  if (!asset) {
+    res.status(404).json({ error: "MediaAsset no encontrado." });
+    return;
+  }
+  await db.mediaAsset.update({ where: { id }, data: { deletedAt: new Date() } });
+  // Best-effort: si el borrado físico en R2 falla (bucket no configurado
+  // en este momento, etc.), el tombstone ya quedó guardado — no se pierde
+  // la sincronización del borrado por un problema del lado del storage.
+  deleteObject(asset.storageKey).catch((err) => console.error(`[media] No se pudo borrar el objeto ${asset.storageKey} de R2:`, err));
+  res.json({ ok: true });
+});
+
+// MARK: - Reportes veterinarios — mismo criterio de sincronización que
+// UserDecision/HipObservation. El archivo en sí es un MediaAsset (kind
+// VET_REPORT); este registro es la metadata + notas.
+router.get("/me/vet-reports", requireUser, async (req, res) => {
+  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const reports = await db.vetReport.findMany({
+    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
+    orderBy: { updatedAt: "asc" },
+  });
+  res.json(reports);
+});
+
+router.post("/me/vet-reports", requireUser, async (req, res) => {
+  const { hipId, mediaAssetId, notes, deviceId } = req.body as {
+    hipId?: string;
+    mediaAssetId?: string;
+    notes?: string;
+    deviceId?: string;
+  };
+  if (!hipId) {
+    res.status(400).json({ error: "Falta hipId." });
+    return;
+  }
+  const report = await db.vetReport.create({
+    data: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, mediaAssetId, notes, deviceId },
+  });
+  res.json(report);
+});
+
+router.put("/me/vet-reports/:id", requireUser, async (req, res) => {
+  const { id } = req.params;
+  const { mediaAssetId, notes } = req.body as { mediaAssetId?: string; notes?: string };
+  const existing = await db.vetReport.findFirst({ where: { id, userId: req.user!.id } });
+  if (!existing) {
+    res.status(404).json({ error: "VetReport no encontrado." });
+    return;
+  }
+  const updated = await db.vetReport.update({ where: { id }, data: { mediaAssetId, notes, deletedAt: null } });
+  res.json(updated);
+});
+
+router.delete("/me/vet-reports/:id", requireUser, async (req, res) => {
+  const { id } = req.params;
+  await db.vetReport.updateMany({ where: { id, userId: req.user!.id }, data: { deletedAt: new Date() } });
+  res.json({ ok: true });
+});
+
+// MARK: - Puntaje manual — a pedido (2026-08-08, sincronización
+// multidispositivo): un usuario puede cargar/corregir a mano el puntaje de
+// un Hip desde cualquier dispositivo, y ese puntaje tiene que verse en los
+// demás igual que uno de IA. Se agrega como una versión más del mismo
+// historial (AnalysisResult, source=MANUAL) — mismo mecanismo de
+// version/CurrentHipAnalysis que ya usa el análisis automático (ver
+// rankingService.ts), así el resto de la app (historial, "análisis
+// vigente") no necesita ninguna rama de código nueva para mostrarlo.
+router.put("/me/hips/:hipId/manual-score", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  const { conformationScores, overallScore, classification, summary, deviceId } = req.body as {
+    conformationScores?: object;
+    overallScore?: number;
+    classification?: string;
+    summary?: string;
+    deviceId?: string;
+  };
+  if (!conformationScores || typeof overallScore !== "number" || !classification) {
+    res.status(400).json({ error: "Faltan campos requeridos: conformationScores, overallScore, classification." });
+    return;
+  }
+  const hip = await db.hip.findUnique({ where: { id: hipId } });
+  if (!hip) {
+    res.status(404).json({ error: "Hip no encontrado." });
+    return;
+  }
+  const organizationId = req.user!.organizationId;
+  const previousVersionCount = await db.analysisResult.count({ where: { hipId, organizationId } });
+  const created = await db.$transaction(async (tx) => {
+    const result = await tx.analysisResult.create({
+      data: {
+        hipId,
+        organizationId,
+        version: previousVersionCount + 1,
+        triggerReason: "manual",
+        source: "MANUAL",
+        enteredByUserId: req.user!.id,
+        deviceId,
+        conformationScoresJson: conformationScores as object,
+        overallScore,
+        classification,
+        summary,
+        model: "manual",
+      },
+    });
+    await tx.currentHipAnalysis.upsert({
+      where: { hipId_organizationId: { hipId, organizationId } },
+      create: { hipId, organizationId, analysisResultId: result.id },
+      update: { analysisResultId: result.id },
+    });
+    return result;
+  });
+  res.json(created);
 });
 
 // Registro/heartbeat de dispositivo — se llama al abrir la app; deja
