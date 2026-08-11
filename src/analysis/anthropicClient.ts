@@ -147,17 +147,21 @@ async function sendWithRetry(client: Anthropic, content: ContentBlock[], attempt
     return await client.messages.create({
       model: config.anthropicModel,
       max_tokens: 1536,
-      // temperature: 0 — auditoría de reproducibilidad (2026-08-11, a
-      // pedido). Sin este parámetro, la API usa su default (no es 0), así
-      // que el modelo podía generar puntajes distintos con EXACTAMENTE las
-      // mismas imágenes de entrada. 0 = muestreo greedy (siempre el token
-      // más probable), reduce drásticamente la variabilidad de un llamado
-      // al otro. No es una garantía matemática absoluta de bit-a-bit
-      // idéntico (limitación conocida de la infraestructura de inferencia
-      // de los proveedores de LLM en general, no algo controlable desde
-      // acá), pero elimina la fuente de aleatoriedad intencional que
-      // existía. No toca metodología, pesos ni criterios RM.
-      temperature: 0,
+      // NOTA (2026-08-11): se había agregado temperature:0 acá como parte
+      // de la auditoría de reproducibilidad, para reducir la variabilidad
+      // del modelo entre llamados. Se REVIERTE: claude-sonnet-5 devuelve
+      // 400 ("`temperature` is deprecated for this model") apenas el campo
+      // está presente en el body, sea cual sea el valor — no es que
+      // rechace un valor puntual, rechaza el parámetro entero. Confirmado
+      // en producción (Hip 110, "No se pudo analizar", mismo error textual)
+      // y documentado como comportamiento nuevo de los modelos Claude más
+      // recientes (Sonnet 5 / Opus 4.7+): ya no aceptan overrides de
+      // sampling (temperature/top_p/top_k), usan siempre su default. No
+      // hay ningún parámetro de reemplazo disponible del lado del cliente
+      // para forzar determinismo con este modelo — la reproducibilidad
+      // tiene que apoyarse en lo que sí es 100% determinista y ya está
+      // verificado: extracción de frames (frameExtraction.ts) y armado del
+      // prompt (prompt.ts). No toca metodología, pesos ni criterios RM.
       messages: [{ role: "user", content: content as unknown as Anthropic.MessageParam["content"] }],
     });
   } catch (err) {
