@@ -90,6 +90,7 @@ model Organization {
   rankingSnapshots        RankingSnapshot[]
   rankingSnapshotVersions RankingSnapshotVersion[]
   referenceHorses         ReferenceHorse[]
+  referenceHorsePhotos    ReferenceHorsePhoto[]
   decisions               UserDecision[]
   observations            HipObservation[]
   vetReports              VetReport[]
@@ -781,4 +782,27 @@ model ReferenceHorse {
   updatedAt      DateTime     @updatedAt
 
   @@unique([organizationId, key])
+}
+
+// Almacenamiento propio (en Postgres, sin depender de R2) para las fotos
+// del caballo referente — vía alternativa mientras el bucket de R2 no esté
+// configurado (2026-08-10, Tarea 1: sin esto, ReferenceHorse.photoUrls no
+// tiene forma de apuntar a ninguna foto real, y sin foto real del
+// referente el análisis de IA nunca puede correr). Guarda el archivo
+// completo en base64 en una columna de texto — no es lo más eficiente para
+// archivos grandes, pero las fotos del referente son pocas (un puñado) y
+// se reemplazan poco frecuentemente, así que el costo es aceptable a
+// cambio de no depender de ninguna credencial externa. GET
+// /api/v1/reference-horse/photos/:id sirve el archivo como imagen real
+// (Content-Type correcto) para que analyzeHip pueda hacer fetch() directo,
+// igual que con cualquier URL de catálogo.
+model ReferenceHorsePhoto {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mimeType       String
+  dataBase64     String       @db.Text
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
 }

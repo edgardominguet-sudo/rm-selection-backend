@@ -61,6 +61,14 @@ export const config = {
   // generar una presigned URL de lectura en cada GET. Si no se configura,
   // se cae a una presigned URL de lectura (más lenta pero funciona igual).
   r2PublicBaseUrl: process.env.R2_PUBLIC_BASE_URL ?? "",
+
+  // URL pública raíz de ESTE backend (sin barra final) — para construir
+  // URLs propias que apuntan de vuelta al servidor, como las fotos del
+  // caballo referente guardadas en Postgres (ver ReferenceHorsePhoto,
+  // Tarea 1, 2026-08-10: vía alternativa mientras no haya R2). Default al
+  // dominio conocido de Railway; override con PUBLIC_BASE_URL si el
+  // dominio cambia (dominio propio, otro entorno, etc.).
+  publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "https://rm-selection-backend-production.up.railway.app",
 };
 
 export function isObjectStorageConfigured(): boolean {

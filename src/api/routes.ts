@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { Router } from "express";
 import { db } from "../db";
+import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
@@ -694,6 +695,44 @@ router.put("/reference-horse", requireUser, async (req, res) => {
   }
   await setReferenceHorse(req.user!.organizationId, { photoUrls, gaitVideoUrl: gaitVideoUrl ?? null });
   res.json({ ok: true });
+});
+
+// Almacenamiento propio de fotos del caballo referente (Postgres, sin R2)
+// — vía alternativa mientras el bucket de R2 no esté configurado (Tarea 1,
+// 2026-08-10). El cliente (iOS) sube cada foto acá, recibe una URL propia
+// del backend, y esa URL es la que después manda en PUT /reference-horse
+// como parte de photoUrls. Ver ReferenceHorsePhoto en schema.prisma.
+router.post("/reference-horse/photos", requireUser, async (req, res) => {
+  const { dataBase64, mimeType } = req.body as { dataBase64?: string; mimeType?: string };
+  if (!dataBase64 || typeof dataBase64 !== "string") {
+    res.status(400).json({ error: "dataBase64 es requerido (imagen codificada en base64, sin el prefijo data:...)." });
+    return;
+  }
+  const photo = await db.referenceHorsePhoto.create({
+    data: {
+      organizationId: req.user!.organizationId,
+      mimeType: mimeType && typeof mimeType === "string" ? mimeType : "image/jpeg",
+      dataBase64,
+    },
+  });
+  res.json({ id: photo.id, url: `${config.publicBaseUrl}/api/v1/reference-horse/photos/${photo.id}` });
+});
+
+// Sirve el archivo real (no JSON) — SIN autenticación a propósito: el
+// análisis de IA (analyzeHip -> fetchAndDownscale) hace un fetch() directo
+// del lado del servidor, sin ningún header de la app, igual que con
+// cualquier URL de catálogo de una casa de ventas. El id es un cuid
+// impredecible, mismo criterio de exposición que ya usan las fotos de
+// catálogo (públicas por naturaleza).
+router.get("/reference-horse/photos/:id", async (req, res) => {
+  const photo = await db.referenceHorsePhoto.findUnique({ where: { id: req.params.id } });
+  if (!photo) {
+    res.status(404).end();
+    return;
+  }
+  res.setHeader("Content-Type", photo.mimeType);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.send(Buffer.from(photo.dataBase64, "base64"));
 });
 
 // Feed de "novedades" — ventas nuevas detectadas automáticamente (ver
