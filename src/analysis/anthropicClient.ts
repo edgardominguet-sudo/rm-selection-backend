@@ -147,6 +147,17 @@ async function sendWithRetry(client: Anthropic, content: ContentBlock[], attempt
     return await client.messages.create({
       model: config.anthropicModel,
       max_tokens: 1536,
+      // temperature: 0 — auditoría de reproducibilidad (2026-08-11, a
+      // pedido). Sin este parámetro, la API usa su default (no es 0), así
+      // que el modelo podía generar puntajes distintos con EXACTAMENTE las
+      // mismas imágenes de entrada. 0 = muestreo greedy (siempre el token
+      // más probable), reduce drásticamente la variabilidad de un llamado
+      // al otro. No es una garantía matemática absoluta de bit-a-bit
+      // idéntico (limitación conocida de la infraestructura de inferencia
+      // de los proveedores de LLM en general, no algo controlable desde
+      // acá), pero elimina la fuente de aleatoriedad intencional que
+      // existía. No toca metodología, pesos ni criterios RM.
+      temperature: 0,
       messages: [{ role: "user", content: content as unknown as Anthropic.MessageParam["content"] }],
     });
   } catch (err) {
