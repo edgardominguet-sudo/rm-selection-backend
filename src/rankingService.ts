@@ -286,6 +286,93 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
   await rebuildRankingSnapshot(saleId, organizationId, dayStart, hips.length, anyChange ? "media_changed" : "initial");
 }
 
+/**
+ * Análisis de UN Hip puntual "a demanda" — disparado por un dispositivo
+ * que abre la pestaña Comparación de ese Hip (a diferencia de
+ * analyzeAndRankSession, que corre sola por el scheduler para toda una
+ * jornada). Reutiliza EXACTAMENTE el mismo camino de análisis + guardado
+ * (analyzeHip + AnalysisResult + CurrentHipAnalysis) — Tarea 1,
+ * reproducibilidad del análisis RM (2026-08-10): "mismo Hip + mismos
+ * archivos + mismo método = mismo resultado, sin importar el dispositivo".
+ *
+ * Control de concurrencia: si dos dispositivos piden analizar el mismo
+ * Hip al mismo tiempo, un advisory lock de Postgres (con alcance a esta
+ * transacción, se libera solo al terminar) serializa ambos pedidos. El
+ * segundo, al conseguir el lock, ve que el primero ya dejó un
+ * AnalysisResult con el mismo mediaHash actual y devuelve ESE registro en
+ * vez de volver a llamarle a la IA — nunca se generan dos análisis
+ * distintos para el mismo Hip+organización al mismo tiempo.
+ */
+export async function analyzeHipOnDemand(
+  hip: { id: string; hipNumber: string; horseName: string | null; mediaJson: unknown },
+  organizationId: string,
+  deviceId?: string
+): Promise<{ analysis: Record<string, unknown>; reused: boolean }> {
+  const media = (hip.mediaJson as unknown as CatalogMediaItem[]) ?? [];
+  const currentHash = mediaFingerprint(media);
+  const lockKey = `${hip.id}:${organizationId}`;
+
+  return db.$transaction(
+    async (tx) => {
+      // hashtext() da un int4 determinístico a partir del string — se
+      // castea a bigint porque pg_advisory_xact_lock solo tiene overload
+      // de bigint (o de dos int4 separados), no de un único int4.
+      await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", lockKey);
+
+      const pointer = await tx.currentHipAnalysis.findUnique({
+        where: { hipId_organizationId: { hipId: hip.id, organizationId } },
+        include: { analysisResult: true },
+      });
+      if (pointer && pointer.analysisResult.mediaHash === currentHash) {
+        // Ya hay un análisis vigente para EXACTAMENTE esta misma media —
+        // no se vuelve a llamar a la IA (evita resultados distintos entre
+        // ejecuciones para el mismo Hip, y evita gastar cuota de la API
+        // sin necesidad).
+        return { analysis: pointer.analysisResult, reused: true };
+      }
+
+      const reference = await getReferenceHorse(organizationId);
+      const outcome = await analyzeHip({
+        hipNumber: hip.hipNumber,
+        horseName: hip.horseName ?? undefined,
+        media,
+        reference,
+      });
+      const score = overallScore(outcome.scores);
+      const classification = classify(score);
+      const previousVersionCount = await tx.analysisResult.count({ where: { hipId: hip.id, organizationId } });
+
+      const created = await tx.analysisResult.create({
+        data: {
+          hipId: hip.id,
+          organizationId,
+          version: previousVersionCount + 1,
+          triggerReason: pointer ? "media_changed" : "initial",
+          mediaHash: currentHash,
+          conformationScoresJson: outcome.scores as unknown as object,
+          overallScore: score,
+          classification,
+          gaitFrameCount: outcome.gaitFrameCount,
+          gaitVideoDurationSec: outcome.gaitVideoDurationSec,
+          model: config.anthropicModel,
+          deviceId,
+        },
+      });
+      await tx.currentHipAnalysis.upsert({
+        where: { hipId_organizationId: { hipId: hip.id, organizationId } },
+        create: { hipId: hip.id, organizationId, analysisResultId: created.id },
+        update: { analysisResultId: created.id },
+      });
+      return { analysis: created, reused: false };
+    },
+    // El análisis (extracción de fotogramas + llamada a la IA) puede tardar
+    // bastante más que el timeout default de una transacción de Prisma
+    // (5s) — se extiende para que la transacción no se corte a mitad de
+    // camino en un Hip con video largo.
+    { timeout: 120_000, maxWait: 120_000 }
+  );
+}
+
 async function rebuildRankingSnapshot(saleId: string, organizationId: string, dayStart: Date, totalHipsToday: number, triggerReason: string): Promise<void> {
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const hips = await db.hip.findMany({

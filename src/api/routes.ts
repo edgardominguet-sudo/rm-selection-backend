@@ -4,6 +4,8 @@ import { db } from "../db";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
+import { analyzeHipOnDemand } from "../rankingService";
+import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
 import {
   importManualCatalog,
   EmptyManualCatalogError,
@@ -272,6 +274,60 @@ router.get("/hips/resolve", requireUser, async (req, res) => {
   }
 
   res.json({ hipId: hip.id });
+});
+
+// MARK: - Análisis RM oficial de un Hip — Tarea 1 (reproducibilidad,
+// 2026-08-10). El análisis con IA ya NO se corre en cada dispositivo por
+// separado (eso es lo que hacía que el mismo Hip diera puntajes distintos
+// en el iPad y en el iPhone): el backend es la única fuente del resultado.
+// Reusa el mismo AnalysisResult/CurrentHipAnalysis que ya alimenta el
+// Ranking del Día (ver rankingService.analyzeHipOnDemand).
+
+// Lee el análisis vigente (si existe) de la organización del usuario para
+// este Hip — sin disparar ningún análisis nuevo.
+router.get("/hips/:hipId/analysis", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  const organizationId = req.user!.organizationId;
+  const pointer = await db.currentHipAnalysis.findUnique({
+    where: { hipId_organizationId: { hipId, organizationId } },
+    include: { analysisResult: true },
+  });
+  res.json({ analysis: pointer?.analysisResult ?? null });
+});
+
+// Dispara (o reutiliza) el análisis oficial de este Hip. Si ya existe un
+// AnalysisResult vigente con el mismo mediaHash que la media actual del
+// Hip, lo devuelve tal cual (reused:true) sin volver a llamar a la IA. Si
+// no, lo genera ahora, lo guarda como fuente oficial, y lo devuelve
+// (reused:false). Concurrencia resuelta con un advisory lock de Postgres
+// (ver analyzeHipOnDemand) — dos dispositivos pidiendo el mismo Hip al
+// mismo tiempo nunca generan dos análisis distintos.
+router.post("/hips/:hipId/analysis", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  const { deviceId } = req.body as { deviceId?: string };
+  const organizationId = req.user!.organizationId;
+
+  const hip = await db.hip.findUnique({ where: { id: hipId } });
+  if (!hip) {
+    res.status(404).json({ error: "Hip no encontrado." });
+    return;
+  }
+
+  try {
+    const result = await analyzeHipOnDemand(hip, organizationId, deviceId);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof MissingReferenceHorseError) {
+      res.status(409).json({ error: "Falta configurar el caballo referente para esta organización." });
+      return;
+    }
+    if (err instanceof NoPhotosError) {
+      res.status(422).json({ error: err.message });
+      return;
+    }
+    console.error(`[analysis] Hip ${hipId}:`, err);
+    res.status(500).json({ error: "No se pudo completar el análisis." });
+  }
 });
 
 // MARK: - Decisiones y observaciones del usuario (sincronización entre
