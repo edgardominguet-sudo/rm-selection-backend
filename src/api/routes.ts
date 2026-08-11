@@ -718,22 +718,11 @@ router.post("/reference-horse/photos", requireUser, async (req, res) => {
   res.json({ id: photo.id, url: `${config.publicBaseUrl}/api/v1/reference-horse/photos/${photo.id}` });
 });
 
-// Sirve el archivo real (no JSON) — SIN autenticación a propósito: el
-// análisis de IA (analyzeHip -> fetchAndDownscale) hace un fetch() directo
-// del lado del servidor, sin ningún header de la app, igual que con
-// cualquier URL de catálogo de una casa de ventas. El id es un cuid
-// impredecible, mismo criterio de exposición que ya usan las fotos de
-// catálogo (públicas por naturaleza).
-router.get("/reference-horse/photos/:id", async (req, res) => {
-  const photo = await db.referenceHorsePhoto.findUnique({ where: { id: req.params.id } });
-  if (!photo) {
-    res.status(404).end();
-    return;
-  }
-  res.setHeader("Content-Type", photo.mimeType);
-  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-  res.send(Buffer.from(photo.dataBase64, "base64"));
-});
+// NOTA: el GET que sirve el archivo real vive en index.ts, montado ANTES
+// del middleware requireApiKey — tiene que quedar sin autenticación para
+// que analyzeHip (fetch() del lado del servidor, sin headers propios)
+// pueda leer las fotos. Si se define acá también, este router nunca lo
+// alcanza a ejecutar porque requireApiKey ya lo habría cortado antes.
 
 // Feed de "novedades" — ventas nuevas detectadas automáticamente (ver
 // saleDiscoveryService.ts) y arranques de sincronización. Global (no
