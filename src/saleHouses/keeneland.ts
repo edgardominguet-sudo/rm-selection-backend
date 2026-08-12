@@ -7,10 +7,17 @@ import { resolveKeenelandHipDates } from "./keenelandSchedule";
 // RMSelection/Models/KeenelandHipCatalogEntry.swift.
 interface RawEntry {
   field_hip_number: string;
+  // `title` (sin prefijo field_, así lo confirmó el modelo iOS
+  // KeenelandHipCatalogEntry.swift) suele venir vacío en yearlings que
+  // todavía no corrieron — no es un dato faltante, es que el caballo
+  // todavía no tiene nombre público registrado.
+  title?: string | null;
   field_main_image?: string | null;
   field_sire?: string | null;
   field_dam?: string | null;
   field_broodmare_sire?: string | null;
+  field_color?: string | null;
+  field_foaling_date?: string | null;
   field_sex?: string | null;
   field_consignor?: string | null;
   field_sale_price?: string | null;
@@ -18,6 +25,19 @@ interface RawEntry {
   field_out?: string | null;
   field_video_upload?: unknown[];
   field_other_videos?: unknown[];
+}
+
+// El formato exacto de field_foaling_date todavía no se pudo verificar
+// contra datos en vivo (catálogo sin publicar al momento de escribir esto,
+// 2026-08-12) — se extrae de forma defensiva solo el año de 4 dígitos, sin
+// asumir un formato de fecha completo (ISO, MM/DD/YYYY, etc.), para no
+// romper si viene en un formato inesperado.
+function extractFoalYear(raw: string | null | undefined): number | undefined {
+  if (!raw) return undefined;
+  const match = raw.match(/\d{4}/);
+  if (!match) return undefined;
+  const year = Number(match[0]);
+  return Number.isFinite(year) ? year : undefined;
 }
 
 function vimeoEmbedURL(raw: unknown): string | null {
@@ -43,11 +63,14 @@ function normalize(entry: RawEntry): NormalizedHip {
 
   return {
     hipNumber: entry.field_hip_number,
+    horseName: entry.title || undefined,
     sex: entry.field_sex ?? undefined,
     consignor: entry.field_consignor ?? undefined,
     sire: entry.field_sire ?? undefined,
     dam: entry.field_dam ?? undefined,
     damSire: entry.field_broodmare_sire ?? undefined,
+    color: entry.field_color ?? undefined,
+    foalYear: extractFoalYear(entry.field_foaling_date),
     media,
     saleResult: hasSaleResult
       ? {
