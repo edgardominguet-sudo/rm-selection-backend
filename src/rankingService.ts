@@ -134,7 +134,25 @@ export async function syncCatalog(sale: Sale): Promise<void> {
     scheduleSlug: sale.scheduleSlug,
   });
 
+  // "NEW CATALOG DETECTED" (a pedido, 2026-08-12): se compara la cantidad
+  // de Hips ANTES de este sync — si esta venta no tenía ninguno todavía y
+  // ahora la casa de ventas sí trae datos, es la primera vez que su
+  // catálogo aparece disponible. Se mide antes del upsert a propósito,
+  // para no perder el "0 -> N" una vez que upsertNormalizedHips ya haya
+  // guardado los nuevos Hips.
+  const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
+
   await upsertNormalizedHips(sale.id, hips, sessionDates);
+
+  if (hipCountBefore === 0 && hips.length > 0) {
+    await db.saleAlert.create({
+      data: {
+        saleId: sale.id,
+        kind: "CATALOG_NOW_AVAILABLE",
+        message: `El catálogo de "${sale.name}" ya está disponible: ${hips.length} entradas detectadas y descargadas.`,
+      },
+    });
+  }
 
   // Refina Sale.startDate con la fecha REAL de sesión más próxima, ahora
   // que el catálogo ya la resolvió por Hip — más precisa que la fecha
@@ -415,6 +433,45 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   ]);
 }
 
+// Ventana antes de (o después de empezada) la fecha oficial de una venta
+// dentro de la cual un catálogo que sigue devolviendo "sin datos" deja de
+// tratarse como "todavía no publicado, es normal" y pasa a marcarse para
+// revisión manual (a pedido, 2026-08-12: no confundir catálogo
+// legítimamente no publicado con un método primario roto/desactualizado —
+// ej. un ID de catálogo equivocado). Con 3 días de margen: una venta
+// anunciada con semanas de anticipación no genera ruido, pero si a 3 días
+// (o menos, o ya empezada) de la fecha oficial la API en vivo sigue sin
+// traer nada, es una señal real de que el mecanismo de descubrimiento
+// puede tener un problema y no simplemente "hay que esperar más".
+const CATALOG_CHECK_WARNING_DAYS = 3;
+// No se re-alerta en cada ciclo del scheduler (cada 5 min) mientras siga
+// sin resolverse — alcanza con una vez por día para que quede visible en
+// /api/v1/alerts sin inundar el feed de novedades con el mismo aviso.
+const INCONCLUSIVE_ALERT_COOLDOWN_HOURS = 24;
+
+async function flagInconclusiveIfCloseToSale(sale: Sale, now: Date): Promise<void> {
+  if (!sale.startDate) return;
+  const warningWindowStart = sale.startDate.getTime() - CATALOG_CHECK_WARNING_DAYS * 24 * 60 * 60 * 1000;
+  if (now.getTime() < warningWindowStart) return;
+
+  const recentAlert = await db.saleAlert.findFirst({
+    where: {
+      saleId: sale.id,
+      kind: "CATALOG_CHECK_INCONCLUSIVE",
+      createdAt: { gte: new Date(now.getTime() - INCONCLUSIVE_ALERT_COOLDOWN_HOURS * 60 * 60 * 1000) },
+    },
+  });
+  if (recentAlert) return;
+
+  await db.saleAlert.create({
+    data: {
+      saleId: sale.id,
+      kind: "CATALOG_CHECK_INCONCLUSIVE",
+      message: `"${sale.name}" empieza el ${sale.startDate.toISOString().slice(0, 10)} y el método primario de chequeo (API de catálogo en vivo, ID "${sale.externalSaleId}") todavía no devuelve datos. Puede ser que la casa de ventas realmente no lo haya publicado todavía, o que el ID/endpoint usado ya no sea el correcto — conviene revisar a mano.`,
+    },
+  });
+}
+
 /**
  * Un ciclo completo del scheduler para UNA venta: decide si toca volver a
  * chequear el catálogo (según pollingPolicy, UNA sola vez — el catálogo es
@@ -463,6 +520,7 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
         // yendo como error real.
         if (err instanceof CatalogNotYetPublishedError) {
           console.log(`[scheduler] ${sale.name}: ${err.message} Se reintenta según el intervalo normal.`);
+          await flagInconclusiveIfCloseToSale(sale, now);
         } else {
           console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
         }

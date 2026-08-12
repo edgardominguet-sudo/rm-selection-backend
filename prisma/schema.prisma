@@ -302,6 +302,15 @@ enum SaleAlertKind {
   NEW_SALE_DETECTED
   SYNC_STARTED
   CATALOG_NOW_AVAILABLE
+  // Se genera cuando el método primario de chequeo (la API de catálogo en
+  // vivo) contesta "sin datos" pero la fecha de la venta ya está encima
+  // (dentro de CATALOG_CHECK_WARNING_DAYS, ver rankingService.ts) — señal
+  // de que puede no tratarse de "todavía no publicado" sino de un problema
+  // real del mecanismo (ID equivocado, endpoint cambiado, etc.) que
+  // conviene revisar a mano en vez de asumir silenciosamente que está
+  // todo bien (a pedido, 2026-08-12: "no confundir catálogo no publicado
+  // con no localizado por el método primario").
+  CATALOG_CHECK_INCONCLUSIVE
 }
 
 model SaleAlert {
