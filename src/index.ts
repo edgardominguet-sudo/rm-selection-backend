@@ -49,11 +49,15 @@ app.get("/diag/official-sale-result-check", async (_req, res) => {
     orderBy: { startDate: "desc" },
   });
   const officialCount = await db.officialSaleResult.count();
-  const sample = await db.officialSaleResult.findMany({ take: 5 });
-  const hipCountBySale = await Promise.all(
-    sales.map(async (s) => ({ saleId: s.id, hipCount: await db.hip.count({ where: { saleId: s.id } }) }))
-  );
-  res.json({ sales, officialCount, sample, hipCountBySale });
+  const statusCounts = await db.officialSaleResult.groupBy({
+    by: ["normalizedStatus"],
+    _count: true,
+  });
+  const sample = await db.officialSaleResult.findMany({
+    take: 6,
+    select: { hipNumber: true, horseName: true, priceRaw: true, resultCode: true, normalizedStatus: true, purchaser: true },
+  });
+  res.json({ sales, officialCount, statusCounts, sample });
 });
 
 // DIAGNÓSTICO TEMPORAL (2026-08-13) — fuerza un resync inmediato de la
