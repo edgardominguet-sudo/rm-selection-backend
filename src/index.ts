@@ -5,6 +5,7 @@ import { router } from "./api/routes";
 import { requireApiKey } from "./api/auth";
 import { startScheduler, startDiscoveryScheduler } from "./scheduler";
 import { db } from "./db";
+import { syncCatalog } from "./rankingService";
 
 const app = express();
 app.use(cors());
@@ -53,6 +54,30 @@ app.get("/diag/official-sale-result-check", async (_req, res) => {
     sales.map(async (s) => ({ saleId: s.id, hipCount: await db.hip.count({ where: { saleId: s.id } }) }))
   );
   res.json({ sales, officialCount, sample, hipCountBySale });
+});
+
+// DIAGNÓSTICO TEMPORAL (2026-08-13) — fuerza un resync inmediato de la
+// venta real de Fasig-Tipton Saratoga (id fijo, no un parámetro libre, a
+// propósito: no se convierte en un disparador genérico de resync sin
+// autenticación) contra la API oficial, para poder confirmar en el acto
+// que OfficialSaleResult se está poblando con datos reales. Se saca en el
+// próximo commit, igual que el endpoint de arriba.
+app.get("/diag/resync-saratoga", async (_req, res) => {
+  const saleId = "cmsq3e89e001rehngdb21dnmz";
+  const sale = await db.sale.findUnique({ where: { id: saleId } });
+  if (!sale) {
+    res.status(404).json({ error: "sale not found" });
+    return;
+  }
+  try {
+    await syncCatalog(sale);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+    return;
+  }
+  const officialCount = await db.officialSaleResult.count();
+  const sample = await db.officialSaleResult.findMany({ take: 15, orderBy: { hipNumber: "asc" } });
+  res.json({ synced: true, officialCount, sample });
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
