@@ -101,6 +101,7 @@ model Organization {
   observations            HipObservation[]
   vetReports              VetReport[]
   mediaAssets             MediaAsset[]
+  pedigreeAnnotations     PedigreeAnnotation[]
 }
 
 // Un usuario de RM Selection. Hoy hay uno solo (vos), pero se modela desde
@@ -130,6 +131,7 @@ model User {
   catalogImports CatalogImport[]
   vetReports    VetReport[]
   mediaAssets   MediaAsset[]
+  pedigreeAnnotations PedigreeAnnotation[]
 }
 
 // Un dispositivo (iPhone/iPad) desde el que un usuario usa la app. Deja
@@ -155,6 +157,7 @@ model Device {
   observations HipObservation[]
   vetReports    VetReport[]
   mediaAssets   MediaAsset[]
+  pedigreeAnnotations PedigreeAnnotation[]
 }
 
 // Qué tan utilizable es el catálogo estructurado de una venta:
@@ -393,6 +396,7 @@ model Hip {
   observations      HipObservation[]
   vetReports        VetReport[]
   mediaAssets       MediaAsset[]
+  pedigreeAnnotations PedigreeAnnotation[]
 
   // Historial de Ventas (ver HorseSaleHistory más abajo): apariciones
   // anteriores de este mismo caballo que se muestran cuando se abre ESTE
@@ -616,6 +620,36 @@ model UserDecision {
   // Tombstone en vez de borrado físico: un dispositivo que estaba offline
   // cuando se borró una decisión en otro necesita enterarse del borrado en
   // la próxima sincronización, no solo de altas/cambios.
+  deletedAt  DateTime?
+
+  @@unique([userId, hipId])
+}
+
+// Anotación a mano alzada sobre el Pedigree de un Hip (lápiz vino tinto +
+// borrador, 2026-08-13 — sistema simplificado). Mismo patrón exacto que
+// UserDecision: una fila por (userId, hipId), server-as-source-of-truth,
+// tombstone (deletedAt) para que un dispositivo offline se entere de un
+// borrado. `drawingData` guarda el PKDrawing entero serializado
+// (dataRepresentation(), base64) — no vale la pena modelar los trazos como
+// filas individuales, la app siempre lee/escribe el dibujo completo de una.
+model PedigreeAnnotation {
+  id             String       @id @default(cuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  hipId      String
+  hip        Hip       @relation(fields: [hipId], references: [id], onDelete: Cascade)
+  deviceId   String?
+  device     Device?   @relation(fields: [deviceId], references: [id])
+
+  // Base64 de PKDrawing.dataRepresentation(). Null = sin anotaciones (se
+  // guarda igual la fila, o se usa deletedAt, para poder propagar "se
+  // borró todo" a otros dispositivos).
+  drawingData String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
   deletedAt  DateTime?
 
   @@unique([userId, hipId])

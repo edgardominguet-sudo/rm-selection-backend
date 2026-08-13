@@ -390,6 +390,41 @@ router.delete("/me/decisions/:hipId", requireUser, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Anotaciones a mano alzada sobre el Pedigree (lápiz vino tinto + borrador,
+// 2026-08-13 — sistema simplificado). Mismo patrón exacto que /me/decisions:
+// una fila por (userId, hipId), upsert, tombstone para borrados. El cliente
+// manda el PKDrawing completo serializado en base64 en cada guardado (no
+// hace falta granularidad de trazo por trazo).
+router.get("/me/pedigree-annotations", requireUser, async (req, res) => {
+  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const rows = await db.pedigreeAnnotation.findMany({
+    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
+    orderBy: { updatedAt: "asc" },
+    include: { hip: hipIdentitySelect },
+  });
+  res.json(rows.map(withHipIdentity));
+});
+
+router.put("/me/pedigree-annotations/:hipId", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  const { drawingData, deviceId } = req.body as { drawingData?: string | null; deviceId?: string };
+  const annotation = await db.pedigreeAnnotation.upsert({
+    where: { userId_hipId: { userId: req.user!.id, hipId } },
+    create: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, drawingData, deviceId },
+    update: { drawingData, deviceId, deletedAt: null },
+  });
+  res.json(annotation);
+});
+
+router.delete("/me/pedigree-annotations/:hipId", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  await db.pedigreeAnnotation.updateMany({
+    where: { userId: req.user!.id, hipId },
+    data: { deletedAt: new Date(), drawingData: null },
+  });
+  res.json({ ok: true });
+});
+
 router.get("/me/observations", requireUser, async (req, res) => {
   const since = req.query.since ? new Date(req.query.since as string) : undefined;
   const observations = await db.hipObservation.findMany({
