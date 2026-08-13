@@ -9,6 +9,7 @@ import { overallScore, classify } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
 import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
+import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
 
 /**
@@ -69,6 +70,12 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
   const existingHipNumbers = new Set(
     (await db.hip.findMany({ where: { saleId }, select: { hipNumber: true } })).map((h) => h.hipNumber)
   );
+  // Se busca acá adentro (una sola vez por lote) en vez de agregar un
+  // parámetro `sale: Sale` a la firma — así ninguno de los dos call sites
+  // (syncCatalog acá abajo, y manualCatalogImport.ts, que solo trae un
+  // `select` parcial) tiene que cambiar. Solo hace falta para la base
+  // histórica permanente (ver recordOfficialSaleResult, más abajo).
+  const sale = await db.sale.findUniqueOrThrow({ where: { id: saleId } });
   let created = 0;
   let updated = 0;
 
@@ -111,6 +118,19 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
     });
     if (existingHipNumbers.has(hip.hipNumber)) updated += 1;
     else created += 1;
+
+    // Base histórica PERMANENTE de RM Selection (TAREA 1, 2026-08-13, ver
+    // officialSaleResultService.ts): graba/actualiza el resultado oficial
+    // de este Hip en OfficialSaleResult, independiente del ciclo de vida
+    // de la fila Hip en sí — no hace nada si la casa de ventas todavía no
+    // publicó ningún dato real. Envuelto en try/catch por el mismo motivo
+    // que el cruce de Historial de Ventas de abajo: nunca debe tirar
+    // abajo la sincronización del resto del catálogo.
+    try {
+      await recordOfficialSaleResult(savedHip, sale);
+    } catch (err) {
+      console.error(`[official-sale-result] Error registrando resultado oficial para Hip ${savedHip.hipNumber}:`, err);
+    }
 
     // Historial de Ventas (ver saleHistoryService.ts): cruce interno
     // contra el resto del catálogo que ya tenemos importado, solo la

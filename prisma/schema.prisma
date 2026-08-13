@@ -408,6 +408,11 @@ model Hip {
   saleHistoryEntries   HorseSaleHistory[] @relation("HipSaleHistory")
   saleHistorySourceFor HorseSaleHistory[] @relation("HistorySourceHip")
 
+  // Registros permanentes de OfficialSaleResult que se originaron leyendo
+  // ESTE Hip (ver comentario en ese modelo) — puramente informativo, no se
+  // borra en cascada si este Hip se borra.
+  officialResultSourceFor OfficialSaleResult[] @relation("OfficialResultSourceHip")
+
   @@unique([saleId, hipNumber])
   @@index([saleId, sessionDate])
 }
@@ -485,6 +490,74 @@ model HorseSaleHistory {
 
   @@unique([hipId, saleHouse, saleYear, hipNumberAtSale])
   @@index([hipId])
+}
+
+// TAREA 1 (2026-08-13): base histórica PROPIA de RM Selection — a
+// diferencia de HorseSaleHistory (arriba), que vive COLGADA de un Hip
+// puntual (se borra en cascada si ese Hip se borra) y sirve para el cruce
+// "¿este mismo caballo ya pasó por acá?", OfficialSaleResult es un
+// registro PERMANENTE e independiente del ciclo de vida de ningún Hip: el
+// resultado oficial (vendido/precio/comprador, RNA, retirado/scratch, u
+// otro estado tal cual lo publicó la casa) de un Hip puntual en una venta
+// puntual, identificado por su llave natural (casa + venta + año + Hip
+// Number) — no por una fila de Hip que algún día podría reimportarse o
+// borrarse. Un catálogo se puede volver a importar mil veces; este
+// registro no se duplica (upsert por la llave natural) y NUNCA se
+// sobreescribe con un valor inventado — si la casa de ventas todavía no
+// publicó nada, no se crea fila.
+//
+// Mantiene separados a propósito (instrucciones, punto 9):
+//   Catálogo        -> Hip (datos previos: pedigree, consignatario, fotos)
+//   Resultado de venta EN VIVO -> Hip.saleResultJson (efímero, ligado al
+//                                 Hip actual de la venta activa)
+//   Historial de Ventas PERMANENTE -> OfficialSaleResult (acá)
+enum OfficialSaleResultCode {
+  SOLD
+  RNA
+  SCRATCHED
+  OTHER
+}
+
+model OfficialSaleResult {
+  id String @id @default(cuid())
+
+  saleHouse      SaleHouse? // null = casa fuera de Keeneland/Fasig-Tipton/OBS
+  saleHouseLabel String?    // texto libre cuando saleHouse es null
+  saleName       String
+  saleYear       Int
+  hipNumber      String
+
+  // Identificación del caballo — tal cual la trajo el catálogo oficial en
+  // el momento del resultado; nunca inferida.
+  horseName String?
+  sire      String?
+  dam       String?
+  consignor String?
+
+  // Tal cual lo publicó la casa de ventas — nunca inferido ni calculado.
+  priceRaw   String?
+  // "SOLD" | "RNA" | "SCRATCHED" | "OUT" | etc., tal cual publicado (ver
+  // OfficialSaleResultCode para la clasificación normalizada que usa la
+  // app; acá se conserva también el código crudo original).
+  resultCode String?
+  purchaser  String?
+
+  // Referencia opcional al Hip de RM Selection del que se leyó este
+  // resultado — SOLO informativa (para poder auditar de dónde salió).
+  // onDelete: SetNull a propósito: si ese Hip se borra o el catálogo se
+  // reimporta con otro id, este registro histórico NO desaparece (punto 7:
+  // "al incorporar ventas futuras, no borrar ni sustituir resultados
+  // anteriores").
+  sourceHipId String?
+  sourceHip   Hip?    @relation("OfficialResultSourceHip", fields: [sourceHipId], references: [id], onDelete: SetNull)
+
+  firstRecordedAt DateTime  @default(now())
+  lastConfirmedAt DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([saleHouse, saleName, saleYear, hipNumber])
+  @@index([sire, dam])
+  @@index([saleYear, saleHouse])
 }
 
 // Resultado de análisis con IA para un Hip: las 26 subcategorías del
