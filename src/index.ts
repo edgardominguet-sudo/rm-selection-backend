@@ -5,7 +5,6 @@ import { router } from "./api/routes";
 import { requireApiKey } from "./api/auth";
 import { startScheduler, startDiscoveryScheduler } from "./scheduler";
 import { db } from "./db";
-import { syncCatalog } from "./rankingService";
 
 const app = express();
 app.use(cors());
@@ -32,61 +31,6 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.setHeader("Content-Type", photo.mimeType);
   res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   res.send(Buffer.from(photo.dataBase64, "base64"));
-});
-
-// DIAGNÓSTICO TEMPORAL (2026-08-13) — sin autenticación a propósito, mismo
-// criterio que /health: solo lectura, solo datos de catálogo ya públicos
-// (nombre/fecha de venta), CERO datos sensibles ni de usuarios. Se agrega
-// para verificar el estado de Fasig-Tipton Saratoga y la nueva tabla
-// OfficialSaleResult recién desplegada, y se saca en el próximo commit.
-app.get("/diag/official-sale-result-check", async (_req, res) => {
-  const sales = await db.sale.findMany({
-    where: { name: { contains: "Saratoga", mode: "insensitive" } },
-    select: {
-      id: true, house: true, name: true, externalSaleId: true, startDate: true,
-      isActive: true, catalogAccess: true, lastCatalogCheckAt: true,
-    },
-    orderBy: { startDate: "desc" },
-  });
-  const officialCount = await db.officialSaleResult.count();
-  const statusCounts = await db.officialSaleResult.groupBy({
-    by: ["normalizedStatus"],
-    _count: true,
-  });
-  const sample = await db.officialSaleResult.findMany({
-    take: 6,
-    select: { hipNumber: true, horseName: true, priceRaw: true, resultCode: true, normalizedStatus: true, purchaser: true },
-  });
-  res.json({ sales, officialCount, statusCounts, sample });
-});
-
-// DIAGNÓSTICO TEMPORAL (2026-08-13) — fuerza un resync inmediato de la
-// venta real de Fasig-Tipton Saratoga (id fijo, no un parámetro libre, a
-// propósito: no se convierte en un disparador genérico de resync sin
-// autenticación) contra la API oficial, para poder confirmar en el acto
-// que OfficialSaleResult se está poblando con datos reales. Se saca en el
-// próximo commit, igual que el endpoint de arriba.
-app.get("/diag/resync-saratoga", async (_req, res) => {
-  const saleId = "cmsq3e89e001rehngdb21dnmz";
-  const sale = await db.sale.findUnique({ where: { id: saleId } });
-  if (!sale) {
-    res.status(404).json({ error: "sale not found" });
-    return;
-  }
-  try {
-    await syncCatalog(sale);
-  } catch (err) {
-    res.status(500).json({ error: String(err) });
-    return;
-  }
-  const officialCount = await db.officialSaleResult.count();
-  const rawHipSample = await db.hip.findMany({
-    where: { saleId },
-    select: { hipNumber: true, saleResultJson: true },
-    orderBy: { hipNumber: "asc" },
-    take: 8,
-  });
-  res.json({ synced: true, officialCount, rawHipSample });
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
