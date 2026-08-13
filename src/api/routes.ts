@@ -801,13 +801,7 @@ router.post("/sales", async (req, res) => {
 // FULL — MANUAL_CSV no tiene ninguna API contra la que chequear (ver
 // comentario en processSale, rankingService.ts), y PENDING_ID/UNAVAILABLE
 // no tienen ID real todavía.
-router.post("/sales/:saleId/catalog/resync", async (req, res) => {
-  const { saleId } = req.params;
-  const sale = await db.sale.findUnique({ where: { id: saleId } });
-  if (!sale) {
-    res.status(404).json({ error: "Venta no encontrada." });
-    return;
-  }
+async function handleCatalogResync(sale: NonNullable<Awaited<ReturnType<typeof db.sale.findUnique>>>, res: import("express").Response) {
   if (sale.catalogAccess !== "FULL") {
     res.status(400).json({
       error: `Esta venta tiene catalogAccess=${sale.catalogAccess}, no FULL — no hay ninguna API en vivo contra la que forzar un chequeo.`,
@@ -837,6 +831,35 @@ router.post("/sales/:saleId/catalog/resync", async (req, res) => {
     console.error(`[catalog-resync] Error sincronizando catálogo de ${sale.name}:`, err);
     res.status(500).json({ error: "Error interno sincronizando el catálogo. Ver logs del servidor." });
   }
+}
+
+router.post("/sales/:saleId/catalog/resync", async (req, res) => {
+  const sale = await db.sale.findUnique({ where: { id: req.params.saleId } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  await handleCatalogResync(sale, res);
+});
+
+// Variante GET, navegable directo desde un browser (sin body/POST) — mismo
+// efecto que la de arriba, identificando la venta por house+externalSaleId
+// en vez del id interno (los mismos datos públicos que ya expone GET
+// /sales). Pensada para poder forzar el chequeo a mano sin herramientas
+// adicionales, ej. GET /api/v1/sales/resync?house=KEENELAND&externalSaleId=12.
+router.get("/sales/resync", async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  await handleCatalogResync(sale, res);
 });
 
 // Mismo forzado de arriba, pero identificando la venta por house +
@@ -854,10 +877,7 @@ router.post("/sales/resync", async (req, res) => {
     res.status(404).json({ error: "Venta no encontrada." });
     return;
   }
-  // Reutiliza el mismo handler que /sales/:saleId/catalog/resync (redirect
-  // 307 preserva método POST y body) — evita duplicar la lógica de
-  // sincronización.
-  res.redirect(307, `/api/v1/sales/${sale.id}/catalog/resync`);
+  await handleCatalogResync(sale, res);
 });
 
 // MARK: - Import manual de catálogo (SaleCatalogAccess.MANUAL_CSV, hoy OBS —
