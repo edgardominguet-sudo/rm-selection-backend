@@ -535,12 +535,21 @@ model OfficialSaleResult {
   consignor String?
 
   // Tal cual lo publicó la casa de ventas — nunca inferido ni calculado.
+  // Ej. en Fasig-Tipton este código NO indica vendido/RNA/retirado (viene
+  // "Y" para casi cualquier Hip con actividad) — el estado real hay que
+  // leerlo de `purchaser` (ver classifyResultCode en
+  // officialSaleResultService.ts). Se guarda igual, tal cual, para no
+  // perder el dato crudo de la fuente.
   priceRaw   String?
-  // "SOLD" | "RNA" | "SCRATCHED" | "OUT" | etc., tal cual publicado (ver
-  // OfficialSaleResultCode para la clasificación normalizada que usa la
-  // app; acá se conserva también el código crudo original).
   resultCode String?
   purchaser  String?
+  // Clasificación normalizada de 4 estados (SOLD/RNA/SCRATCHED/OTHER) —
+  // esto SÍ es una inferencia de RM Selection a partir de `purchaser` +
+  // `resultCode` + `priceRaw` (nunca un dato que la casa de ventas publique
+  // tal cual con este nombre), separada a propósito del campo `resultCode`
+  // de arriba para no mezclar "hecho observable" con "inferencia
+  // razonable" (principio de evidencia).
+  normalizedStatus OfficialSaleResultCode?
 
   // Referencia opcional al Hip de RM Selection del que se leyó este
   // resultado — SOLO informativa (para poder auditar de dónde salió).

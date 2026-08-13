@@ -43,23 +43,51 @@ function bestKnownYear(hip: Hip, sale: Sale): number {
   return hip.createdAt.getUTCFullYear();
 }
 
+type NormalizedStatus = "SOLD" | "RNA" | "SCRATCHED" | "OTHER";
+
 /**
- * Normaliza el código crudo de la casa de ventas (SOLD/RNA/OUT/etc, texto
- * libre según cada casa) a la clasificación fija de 4 estados que usa RM
- * Selection. "OTHER" cubre cualquier código publicado que no sea uno de
- * los 3 conocidos — se conserva el texto original en `resultCode` de
- * todos modos, así que no se pierde información aunque no se reconozca el
- * código.
+ * Normaliza el resultado oficial (código crudo + comprador + precio) a la
+ * clasificación fija de 4 estados que usa RM Selection.
+ *
+ * Verificado contra datos reales de Fasig-Tipton Saratoga 2026
+ * (2026-08-13): su `sold_as_code` NO indica vendido/RNA/retirado — viene
+ * "Y" para prácticamente cualquier Hip con actividad registrada. El
+ * estado real está codificado como TEXTO en el campo `purchaser`: "NOT
+ * SOLD" (RNA), "OUT" (retirado/scratch), o el nombre real del comprador
+ * (vendido). Por eso `purchaser` se revisa PRIMERO acá — no es un
+ * capricho, es lo que la fuente realmente usa para publicar el estado.
+ * `resultCode` (crudo) se revisa como respaldo para otras casas de
+ * ventas (ej. Keeneland) que sí puedan usar códigos más directos.
+ *
+ * "OTHER" cubre cualquier caso que no calce con ninguno de los 3
+ * conocidos — nunca se inventa un estado; el dato crudo (`resultCode`,
+ * `purchaser`) queda guardado tal cual de todos modos.
  */
-export function classifyResultCode(raw: string | null | undefined, priceRaw: string | null | undefined): "SOLD" | "RNA" | "SCRATCHED" | "OTHER" | null {
-  const code = raw?.trim().toUpperCase();
+export function classifyResultCode(
+  rawCode: string | null | undefined,
+  priceRaw: string | null | undefined,
+  purchaser: string | null | undefined
+): NormalizedStatus | null {
+  const buyer = purchaser?.trim().toUpperCase() ?? "";
+  const code = rawCode?.trim().toUpperCase() ?? "";
+
+  if (buyer === "NOT SOLD" || buyer === "RNA" || buyer.includes("RNA")) return "RNA";
+  if (buyer === "OUT" || buyer === "SCRATCHED" || buyer === "WD" || buyer === "WITHDRAWN") return "SCRATCHED";
+  // Cualquier otro texto no vacío en `purchaser` es, en la práctica, el
+  // nombre real del comprador (agencia, stable, persona) — se interpreta
+  // como vendido.
+  if (buyer) return "SOLD";
+
+  // Sin nada útil en `purchaser`: se cae al código crudo, por si otra casa
+  // de ventas sí lo usa como estado directo.
   if (code === "RNA") return "RNA";
-  if (code === "OUT" || code === "SCRATCHED" || code === "WD" || code === "WITHDRAWN") return "SCRATCHED";
+  if (code === "OUT" || code === "SCRATCHED" || code === "WD" || code === "WITHDRAWN" || code === "1" || code === "TRUE") return "SCRATCHED";
   if (code === "SOLD" || code === "PS" || code === "P/S") return "SOLD";
-  // Sin código pero con precio real: se interpreta como vendido (mismo
-  // criterio que ya usa SaleResult.swift en el cliente iOS para el estado
-  // "sold").
-  if (!code && priceRaw) return "SOLD";
+
+  // Sin comprador ni código reconocible, pero con precio real: se
+  // interpreta como vendido (mismo criterio que ya usa SaleResult.swift
+  // en el cliente iOS para el estado "sold").
+  if (priceRaw) return "SOLD";
   if (code) return "OTHER";
   return null;
 }
@@ -76,7 +104,7 @@ export async function recordOfficialSaleResult(hip: Hip, sale: Sale): Promise<vo
   if (!hasRealData) return;
 
   const saleYear = bestKnownYear(hip, sale);
-  const resultCode = classifyResultCode(result?.soldAsCode, result?.priceRaw);
+  const normalizedStatus = classifyResultCode(result?.soldAsCode, result?.priceRaw, result?.purchaser);
 
   await db.officialSaleResult.upsert({
     where: {
@@ -97,8 +125,11 @@ export async function recordOfficialSaleResult(hip: Hip, sale: Sale): Promise<vo
       dam: hip.dam,
       consignor: hip.consignor,
       priceRaw: result?.priceRaw ?? null,
-      resultCode: resultCode ?? (result?.soldAsCode ?? null),
+      // Crudo, tal cual lo publicó la casa — NUNCA la clasificación
+      // inferida (ver comentario arriba de classifyResultCode).
+      resultCode: result?.soldAsCode ?? null,
       purchaser: result?.purchaser ?? null,
+      normalizedStatus: normalizedStatus ?? undefined,
       sourceHipId: hip.id,
       lastConfirmedAt: new Date(),
     },
@@ -112,8 +143,9 @@ export async function recordOfficialSaleResult(hip: Hip, sale: Sale): Promise<vo
       dam: hip.dam ?? undefined,
       consignor: hip.consignor ?? undefined,
       priceRaw: result?.priceRaw ?? null,
-      resultCode: resultCode ?? (result?.soldAsCode ?? null),
+      resultCode: result?.soldAsCode ?? null,
       purchaser: result?.purchaser ?? null,
+      normalizedStatus: normalizedStatus ?? undefined,
       sourceHipId: hip.id,
       lastConfirmedAt: new Date(),
     },
@@ -128,6 +160,7 @@ export interface OfficialSaleResultRow {
   consignor: string | null;
   priceRaw: string | null;
   resultCode: string | null;
+  normalizedStatus: NormalizedStatus | null;
   purchaser: string | null;
   firstRecordedAt: Date;
   lastConfirmedAt: Date;
@@ -151,6 +184,7 @@ export async function readOfficialSaleResultsForSale(
     consignor: r.consignor,
     priceRaw: r.priceRaw,
     resultCode: r.resultCode,
+    normalizedStatus: r.normalizedStatus as NormalizedStatus | null,
     purchaser: r.purchaser,
     firstRecordedAt: r.firstRecordedAt,
     lastConfirmedAt: r.lastConfirmedAt,
