@@ -8,10 +8,18 @@
 // existiendo en la app como criterio del comprador durante la inspección
 // presencial, simplemente no alimenta este puntaje.
 //
-// Filas legado (methodologyVersion = null en AnalysisResult) siguen usando
-// la forma vieja {functional, limb, gait} — ver git history de este archivo
-// si hace falta reconstruir esa lógica; no se borra el historial, solo deja
-// de generarse nueva.
+// Forma de almacenamiento: PLANA — { "lateral.proportions": 8.0, ... } con
+// las 9 claves con punto, EXACTAMENTE como responde la IA (ver prompt.ts,
+// el JSON que se le pide) y exactamente como ya esperaba el cliente iOS
+// (HipAnalysisSyncService.HipAnalysisDTO.conformationScoresJson: [String:
+// Double], mismo patrón que usaba la metodología legado de 26 claves) — a
+// propósito NO anidada por vista, para no tener que traducir de un lado al
+// otro ni duplicar la definición de forma en dos lenguajes.
+//
+// Filas legado (methodologyVersion = null en AnalysisResult) también son
+// planas, con las 26 claves viejas (functional.*/limb.*/gait.*) — ver git
+// history de este archivo si hace falta reconstruir esa lógica; no se
+// borra el historial, solo deja de generarse nueva.
 
 export const LATERAL_TRAITS = ["proportions", "topline", "structure"] as const;
 export const FRONTAL_TRAITS = ["alignment", "symmetry", "proportions"] as const;
@@ -28,40 +36,32 @@ export const ALL_TRAIT_IDS: string[] = [
 
 export const METHODOLOGY_VERSION = "rm-anatomical-2026-08";
 
-export interface ConformationScores {
-  lateral: Record<string, number>;
-  frontal: Record<string, number>;
-  posterior: Record<string, number>;
-}
+// Mapa plano id -> puntaje, las 9 claves de ALL_TRAIT_IDS (ver nota de
+// forma de almacenamiento arriba).
+export type ConformationScores = Record<string, number>;
 
 function clamped(value: number): number {
   return Math.min(Math.max(value, 0), 10);
 }
 
 export function emptyScores(): ConformationScores {
-  const zero = (traits: readonly string[]) => Object.fromEntries(traits.map((t) => [t, 0]));
-  return { lateral: zero(LATERAL_TRAITS), frontal: zero(FRONTAL_TRAITS), posterior: zero(POSTERIOR_TRAITS) };
+  return Object.fromEntries(ALL_TRAIT_IDS.map((id) => [id, 0]));
 }
 
 export function setScore(scores: ConformationScores, traitId: string, value: number): void {
-  const [view, trait] = traitId.split(".");
-  const v = clamped(value);
-  if (view === "lateral") scores.lateral[trait] = v;
-  else if (view === "frontal") scores.frontal[trait] = v;
-  else if (view === "posterior") scores.posterior[trait] = v;
+  scores[traitId] = clamped(value);
 }
 
-function average(record: Record<string, number>): number {
-  const values = Object.values(record);
-  if (values.length === 0) return 0;
+function averageForView(scores: ConformationScores, traits: readonly string[], view: string): number {
+  const values = traits.map((t) => scores[`${view}.${t}`] ?? 0);
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
 export function blockAverages(scores: ConformationScores) {
   return {
-    lateral: average(scores.lateral),
-    frontal: average(scores.frontal),
-    posterior: average(scores.posterior),
+    lateral: averageForView(scores, LATERAL_TRAITS, "lateral"),
+    frontal: averageForView(scores, FRONTAL_TRAITS, "frontal"),
+    posterior: averageForView(scores, POSTERIOR_TRAITS, "posterior"),
   };
 }
 
@@ -75,9 +75,9 @@ export const CLASSIFICATION_THRESHOLDS = {
   bienMinimo: 7.0,
 };
 
-// Un bloque (=vista) sin foto válida NO se promedia como si valiera 0 — ver
-// punto 13 de las instrucciones: "una fotografía faltante nunca debe
-// recibir 0 puntos". El motor de análisis (anthropicClient.ts) fuerza los 3
+// Una vista sin foto válida NO se promedia como si valiera 0 — ver punto 13
+// de las instrucciones: "una fotografía faltante nunca debe recibir 0
+// puntos". El motor de análisis (anthropicClient.ts) fuerza los 3
 // parámetros de una vista a 0.0 exactamente cuando esa vista no tiene foto
 // válida (ni propia ni clasificada) — un análisis genuino, con foto válida,
 // prácticamente nunca da 0 en los 3 parámetros de una vista a la vez, así

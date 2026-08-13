@@ -135,9 +135,9 @@ export async function analyzeHip(opts: {
   // el motor legado para forzar Marcha a 0 sin video (ver comentario en
   // conformationScores.ts, overallScore).
   const validViews = new Set(parsed.photos.filter((p) => p.valid).map((p) => p.view));
-  if (!validViews.has("lateral")) for (const t of ["proportions", "topline", "structure"]) scores.lateral[t] = 0;
-  if (!validViews.has("frontal")) for (const t of ["alignment", "symmetry", "proportions"]) scores.frontal[t] = 0;
-  if (!validViews.has("posterior")) for (const t of ["alignment", "structure", "symmetry"]) scores.posterior[t] = 0;
+  if (!validViews.has("lateral")) for (const t of ["proportions", "topline", "structure"]) scores[`lateral.${t}`] = 0;
+  if (!validViews.has("frontal")) for (const t of ["alignment", "symmetry", "proportions"]) scores[`frontal.${t}`] = 0;
+  if (!validViews.has("posterior")) for (const t of ["alignment", "structure", "symmetry"]) scores[`posterior.${t}`] = 0;
 
   return {
     scores,
