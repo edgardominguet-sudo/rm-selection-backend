@@ -33,6 +33,28 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.send(Buffer.from(photo.dataBase64, "base64"));
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-13) — sin autenticación a propósito, mismo
+// criterio que /health: solo lectura, solo datos de catálogo ya públicos
+// (nombre/fecha de venta), CERO datos sensibles ni de usuarios. Se agrega
+// para verificar el estado de Fasig-Tipton Saratoga y la nueva tabla
+// OfficialSaleResult recién desplegada, y se saca en el próximo commit.
+app.get("/diag/official-sale-result-check", async (_req, res) => {
+  const sales = await db.sale.findMany({
+    where: { name: { contains: "Saratoga", mode: "insensitive" } },
+    select: {
+      id: true, house: true, name: true, externalSaleId: true, startDate: true,
+      isActive: true, catalogAccess: true, lastCatalogCheckAt: true,
+    },
+    orderBy: { startDate: "desc" },
+  });
+  const officialCount = await db.officialSaleResult.count();
+  const sample = await db.officialSaleResult.findMany({ take: 5 });
+  const hipCountBySale = await Promise.all(
+    sales.map(async (s) => ({ saleId: s.id, hipCount: await db.hip.count({ where: { saleId: s.id } }) }))
+  );
+  res.json({ sales, officialCount, sample, hipCountBySale });
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
