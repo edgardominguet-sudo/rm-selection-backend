@@ -57,6 +57,12 @@ enum MediaKind {
   VIDEO
   VET_REPORT
   PEDIGREE_CHART
+  // Fotos tomadas EXCLUSIVAMENTE desde la pantalla Análisis (IA) para ese
+  // Hip (2026-08-13, regla dura del Método RM: el motor de análisis nunca
+  // debe usar fotos de Media ni del catálogo). Se guardan como MediaAsset
+  // igual que cualquier otro tipo — la diferencia es que SOLO estas
+  // alimentan analyzeHip/analyzeHipOnDemand (ver rankingService.ts).
+  AI_ANALYSIS_PHOTO
 }
 
 // Estado de subida de un MediaAsset visto desde el backend — normalmente

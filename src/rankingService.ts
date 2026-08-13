@@ -9,6 +9,24 @@ import { overallScore, classify } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
 import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
+import { resolveReadUrl } from "./storage/r2Client";
+
+/**
+ * Fotos de un Hip que puede usar el motor de Análisis IA — Tarea "Análisis
+ * IA" (2026-08-13, regla dura del Método RM): ÚNICA Y EXCLUSIVAMENTE las
+ * que el usuario tomó desde la pantalla Análisis (IA) de ese Hip
+ * (MediaAsset.kind = AI_ANALYSIS_PHOTO). Nunca `hip.mediaJson` (eso es
+ * catálogo de la casa de ventas) ni ningún otro MediaAsset (Media general,
+ * reporte veterinario, pedigree). Devuelve URLs de lectura firmadas,
+ * resueltas recién acá (se usan una sola vez, en la misma request).
+ */
+async function resolveAIAnalysisMedia(hipId: string, organizationId: string): Promise<CatalogMediaItem[]> {
+  const assets = await db.mediaAsset.findMany({
+    where: { hipId, organizationId, kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
+    orderBy: { createdAt: "asc" },
+  });
+  return assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey) }));
+}
 
 function startOfCalendarDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -220,7 +238,12 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
   let anyChange = false;
 
   for (const hip of hips) {
-    const media = (hip.mediaJson as unknown as CatalogMediaItem[]) ?? [];
+    // Análisis IA (2026-08-13): SOLO fotos tomadas por el usuario desde la
+    // pantalla Análisis (IA) de este Hip — nunca `hip.mediaJson` (catálogo).
+    // Un Hip sin esas 3 fotos todavía queda afuera del Ranking del Día
+    // hasta que el usuario las tome — comportamiento nuevo, a propósito
+    // (ver comentario de resolveAIAnalysisMedia).
+    const media = await resolveAIAnalysisMedia(hip.id, organizationId);
     const currentHash = mediaFingerprint(media);
     const pointer = pointerByHipId.get(hip.id);
     const needsAnalysis = !pointer || pointer.analysisResult.mediaHash !== currentHash;
@@ -230,6 +253,12 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
       console.warn(`[ranking] Presupuesto de análisis agotado para este ciclo — Hip ${hip.hipNumber} queda pendiente para el próximo.`);
       continue;
     }
+
+    // No se genera ningún puntaje sin las 3 fotos (frontal/lateral/
+    // posterior) — mismo criterio que se aplica del lado de iOS antes de
+    // siquiera pedir el análisis, repetido acá porque este ciclo corre
+    // solo (scheduler) sin pasar por esa pantalla.
+    if (media.length < 3) continue;
 
     const triggerReason = pointer ? "media_changed" : "initial";
 
@@ -323,11 +352,19 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
  * distintos para el mismo Hip+organización al mismo tiempo.
  */
 export async function analyzeHipOnDemand(
-  hip: { id: string; hipNumber: string; horseName: string | null; mediaJson: unknown },
+  hip: { id: string; hipNumber: string; horseName: string | null },
   organizationId: string,
   deviceId?: string
 ): Promise<{ analysis: Record<string, unknown>; reused: boolean }> {
-  const media = (hip.mediaJson as unknown as CatalogMediaItem[]) ?? [];
+  // Análisis IA (2026-08-13): SOLO las fotos que el usuario tomó desde la
+  // pantalla Análisis (IA) de este Hip — nunca el catálogo (hip.mediaJson)
+  // ni Media general. Ver resolveAIAnalysisMedia.
+  const media = await resolveAIAnalysisMedia(hip.id, organizationId);
+  if (media.length < 3) {
+    throw new NoPhotosError(
+      "Todavía no hay las 3 fotos (frontal, lateral, posterior) tomadas desde Análisis (IA) para este Hip."
+    );
+  }
   const currentHash = mediaFingerprint(media);
   const lockKey = `${hip.id}:${organizationId}`;
 
