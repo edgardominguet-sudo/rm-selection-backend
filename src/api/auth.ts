@@ -23,7 +23,13 @@ declare global {
  * ya está construido sobre `req.user` tiene que cambiar.
  */
 export async function requireApiKey(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const provided = req.header("x-api-key");
+  // Se acepta también por query string ("?apiKey=...") además del header
+  // "x-api-key" — solo para permitir navegar a mano rutas GET puntuales
+  // (ej. /sales/resync) directo desde un browser, donde no se puede
+  // fijar un header custom sin herramientas adicionales. Mismo secreto,
+  // ninguna ruta nueva, no afecta a los clientes existentes que ya mandan
+  // el header (iOS sigue igual).
+  const provided = req.header("x-api-key") ?? (typeof req.query.apiKey === "string" ? req.query.apiKey : undefined);
 
   if (!provided) {
     if (!config.appApiKey) {
