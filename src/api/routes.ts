@@ -5,7 +5,8 @@ import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
-import { analyzeHipOnDemand } from "../rankingService";
+import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
+import { CatalogNotYetPublishedError } from "../types";
 import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
 import {
   importManualCatalog,
@@ -786,6 +787,77 @@ router.post("/sales", async (req, res) => {
     update: { name, scheduleYear, scheduleSlug, isActive: true, ...(parsedStartDate ? { startDate: parsedStartDate } : {}) },
   });
   res.json(sale);
+});
+
+// Fuerza AHORA un chequeo de catálogo contra la API en vivo de la casa de
+// ventas, saltando el intervalo normal de pollingPolicy (ver
+// saleHouses/pollingPolicy.ts) — pensado para el caso "sé que la casa de
+// ventas acaba de publicar el catálogo, no quiero esperar hasta el próximo
+// chequeo automático" (a más de 30 días de la venta, ese intervalo es de
+// hasta 24h). Es el MISMO camino que usa el scheduler (syncCatalog), sin
+// cambiar la lógica de detección/import — solo evita la espera. Idempotente:
+// puede llamarse las veces que haga falta sin duplicar Hips (mismo upsert
+// por [saleId, hipNumber] de siempre). Solo aplica a ventas catalogAccess
+// FULL — MANUAL_CSV no tiene ninguna API contra la que chequear (ver
+// comentario en processSale, rankingService.ts), y PENDING_ID/UNAVAILABLE
+// no tienen ID real todavía.
+router.post("/sales/:saleId/catalog/resync", async (req, res) => {
+  const { saleId } = req.params;
+  const sale = await db.sale.findUnique({ where: { id: saleId } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  if (sale.catalogAccess !== "FULL") {
+    res.status(400).json({
+      error: `Esta venta tiene catalogAccess=${sale.catalogAccess}, no FULL — no hay ninguna API en vivo contra la que forzar un chequeo.`,
+    });
+    return;
+  }
+
+  const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
+  const now = new Date();
+  try {
+    await syncCatalog(sale);
+    await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
+    const hipCountAfter = await db.hip.count({ where: { saleId: sale.id } });
+    res.json({
+      ok: true,
+      saleName: sale.name,
+      hipCountBefore,
+      hipCountAfter,
+      newHips: hipCountAfter - hipCountBefore,
+    });
+  } catch (err) {
+    await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
+    if (err instanceof CatalogNotYetPublishedError) {
+      res.json({ ok: false, saleName: sale.name, published: false, message: err.message });
+      return;
+    }
+    console.error(`[catalog-resync] Error sincronizando catálogo de ${sale.name}:`, err);
+    res.status(500).json({ error: "Error interno sincronizando el catálogo. Ver logs del servidor." });
+  }
+});
+
+// Mismo forzado de arriba, pero identificando la venta por house +
+// externalSaleId (los mismos datos públicos que ya expone GET /sales) en
+// vez del id interno — evita tener que consultar el id interno primero
+// solo para poder forzar un resync.
+router.post("/sales/resync", async (req, res) => {
+  const { house, externalSaleId } = req.body as { house?: string; externalSaleId?: string };
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan campos requeridos: house, externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  // Reutiliza el mismo handler que /sales/:saleId/catalog/resync (redirect
+  // 307 preserva método POST y body) — evita duplicar la lógica de
+  // sincronización.
+  res.redirect(307, `/api/v1/sales/${sale.id}/catalog/resync`);
 });
 
 // MARK: - Import manual de catálogo (SaleCatalogAccess.MANUAL_CSV, hoy OBS —
