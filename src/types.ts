@@ -71,8 +71,14 @@ export class CatalogNotYetPublishedError extends Error {
   }
 }
 
+// Forma nueva (2026-08-13, methodologyVersion = "rm-anatomical-2026-08") —
+// ver src/analysis/conformationScores.ts (ConformationScores) para la
+// versión canónica; esta interfaz es solo para referencia/tipado externo.
+// Filas legado (methodologyVersion = null) siguen con la forma vieja
+// {functional, limb, gait}, no representada acá porque no hay código activo
+// que la lea.
 export interface ConformationScoresJson {
-  functional: Record<string, number>;
-  limb: Record<string, number>;
-  gait: Record<string, number>;
+  lateral: Record<string, number>;
+  frontal: Record<string, number>;
+  posterior: Record<string, number>;
 }

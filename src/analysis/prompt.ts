@@ -1,59 +1,122 @@
-// Puerto directo del prompt de RMSelection/Services/AIConformationScoringService.swift
-// (buildPrompt) — mismo texto, misma regla central de comparación contra
-// el caballo referente, mismos 26 ids exactos.
+// Prompt del motor de Análisis (IA) — metodología nueva (2026-08-13):
+// "NUEVO CABALLO REFERENTE Y SISTEMA DEFINITIVO DE ANÁLISIS IA". Puerto
+// directo a Services/AIConformationScoringService.swift (mismo texto,
+// misma lógica) — ver ese archivo para la versión que corre en el
+// dispositivo cuando el backend no está disponible.
+//
+// Cambio de fondo respecto a la metodología legado (ver git history de
+// este archivo): la comparación deja de ser "similitud fotográfica general"
+// (¿se parece esta foto a la foto del referente?) y pasa a ser "anatomía
+// comparativa" (¿son anatómicamente equivalentes las proporciones, ejes,
+// ángulos y alineaciones de este caballo y las del patrón?) — landmarks,
+// proporciones, ejes, ángulos articulares, alineación, simetría, equilibrio
+// estructural, NO belleza/color/pelaje/iluminación/fondo/postura/cámara.
 
-export function buildPrompt(opts: {
-  hipNumber: string;
-  horseName?: string;
-  includesHipVideoFrames: boolean;
-  includesReferenceGaitFrames: boolean;
-}): string {
-  const horseLabel = opts.horseName ? ` (${opts.horseName})` : "";
-
-  let videoNote: string;
-  if (opts.includesHipVideoFrames) {
-    videoNote = opts.includesReferenceGaitFrames
-      ? "\n\nMás abajo vas a ver DOS tandas de fotogramas de marcha: primero los del CABALLO REFERENTE (su recorrido completo caminando/trotando, de punta a punta) y después los del HIP A EVALUAR (también de punta a punta). Usalos para evaluar las 7 subcategorías de Marcha (gait.*) comparando el movimiento real del Hip contra el movimiento real del referente — no contra una idea abstracta de \"buena marcha\"."
-      : "\n\nMás abajo vas a ver los fotogramas de marcha del HIP A EVALUAR, cubriendo su recorrido completo caminando/trotando de punta a punta. No hay fotogramas de marcha del caballo referente disponibles todavía, así que para las 7 subcategorías de Marcha (gait.*) evalualas usando tu criterio experto sobre lo que se considera una marcha correcta en la raza, aclarando en tu evaluación interna que es una estimación menos precisa que si hubiera video del referente.";
-  } else {
-    videoNote =
-      "\n\nNo hay video de este Hip en movimiento, solo fotos fijas. NO evalúes ni inventes las subcategorías de Marcha (gait.*) a partir de una pose estática — para esas 7 claves devolvé directamente 0.0, ya que la marcha real no se puede determinar sin video.";
-  }
-
-  return `Sos un evaluador experto en conformación de yearlings Pura Sangre de carrera (Thoroughbred), siguiendo la metodología RM Selection (Método RM).
-
-REGLA CENTRAL — MUY IMPORTANTE: tu evaluación NO es contra un estándar genérico de conformación equina ni contra tu idea abstracta de "caballo ideal". Es una comparación de SIMILITUD contra el CABALLO REFERENTE cuyas fotos (y, si están disponibles, fotogramas de marcha) te adjunto más abajo — ese ejemplar es el patrón oficial calibrado del Método RM. El puntaje de cada subcategoría (0.0 a 10.0) representa qué tan parecido es el Hip evaluado al caballo referente en ese aspecto puntual: 10.0 = equivalente al referente, 0.0 = máxima diferencia respecto al referente. Ignorá por completo cualquier noción general de "buena conformación" que no esté anclada en las fotos del referente que te adjunto: la única base de comparación válida es esa, no un criterio genérico de la raza.
-
-CASO ESPECIAL: si al mirar las fotos del Hip a evaluar concluís que se trata del MISMO caballo que el referente (misma capa, mismas marcas/lucero/calcetines, misma conformación individual — no solo un caballo parecido, sino el mismo ejemplar), asignale 10.0 a todas las subcategorías que puedas evaluar con las imágenes disponibles (incluida Marcha si hay fotogramas de ambos). Por definición, el caballo referente comparado contra sí mismo tiene 100% de similitud.
-
-Analizá las imágenes adjuntas del Hip ${opts.hipNumber}${horseLabel} y asigná un puntaje de 0.0 a 10.0 a cada una de las 26 subcategorías listadas abajo.${videoNote}
-
-ANÁLISIS DE MARCHA — EXHAUSTIVO: cuando haya fotogramas de video, tratalos como una secuencia continua que cubre el recorrido COMPLETO del clip, desde que el caballo arranca a caminar hasta el último fotograma — no te bases en una sola imagen aislada ni ignores ninguna parte de la secuencia. Con esa secuencia completa evaluá en conjunto: biomecánica general, desplazamiento, longitud y calidad de la zancada, coordinación entre miembros, ritmo, balance, aplomos en movimiento (cómo se mueven las extremidades respecto a como se ven paradas en las fotos fijas), movimiento de cabeza/cuello/dorso, impulsión de los posteriores, simetría entre el lado izquierdo y derecho, fluidez general del movimiento, y cualquier otro detalle relevante para el Método RM que se note a lo largo de toda la secuencia (irregularidades puntuales, cojeras leves, tensión, naturalidad del movimiento, etc.). Tu puntaje de cada subcategoría de Marcha debe reflejar ese análisis del recorrido entero, no una instantánea suelta.
-
-Subcategorías (usá EXACTAMENTE estos ids como claves):
-Anatomía funcional: functional.head (cabeza), functional.neck (cuello), functional.shoulder (hombro), functional.withers (cruz), functional.back (dorso), functional.loin (lomo), functional.croup (grupa), functional.hip (cadera), functional.muscling (musculatura), functional.chest (pecho), functional.topline (línea superior), functional.underline (línea inferior).
-Aplomos: limb.forelimbs (miembros anteriores), limb.hindlimbs (miembros posteriores), limb.knees (rodillas), limb.hocks (corvejones), limb.fetlocks (menudillos), limb.pasterns (cuartillas), limb.hooves (cascos).
-Marcha: gait.tracking (desplazamiento), gait.balance (balance), gait.strideLength (longitud y calidad de zancada), gait.impulsion (impulsión de los posteriores), gait.coordination (coordinación), gait.rhythm (ritmo), gait.symmetry (simetría y fluidez del movimiento).
-
-Respondé ÚNICAMENTE con un objeto JSON plano, sin texto adicional ni explicación, con esta forma exacta (las 26 claves, valores numéricos con un decimal):
-{"functional.head": 0.0, "functional.neck": 0.0, "functional.shoulder": 0.0, "functional.withers": 0.0, "functional.back": 0.0, "functional.loin": 0.0, "functional.croup": 0.0, "functional.hip": 0.0, "functional.muscling": 0.0, "functional.chest": 0.0, "functional.topline": 0.0, "functional.underline": 0.0, "limb.forelimbs": 0.0, "limb.hindlimbs": 0.0, "limb.knees": 0.0, "limb.hocks": 0.0, "limb.fetlocks": 0.0, "limb.pasterns": 0.0, "limb.hooves": 0.0, "gait.tracking": 0.0, "gait.balance": 0.0, "gait.strideLength": 0.0, "gait.impulsion": 0.0, "gait.coordination": 0.0, "gait.rhythm": 0.0, "gait.symmetry": 0.0}`;
+export interface PhotoClassification {
+  index: number;
+  view: "lateral" | "frontal" | "posterior" | "unclear";
+  valid: boolean;
+  invalidReason: string | null;
 }
 
-export function extractScores(text: string): Record<string, number> | null {
+export function buildPrompt(opts: { hipNumber: string; horseName?: string; photoCount: number }): string {
+  const horseLabel = opts.horseName ? ` (${opts.horseName})` : "";
+
+  return `Sos un evaluador experto en anatomía y conformación equina, siguiendo la metodología RM Selection (Método RM) para yearlings Pura Sangre de carrera (Thoroughbred).
+
+REGLA CENTRAL — MUY IMPORTANTE: tu tarea NO es juzgar parecido visual/fotográfico contra las imágenes del caballo referente (no compares belleza, color, pelaje, musculatura aparente por iluminación, tamaño en la foto, fondo, postura estética, calidad de cámara, ni semejanza superficial de la silueta). El caballo referente representa un PATRÓN ANATÓMICO Y DE CONFORMACIÓN, no una fotografía que haya que imitar. Debés construir mentalmente una representación estructural del referente a partir de sus 3 fotos (landmarks anatómicos, ejes corporales, proporciones entre segmentos, relaciones entre articulaciones, alineación de extremidades, línea superior, equilibrio, simetría) y comparar esa ESTRUCTURA contra la estructura del Hip evaluado — ESTRUCTURA vs. ESTRUCTURA, nunca FOTO vs. FOTO. Dos caballos pueden ser de color/tamaño/musculatura muy distintos y tener relaciones anatómicas igualmente correctas.
+
+TOLERANCIA ANATÓMICA PROFESIONAL: una diferencia respecto al referente NO es automáticamente un defecto. El referente establece el estándar estructural pero no es un molde exacto — determiná primero si la diferencia permanece dentro de un rango anatómicamente correcto y funcional para un Thoroughbred atlético antes de penalizarla. Penalizá principalmente las desviaciones con verdadera relevancia conformacional o funcional; no castigues variaciones anatómicas normales solo por no ser idénticas al referente. Un caballo anatómicamente excelente puede recibir un puntaje muy alto aunque sus medidas individuales no sean idénticas a las del referente — no exijas identidad matemática absoluta.
+
+=== PASO 1 — CLASIFICAR Y VALIDAR CADA FOTO DEL HIP ===
+Te voy a mostrar ${opts.photoCount} foto(s) del Hip ${opts.hipNumber}${horseLabel}, en un orden que no necesariamente corresponde a LATERAL/FRONTAL/POSTERIOR — el usuario las pudo haber tomado en cualquier orden. Para CADA foto (identificada por su número de orden, empezando en 1), determiná:
+1. Qué vista representa: "lateral" (de costado, se ve el perfil completo), "frontal" (de frente, mirando directamente hacia la cámara), "posterior" (de atrás, mirando la grupa/cuartos traseros), o "unclear" si no corresponde claramente a ninguna de esas 3 vistas o el caballo no es claramente identificable.
+2. Si es una foto VÁLIDA para evaluación anatómica confiable de esa vista: considerá rotación del caballo respecto a la cámara, inclinación, perspectiva, distancia, posición de las extremidades, obstrucciones, encuadre, y si los landmarks anatómicos relevantes son visibles. Si la perspectiva permite compensación razonable, tratala como válida. Si la distorsión/posición impide una evaluación confiable, marcala inválida — NO inventes medidas ni penalices al caballo por una mala fotografía, simplemente marcala inválida con el motivo.
+Si dos o más fotos parecen corresponder a la misma vista, elegí la MEJOR (más válida/más clara) para esa vista y marcá las demás como esa misma vista igual (no las descartes como "unclear", pero solo la mejor cuenta para el puntaje).
+
+=== PASO 2 — ANALIZAR CADA VISTA VÁLIDA CONTRA EL PATRÓN ANATÓMICO DEL REFERENTE ===
+Para cada vista (LATERAL/FRONTAL/POSTERIOR) que tenga al menos una foto del Hip válida y clasificada, comparar su estructura anatómica contra la vista correspondiente del caballo referente (adjunta más abajo, etiquetada) y asignar un puntaje de 0.0 a 10.0 a cada uno de sus 3 parámetros (ver lista exacta abajo). Si una vista NO tiene ninguna foto válida del Hip (falta la foto, o la única disponible fue marcada inválida), asigná 0.0 a sus 3 parámetros — NO inventes un puntaje sin una foto confiable de esa vista.
+
+VISTA LATERAL — evaluar:
+- lateral.proportions (Proporciones corporales): relación cabeza/cuello, longitud e inserción del cuello, cuello/hombro, profundidad de tórax, longitud corporal, relación tronco/extremidades, posición de la cruz, equilibrio entre tercio anterior/medio/posterior.
+- lateral.topline (Línea superior): relaciones anatómicas y geométricas de cuello, inserción del cuello, cruz, hombro, dorso, lomo, unión lumbosacra, grupa (longitud e inclinación) — NO si la silueta "se parece", sino las relaciones estructurales.
+- lateral.structure (Conformación estructural): ángulo escapular, relación hombro-brazo, rodilla, metacarpo, menudillo, cuartilla, casco anteriores; pelvis, cadera, articulación femorotibiorrotuliana, corvejón, metatarso, cuartilla y casco posteriores — la relación ENTRE segmentos, no cada región aislada.
+
+VISTA FRONTAL — evaluar:
+- frontal.alignment (Aplomo frontal): ejes anatómicos verticales — relación entre pecho, hombros, antebrazos, rodillas, cañas, menudillos, cuartillas, cascos; desviaciones mediales o laterales anatómicamente relevantes.
+- frontal.symmetry (Simetría): lado izquierdo vs. derecho en hombros, pecho, extremidades anteriores, rodillas, menudillos, cascos — distinguí una asimetría anatómica real de una diferencia producida solo porque el caballo no está perfectamente alineado frente a la cámara.
+- frontal.proportions (Proporciones frontales): amplitud del pecho, separación y orientación de las extremidades, relación tórax/extremidades, orientación de rodillas y cascos, equilibrio general del tren anterior.
+
+VISTA POSTERIOR — evaluar:
+- posterior.alignment (Aplomo posterior): ejes anatómicos de ambas extremidades posteriores — pelvis, cadera, muslo, articulación femorotibiorrotuliana, pierna, corvejones, cañas, menudillos, cuartillas, cascos.
+- posterior.structure (Ángulos y estructura posterior): relaciones anatómicas entre pelvis, muslo, pierna, corvejón, metatarso — NO uses el volumen muscular como sustituto de una correcta estructura ósea (la musculatura es información complementaria, nunca reemplaza la evaluación estructural).
+- posterior.symmetry (Simetría posterior): ambos lados de la grupa, pelvis, posición de corvejones, orientación de cañas, menudillos, cuartillas, cascos.
+
+CASO ESPECIAL: si concluís que una foto del Hip muestra literalmente al MISMO caballo que el referente (misma capa, mismas marcas/lucero/calcetines, misma conformación individual), asignale 10.0 a los 3 parámetros de esa vista.
+
+=== PASO 3 — RESUMEN ===
+Escribí un resumen breve (2-4 oraciones) en español, con terminología profesional de anatomía y conformación equina, explicando los hallazgos anatómicos relevantes (proporciones, ejes, ángulos, alineación, simetría) — NO te limites a decir cuánto se parece el caballo al referente.
+
+Respondé ÚNICAMENTE con un objeto JSON, sin texto adicional ni explicación, con esta forma exacta:
+{
+  "photos": [
+    {"index": 1, "view": "lateral", "valid": true, "invalidReason": null},
+    {"index": 2, "view": "frontal", "valid": false, "invalidReason": "rotación excesiva del caballo respecto a la cámara"}
+  ],
+  "scores": {"lateral.proportions": 0.0, "lateral.topline": 0.0, "lateral.structure": 0.0, "frontal.alignment": 0.0, "frontal.symmetry": 0.0, "frontal.proportions": 0.0, "posterior.alignment": 0.0, "posterior.structure": 0.0, "posterior.symmetry": 0.0},
+  "summary": "texto del resumen"
+}
+El array "photos" debe tener exactamente ${opts.photoCount} elemento(s), uno por cada foto del Hip en el mismo orden en que te las mostré (index 1 = primera foto, etc.). El objeto "scores" debe tener EXACTAMENTE esas 9 claves, valores numéricos con un decimal.`;
+}
+
+interface RawAnalysisResponse {
+  photos?: Array<{ index?: unknown; view?: unknown; valid?: unknown; invalidReason?: unknown }>;
+  scores?: Record<string, unknown>;
+  summary?: unknown;
+}
+
+export interface ParsedAnalysisResponse {
+  photos: PhotoClassification[];
+  scores: Record<string, number>;
+  summary: string | null;
+}
+
+const VALID_VIEWS = new Set(["lateral", "frontal", "posterior", "unclear"]);
+
+export function extractAnalysisResponse(text: string): ParsedAnalysisResponse | null {
   let cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start !== -1 && end !== -1 && end > start) {
     cleaned = cleaned.slice(start, end + 1);
   }
+  let raw: RawAnalysisResponse;
   try {
-    const raw = JSON.parse(cleaned) as Record<string, unknown>;
-    const result: Record<string, number> = {};
-    for (const [key, value] of Object.entries(raw)) {
-      if (typeof value === "number") result[key] = value;
-    }
-    return Object.keys(result).length > 0 ? result : null;
+    raw = JSON.parse(cleaned) as RawAnalysisResponse;
   } catch {
     return null;
   }
+
+  const scores: Record<string, number> = {};
+  if (raw.scores && typeof raw.scores === "object") {
+    for (const [key, value] of Object.entries(raw.scores)) {
+      if (typeof value === "number") scores[key] = value;
+    }
+  }
+  if (Object.keys(scores).length === 0) return null;
+
+  const photos: PhotoClassification[] = [];
+  if (Array.isArray(raw.photos)) {
+    for (const p of raw.photos) {
+      const index = typeof p.index === "number" ? p.index : photos.length + 1;
+      const view = typeof p.view === "string" && VALID_VIEWS.has(p.view) ? (p.view as PhotoClassification["view"]) : "unclear";
+      const valid = typeof p.valid === "boolean" ? p.valid : false;
+      const invalidReason = typeof p.invalidReason === "string" ? p.invalidReason : null;
+      photos.push({ index, view, valid, invalidReason });
+    }
+  }
+
+  const summary = typeof raw.summary === "string" ? raw.summary : null;
+
+  return { photos, scores, summary };
 }

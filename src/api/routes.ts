@@ -688,12 +688,24 @@ router.get("/reference-horse", requireUser, async (req, res) => {
 });
 
 router.put("/reference-horse", requireUser, async (req, res) => {
-  const { photoUrls, gaitVideoUrl } = req.body as { photoUrls: string[]; gaitVideoUrl?: string | null };
-  if (!Array.isArray(photoUrls)) {
+  const { photoUrls, gaitVideoUrl, lateralPhotoUrl, frontalPhotoUrl, posteriorPhotoUrl } = req.body as {
+    photoUrls?: string[];
+    gaitVideoUrl?: string | null;
+    lateralPhotoUrl?: string | null;
+    frontalPhotoUrl?: string | null;
+    posteriorPhotoUrl?: string | null;
+  };
+  if (photoUrls !== undefined && !Array.isArray(photoUrls)) {
     res.status(400).json({ error: "photoUrls debe ser un array de URLs." });
     return;
   }
-  await setReferenceHorse(req.user!.organizationId, { photoUrls, gaitVideoUrl: gaitVideoUrl ?? null });
+  await setReferenceHorse(req.user!.organizationId, {
+    photoUrls,
+    gaitVideoUrl,
+    lateralPhotoUrl,
+    frontalPhotoUrl,
+    posteriorPhotoUrl,
+  });
   res.json({ ok: true });
 });
 

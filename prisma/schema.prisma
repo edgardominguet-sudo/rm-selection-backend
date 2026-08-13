@@ -519,14 +519,36 @@ model AnalysisResult {
   // más preciso que solo guardar el hash "actual" en Hip.
   mediaHash             String?
 
-  // Las 26 subcategorías (functional.*, limb.*, gait.*) puntaje 0-10.
+  // Puntajes de conformación de este análisis. Forma depende de
+  // `methodologyVersion`: filas viejas (methodologyVersion = null) tienen
+  // las 26 subcategorías legado (functional.*, limb.*, gait.*); filas
+  // nuevas (methodologyVersion = "rm-anatomical-2026-08") tienen los 9
+  // parámetros de anatomía comparativa (lateral.*, frontal.*, posterior.*)
+  // — ver src/analysis/conformationScores.ts. NUNCA se reescribe una fila
+  // vieja para "migrarla" al nuevo formato: el referente con el que se
+  // calculó ya no existe, así que ese puntaje histórico simplemente deja
+  // de mostrarse como vigente (el Hip pasa a necesitar un análisis nuevo).
   conformationScoresJson Json
   overallScore          Float
   classification        String   // "Comprar" | "Revisar" | "Descartar"
   summary               String?
+  // null = metodología legado (similitud fotográfica general, 26 subcats
+  // con Marcha). "rm-anatomical-2026-08" = metodología nueva (anatomía
+  // comparativa por landmarks, 3 vistas x 3 parámetros, sin Marcha) — ver
+  // INSTRUCCIONES "NUEVO CABALLO REFERENTE Y SISTEMA DEFINITIVO DE ANÁLISIS
+  // IA" (2026-08-13). El cliente (iOS) usa este campo para decidir si el
+  // análisis guardado sigue siendo válido para mostrarse como vigente.
+  methodologyVersion   String?
+  // Clasificación de cada foto del Hip usada en este análisis (vista
+  // detectada + validez) — solo aplica a la metodología nueva. null en
+  // filas legado. Ver PhotoClassification en src/analysis/prompt.ts.
+  photoClassificationsJson Json?
 
   // Diagnóstico técnico (opcional, para depurar calidad del análisis):
   // cuántos fotogramas de marcha se pudieron usar y de qué duración.
+  // LEGADO — la metodología nueva no usa video/marcha en este módulo (ver
+  // punto 12 de las instrucciones), así que estos quedan null en filas
+  // nuevas. No se eliminan las columnas para no perder el historial viejo.
   gaitFrameCount        Int?
   gaitVideoDurationSec  Float?
 
@@ -786,8 +808,21 @@ model ReferenceHorse {
   // Selection quiere patrones distintos por raza/tipo de venta dentro de
   // una misma organización.
   key            String       @default("default")
+  // LEGADO (metodología de similitud fotográfica general, hasta 8 fotos
+  // sin rol fijo) — se deja sin tocar para no perder el historial, pero el
+  // motor de Análisis (IA) nuevo (2026-08-13, "anatomía comparativa") ya NO
+  // lee este campo. Ver lateralPhotoUrl/frontalPhotoUrl/posteriorPhotoUrl.
   photoUrls      Json         @default("[]") // string[]
   gaitVideoUrl   String?
+  // Nuevo patrón anatómico oficial (2026-08-13): EXACTAMENTE 3 fotos con
+  // rol fijo, una por vista — la comparación ya no es "similitud visual
+  // general" sino vista-por-vista contra el rol correspondiente (ver
+  // src/analysis/prompt.ts). Las 3 son requeridas para poder analizar
+  // cualquier vista; si falta alguna, esa vista específica del Hip queda
+  // sin poder evaluarse (no se inventa).
+  lateralPhotoUrl   String?
+  frontalPhotoUrl   String?
+  posteriorPhotoUrl String?
   updatedAt      DateTime     @updatedAt
 
   @@unique([organizationId, key])

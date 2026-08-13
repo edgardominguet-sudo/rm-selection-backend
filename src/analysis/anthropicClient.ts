@@ -1,9 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config";
-import { buildPrompt, extractScores } from "./prompt";
-import { downscaleToJPEG, fetchAndDownscale } from "./imageDownscale";
-import { extractGaitFrames } from "./frameExtraction";
-import { ALL_TRAIT_IDS, ConformationScores, emptyScores, setScore, GAIT_TRAITS } from "./conformationScores";
+import { buildPrompt, extractAnalysisResponse, PhotoClassification } from "./prompt";
+import { fetchAndDownscale } from "./imageDownscale";
+import { ALL_TRAIT_IDS, ConformationScores, emptyScores, setScore, METHODOLOGY_VERSION } from "./conformationScores";
 import { CatalogMediaItem } from "../types";
 
 export class MissingReferenceHorseError extends Error {}
@@ -21,22 +20,29 @@ function textBlock(text: string): TextBlock {
   return { type: "text", text };
 }
 
+// Patrón anatómico oficial (2026-08-13): EXACTAMENTE 3 fotos con rol fijo,
+// una por vista — ver comentario en ReferenceHorse, schema.prisma. El
+// campo `photoUrls`/`gaitVideoUrl` legado ya no se usa en este módulo.
 export interface ReferenceHorseAssets {
   photoUrls: string[];
   gaitVideoUrl?: string | null;
+  lateralPhotoUrl?: string | null;
+  frontalPhotoUrl?: string | null;
+  posteriorPhotoUrl?: string | null;
 }
 
 export interface AnalysisOutcome {
   scores: ConformationScores;
-  gaitFrameCount: number;
-  gaitVideoDurationSec: number | null;
+  photoClassifications: PhotoClassification[];
+  summary: string | null;
+  methodologyVersion: string;
 }
 
 /**
  * Corre el análisis de conformación de un Hip contra el caballo referente
- * — puerto directo de AnthropicVisionScoringService.analyze(hip:) de la
- * app iOS, con la misma regla central de comparación y el mismo criterio
- * de "sin video no se inventa Marcha" (gait.* en 0 si no hay fotogramas).
+ * — metodología nueva (2026-08-13): anatomía comparativa por vista
+ * (LATERAL/FRONTAL/POSTERIOR), sin Marcha. Puerto directo de
+ * AnthropicVisionScoringService.analyze(hip:) de la app iOS.
  */
 export async function analyzeHip(opts: {
   hipNumber: string;
@@ -47,11 +53,13 @@ export async function analyzeHip(opts: {
   if (!config.anthropicApiKey) {
     throw new Error("Falta ANTHROPIC_API_KEY en la configuración del backend.");
   }
-  if (opts.reference.photoUrls.length === 0) {
-    throw new MissingReferenceHorseError("Falta configurar las fotos del caballo referente.");
+  if (!opts.reference.lateralPhotoUrl || !opts.reference.frontalPhotoUrl || !opts.reference.posteriorPhotoUrl) {
+    throw new MissingReferenceHorseError(
+      "Falta configurar las 3 fotos del caballo referente (lateral, frontal, posterior)."
+    );
   }
 
-  const photoItems = opts.media.filter((m) => m.kind === "photo").slice(0, 4);
+  const photoItems = opts.media.filter((m) => m.kind === "photo").slice(0, 6);
   if (photoItems.length === 0) {
     throw new NoPhotosError("Este Hip todavía no tiene fotos cargadas para analizar.");
   }
@@ -65,49 +73,41 @@ export async function analyzeHip(opts: {
     throw new NoPhotosError("No se pudo descargar ninguna foto de este Hip.");
   }
 
-  const videoItem = opts.media.find((m) => m.kind === "video");
-  const hipGaitResult = videoItem ? await extractGaitFrames(videoItem.url) : { frames: [], durationSeconds: null };
-  const hipGaitBlocks = (
-    await Promise.all(hipGaitResult.frames.map((f) => downscaleToJPEG(f)))
-  ).filter((b): b is Buffer => b !== null).map(imageBlock);
-
-  const referencePhotoBlocks: ImageBlock[] = [];
-  for (const url of opts.reference.photoUrls.slice(0, 6)) {
-    const jpeg = await fetchAndDownscale(url);
-    if (jpeg) referencePhotoBlocks.push(imageBlock(jpeg));
-  }
-
-  let referenceGaitBlocks: ImageBlock[] = [];
-  if (opts.reference.gaitVideoUrl) {
-    const refGaitResult = await extractGaitFrames(opts.reference.gaitVideoUrl);
-    referenceGaitBlocks = (
-      await Promise.all(refGaitResult.frames.map((f) => downscaleToJPEG(f)))
-    ).filter((b): b is Buffer => b !== null).map(imageBlock);
+  const [lateralJpeg, frontalJpeg, posteriorJpeg] = await Promise.all([
+    fetchAndDownscale(opts.reference.lateralPhotoUrl),
+    fetchAndDownscale(opts.reference.frontalPhotoUrl),
+    fetchAndDownscale(opts.reference.posteriorPhotoUrl),
+  ]);
+  if (!lateralJpeg || !frontalJpeg || !posteriorJpeg) {
+    throw new MissingReferenceHorseError(
+      "No se pudo descargar alguna de las 3 fotos del caballo referente."
+    );
   }
 
   const promptText = buildPrompt({
     hipNumber: opts.hipNumber,
     horseName: opts.horseName,
-    includesHipVideoFrames: hipGaitBlocks.length > 0,
-    includesReferenceGaitFrames: referenceGaitBlocks.length > 0,
+    photoCount: hipImageBlocks.length,
   });
 
-  // Mismo orden que la versión iOS: instrucciones -> caballo referente
-  // completo -> Hip a evaluar, para que la IA "mire" primero el patrón.
+  // Orden: instrucciones -> caballo referente (las 3 vistas, cada una
+  // etiquetada explícitamente para que la IA no tenga que adivinar cuál es
+  // cuál) -> fotos del Hip a evaluar, numeradas en el mismo orden que se le
+  // pide que devuelva en "photos".
   const content: ContentBlock[] = [textBlock(promptText)];
-  content.push(textBlock("=== FOTOS DEL CABALLO REFERENTE (patrón oficial del Método RM — la base de toda la comparación) ==="));
-  content.push(...referencePhotoBlocks);
-  if (referenceGaitBlocks.length > 0) {
-    content.push(textBlock("=== FOTOGRAMAS DE MARCHA DEL CABALLO REFERENTE (video de referencia, recorrido completo de punta a punta) ==="));
-    content.push(...referenceGaitBlocks);
-  }
+  content.push(textBlock("=== CABALLO REFERENTE — VISTA LATERAL (patrón anatómico oficial) ==="));
+  content.push(imageBlock(lateralJpeg));
+  content.push(textBlock("=== CABALLO REFERENTE — VISTA FRONTAL (patrón anatómico oficial) ==="));
+  content.push(imageBlock(frontalJpeg));
+  content.push(textBlock("=== CABALLO REFERENTE — VISTA POSTERIOR (patrón anatómico oficial) ==="));
+  content.push(imageBlock(posteriorJpeg));
+
   const horseLabel = opts.horseName ? ` (${opts.horseName})` : "";
-  content.push(textBlock(`=== FOTOS DEL HIP A EVALUAR: Hip ${opts.hipNumber}${horseLabel} ===`));
-  content.push(...hipImageBlocks);
-  if (hipGaitBlocks.length > 0) {
-    content.push(textBlock("=== FOTOGRAMAS DE MARCHA DEL HIP A EVALUAR (video de este ejemplar, recorrido completo de punta a punta) ==="));
-    content.push(...hipGaitBlocks);
-  }
+  content.push(textBlock(`=== FOTOS DEL HIP A EVALUAR: Hip ${opts.hipNumber}${horseLabel} — clasificalas y validalas primero (Paso 1) ===`));
+  hipImageBlocks.forEach((block, i) => {
+    content.push(textBlock(`--- Foto del Hip #${i + 1} ---`));
+    content.push(block);
+  });
 
   const client = new Anthropic({ apiKey: config.anthropicApiKey });
   const response = await sendWithRetry(client, content);
@@ -117,28 +117,33 @@ export async function analyzeHip(opts: {
     throw new AIResponseError("La IA no devolvió un resultado que se pudiera interpretar.");
   }
 
-  const scoresDict = extractScores(firstText.text);
-  if (!scoresDict) {
+  const parsed = extractAnalysisResponse(firstText.text);
+  if (!parsed) {
     throw new AIResponseError("La IA no devolvió un resultado que se pudiera interpretar.");
   }
 
   const scores = emptyScores();
   for (const traitId of ALL_TRAIT_IDS) {
-    if (scoresDict[traitId] !== undefined) {
-      setScore(scores, traitId, scoresDict[traitId]);
+    if (parsed.scores[traitId] !== undefined) {
+      setScore(scores, traitId, parsed.scores[traitId]);
     }
   }
 
-  // Sin fotogramas de marcha reales, no se "adivina" la Marcha — mismo
-  // criterio que la versión iOS: esas 7 subcategorías quedan en 0.
-  if (hipGaitBlocks.length === 0) {
-    for (const trait of GAIT_TRAITS) scores.gait[trait] = 0;
-  }
+  // Defensa adicional (además de la instrucción del prompt): una vista sin
+  // ninguna foto válida clasificada no puede quedar con puntaje "inventado"
+  // por el modelo — se fuerza a 0 acá también, mismo criterio que ya usaba
+  // el motor legado para forzar Marcha a 0 sin video (ver comentario en
+  // conformationScores.ts, overallScore).
+  const validViews = new Set(parsed.photos.filter((p) => p.valid).map((p) => p.view));
+  if (!validViews.has("lateral")) for (const t of ["proportions", "topline", "structure"]) scores.lateral[t] = 0;
+  if (!validViews.has("frontal")) for (const t of ["alignment", "symmetry", "proportions"]) scores.frontal[t] = 0;
+  if (!validViews.has("posterior")) for (const t of ["alignment", "structure", "symmetry"]) scores.posterior[t] = 0;
 
   return {
     scores,
-    gaitFrameCount: hipGaitBlocks.length,
-    gaitVideoDurationSec: hipGaitResult.durationSeconds,
+    photoClassifications: parsed.photos,
+    summary: parsed.summary,
+    methodologyVersion: METHODOLOGY_VERSION,
   };
 }
 
@@ -146,22 +151,14 @@ async function sendWithRetry(client: Anthropic, content: ContentBlock[], attempt
   try {
     return await client.messages.create({
       model: config.anthropicModel,
-      max_tokens: 1536,
-      // NOTA (2026-08-11): se había agregado temperature:0 acá como parte
-      // de la auditoría de reproducibilidad, para reducir la variabilidad
-      // del modelo entre llamados. Se REVIERTE: claude-sonnet-5 devuelve
-      // 400 ("`temperature` is deprecated for this model") apenas el campo
-      // está presente en el body, sea cual sea el valor — no es que
-      // rechace un valor puntual, rechaza el parámetro entero. Confirmado
-      // en producción (Hip 110, "No se pudo analizar", mismo error textual)
-      // y documentado como comportamiento nuevo de los modelos Claude más
-      // recientes (Sonnet 5 / Opus 4.7+): ya no aceptan overrides de
-      // sampling (temperature/top_p/top_k), usan siempre su default. No
-      // hay ningún parámetro de reemplazo disponible del lado del cliente
-      // para forzar determinismo con este modelo — la reproducibilidad
-      // tiene que apoyarse en lo que sí es 100% determinista y ya está
-      // verificado: extracción de frames (frameExtraction.ts) y armado del
-      // prompt (prompt.ts). No toca metodología, pesos ni criterios RM.
+      max_tokens: 2048,
+      // NOTA (2026-08-11, heredada de la metodología legado): NO se agrega
+      // temperature acá — claude-sonnet-5 devuelve 400 ("temperature is
+      // deprecated for this model") apenas el campo está presente, sea cual
+      // sea el valor. La reproducibilidad se apoya en lo que sí es 100%
+      // determinista: el armado del prompt (prompt.ts) y las 3 fotos fijas
+      // del referente (siempre las mismas URLs mientras no se reemplace el
+      // referente).
       messages: [{ role: "user", content: content as unknown as Anthropic.MessageParam["content"] }],
     });
   } catch (err) {
