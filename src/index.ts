@@ -76,14 +76,13 @@ app.get("/diag/resync-saratoga", async (_req, res) => {
     return;
   }
   const officialCount = await db.officialSaleResult.count();
-  const sample = await db.officialSaleResult.findMany({ take: 15, orderBy: { hipNumber: "asc" } });
   const rawHipSample = await db.hip.findMany({
     where: { saleId },
     select: { hipNumber: true, saleResultJson: true },
     orderBy: { hipNumber: "asc" },
-    take: 20,
+    take: 8,
   });
-  res.json({ synced: true, officialCount, sample, rawHipSample });
+  res.json({ synced: true, officialCount, rawHipSample });
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
