@@ -40,7 +40,15 @@ export async function extractLandmarksFromPhoto(opts: {
   }
   const parsed = extractLandmarkResponse(firstText.text);
   if (!parsed) {
-    throw new LandmarkExtractionError(`Respuesta de landmarks con formato inesperado para ${opts.photoLabel}.`);
+    // DIAGNÓSTICO TEMPORAL (2026-08-14): se incluye un fragmento de la
+    // respuesta cruda en el mensaje de error para poder ver EXACTAMENTE
+    // por qué falló el parseo (JSON truncado, texto extra, etc.) sin tener
+    // que loguear la respuesta completa en cada corrida normal. Quitar
+    // este fragmento una vez diagnosticado y corregido el parser.
+    const snippet = firstText.text.slice(0, 400).replace(/\s+/g, " ");
+    throw new LandmarkExtractionError(
+      `Respuesta de landmarks con formato inesperado para ${opts.photoLabel}. Fragmento crudo: ${snippet}`
+    );
   }
   return parsed;
 }
