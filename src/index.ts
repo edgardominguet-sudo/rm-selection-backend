@@ -33,6 +33,30 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.send(Buffer.from(photo.dataBase64, "base64"));
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-14) — auditoría de Media de Fasig-Tipton
+// New York Bred Yearlings, se borra apenas termine la investigación.
+app.get("/_diag/ft-ny-media", async (_req, res) => {
+  try {
+    const sale = await db.sale.findFirst({ where: { house: "FASIG_TIPTON", name: { contains: "New York Bred" } } });
+    if (!sale) { res.json({ found: false }); return; }
+    const totalHips = await db.hip.count({ where: { saleId: sale.id } });
+    const allHips = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true, horseName: true, mediaJson: true } });
+    const withMedia = allHips.filter((h) => Array.isArray(h.mediaJson) && h.mediaJson.length > 0);
+    res.json({
+      found: true,
+      saleId: sale.id,
+      externalSaleId: sale.externalSaleId,
+      catalogAccess: sale.catalogAccess,
+      totalHips,
+      hipsWithMedia: withMedia.length,
+      sample: allHips.slice(0, 3),
+      sampleWithMedia: withMedia.slice(0, 3),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
