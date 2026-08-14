@@ -41,13 +41,36 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
 // correr la importación completa (pedido explícito del propietario,
 // punto 8: "no realices inmediatamente una modificación masiva").
 app.get("/diag/keeneland-pdf-probe", async (req, res) => {
-  const { probeKeenelandCatalogViaPedigreePdfs, fetchPedigreePdfText } = await import("./saleHouses/keenelandPedigreePdfCatalog");
+  const { probeKeenelandCatalogViaPedigreePdfs, fetchPedigreePdfText, parseKeenelandPedigreePdfText, DEBUG_REGEXES } = await import("./saleHouses/keenelandPedigreePdfCatalog");
   const saleCode = (req.query.saleCode as string | undefined) ?? "k226";
   const startAt = Number(req.query.startAt ?? "1");
   const count = Number(req.query.count ?? "3");
   if (req.query.raw === "1") {
     const text = await fetchPedigreePdfText(saleCode, startAt);
     res.type("text/plain").send(text ?? "(no encontrado)");
+    return;
+  }
+  if (req.query.debug === "1") {
+    const text = await fetchPedigreePdfText(saleCode, startAt);
+    if (!text) {
+      res.json({ ok: false, error: "PDF no encontrado" });
+      return;
+    }
+    const damIdx = text.indexOf("1st dam");
+    const around = damIdx >= 0 ? text.slice(damIdx, damIdx + 80) : null;
+    res.json({
+      ok: true,
+      textLength: text.length,
+      damIdx,
+      // JSON.stringify escapa cualquier caracter invisible/no-ASCII ( , \f, etc.)
+      // que el render de texto plano podría estar ocultando.
+      aroundDamJson: around ? JSON.stringify(around) : null,
+      parsed: parseKeenelandPedigreePdfText(text, startAt),
+      regexTests: {
+        damLine: DEBUG_REGEXES.DAM_LINE.test(text),
+        sireLine: DEBUG_REGEXES.SIRE_LINE.test(text),
+      },
+    });
     return;
   }
   try {

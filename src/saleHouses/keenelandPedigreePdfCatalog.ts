@@ -88,6 +88,13 @@ const SIRE_LINE = /\bBy\s+([A-Z][A-Za-z'.\-() ]*?)\s*\(\d{4}\)\./;
 const DAM_LINE = /1st dam\s*\n\s*([A-Z][A-Za-z' .()\-]*?),\s*by\s+([^.\n]+)\./;
 const BARN_HIP_BLOCK = /Barn\s*\n([^\n]+)\s*\nHip No\.\s*\n\s*(\d+)/;
 
+// DIAGNÓSTICO TEMPORAL (2026-08-14) — expone las regexes para que la ruta
+// /diag/keeneland-pdf-probe?debug=1 pueda probarlas directo contra el texto
+// recién descargado por el propio servidor, sin depender de una copia a
+// mano del texto (que puede perder caracteres invisibles al pasar por el
+// render de otra herramienta). Se retira junto con el resto de /diag/*.
+export const DEBUG_REGEXES = { SIRE_LINE, DAM_LINE };
+
 /** Extrae los campos que RM Selection necesita del texto plano del PDF de pedigree de un Hip. */
 export function parseKeenelandPedigreePdfText(text: string, fallbackHipNumber: number): NormalizedHip {
   const colorSexMatch = COLOR_SEX_LINE.exec(text);
