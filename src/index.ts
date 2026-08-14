@@ -96,6 +96,20 @@ app.get("/diag/keeneland-pdf-probe", async (req, res) => {
 // lógica invocada es exactamente la misma (mismo upsert idempotente por
 // [saleId, hipNumber], ver upsertNormalizedHips en rankingService.ts — no
 // hay riesgo de duplicados por llamarlo más de una vez).
+// El probe completo de ~4.635 Hips reales (concurrencia acotada a propósito,
+// ver comentario de PedigreePdfProbeOptions.concurrency) tarda bastante más
+// que cualquier timeout razonable de request HTTP — así que este endpoint
+// dispara syncCatalog() en segundo plano y responde AL TOQUE con
+// started:true. El progreso se consulta aparte con
+// /diag/keeneland-force-sync-status.
+let keenelandForceSyncState: {
+  running: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  result: unknown;
+} = { running: false, startedAt: null, finishedAt: null, error: null, result: null };
+
 app.get("/diag/keeneland-force-sync", async (req, res) => {
   const { db } = await import("./db");
   const { syncCatalog } = await import("./rankingService");
@@ -106,36 +120,47 @@ app.get("/diag/keeneland-force-sync", async (req, res) => {
     res.status(404).json({ ok: false, error: `No existe ninguna Sale KEENELAND con externalSaleId=${externalSaleId}.` });
     return;
   }
-  const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
-  try {
-    await syncCatalog(sale);
-    const hipCountAfter = await db.hip.count({ where: { saleId: sale.id } });
-    // hipNumber es String en el schema (no todos los catálogos usan números
-    // puros) — un _min/_max de Prisma compararía lexicográficamente
-    // ("100" < "99"), así que el rango real se calcula acá a mano sobre los
-    // valores numéricos.
-    const allHipNumbers = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true } });
-    const numericHipNumbers = allHipNumbers.map((h) => Number(h.hipNumber)).filter((n) => Number.isFinite(n));
-    const minHipNumber = numericHipNumbers.length > 0 ? Math.min(...numericHipNumbers) : null;
-    const maxHipNumber = numericHipNumbers.length > 0 ? Math.max(...numericHipNumbers) : null;
-    res.json({
-      ok: true,
-      saleName: sale.name,
-      saleId: sale.id,
-      hipCountBefore,
-      hipCountAfter,
-      newHips: hipCountAfter - hipCountBefore,
-      minHipNumber,
-      maxHipNumber,
-    });
-  } catch (err) {
-    if (err instanceof CatalogNotYetPublishedError) {
-      res.json({ ok: false, published: false, message: err.message });
-      return;
-    }
-    console.error("[diag/keeneland-force-sync] Error:", err);
-    res.status(500).json({ ok: false, error: String(err) });
+  if (keenelandForceSyncState.running) {
+    res.json({ ok: true, alreadyRunning: true, state: keenelandForceSyncState });
+    return;
   }
+  const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
+  keenelandForceSyncState = { running: true, startedAt: new Date().toISOString(), finishedAt: null, error: null, result: null };
+  res.json({ ok: true, started: true, saleName: sale.name, saleId: sale.id, hipCountBefore });
+
+  // Corre en segundo plano — la respuesta HTTP ya se mandó arriba.
+  (async () => {
+    try {
+      await syncCatalog(sale);
+      const hipCountAfter = await db.hip.count({ where: { saleId: sale.id } });
+      const allHipNumbers = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true } });
+      const numericHipNumbers = allHipNumbers.map((h) => Number(h.hipNumber)).filter((n) => Number.isFinite(n));
+      const minHipNumber = numericHipNumbers.length > 0 ? Math.min(...numericHipNumbers) : null;
+      const maxHipNumber = numericHipNumbers.length > 0 ? Math.max(...numericHipNumbers) : null;
+      keenelandForceSyncState = {
+        running: false,
+        startedAt: keenelandForceSyncState.startedAt,
+        finishedAt: new Date().toISOString(),
+        error: null,
+        result: { hipCountBefore, hipCountAfter, newHips: hipCountAfter - hipCountBefore, minHipNumber, maxHipNumber },
+      };
+      console.log(`[diag/keeneland-force-sync] Completo: ${hipCountBefore} -> ${hipCountAfter} Hips (rango ${minHipNumber}-${maxHipNumber}).`);
+    } catch (err) {
+      const message = err instanceof CatalogNotYetPublishedError ? err.message : String(err);
+      keenelandForceSyncState = {
+        running: false,
+        startedAt: keenelandForceSyncState.startedAt,
+        finishedAt: new Date().toISOString(),
+        error: message,
+        result: null,
+      };
+      console.error("[diag/keeneland-force-sync] Error en segundo plano:", err);
+    }
+  })();
+});
+
+app.get("/diag/keeneland-force-sync-status", (_req, res) => {
+  res.json(keenelandForceSyncState);
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
