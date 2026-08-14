@@ -5,7 +5,6 @@ import { router } from "./api/routes";
 import { requireApiKey } from "./api/auth";
 import { startScheduler, startDiscoveryScheduler, startMediaSweepScheduler } from "./scheduler";
 import { db } from "./db";
-import { runNightlyMediaSweep } from "./mediaSweepService";
 
 const app = express();
 app.use(cors());
@@ -32,20 +31,6 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.setHeader("Content-Type", photo.mimeType);
   res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   res.send(Buffer.from(photo.dataBase64, "base64"));
-});
-
-// DIAGNÓSTICO TEMPORAL (2026-08-14) — dispara a mano el mismo barrido que
-// corre solo a las 3am, para poder probar idempotencia (correrlo dos veces
-// seguidas y confirmar que la segunda vez no encuentra ni duplica nada)
-// sin tener que esperar hasta la madrugada. Se borra apenas termine la
-// prueba — mismo criterio que el diagnóstico anterior de esta misma tarea.
-app.get("/_diag/run-media-sweep", async (_req, res) => {
-  try {
-    const summary = await runNightlyMediaSweep();
-    res.json(summary);
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
