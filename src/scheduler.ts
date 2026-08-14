@@ -12,6 +12,9 @@ import { runSaleDiscovery } from "./saleDiscoveryService";
 // eso podría duplicar versiones de análisis o pisarse entre sí.
 let isRunning = false;
 
+// Ver DIAGNÓSTICO TEMPORAL más abajo en runCycle().
+let diagDumpDone = false;
+
 /**
  * El scheduler corre en el mismo proceso que la API (un solo servicio en
  * Railway). Cada tick (cada 5 minutos — el intervalo más fino que puede
@@ -51,6 +54,25 @@ async function runCycle(): Promise<void> {
   let firstError: string | null = null;
 
   try {
+    // DIAGNÓSTICO TEMPORAL (Calendario de Ventas / SaleDay): un solo dump,
+    // una sola vez por arranque del proceso, de TODAS las ventas sin
+    // filtrar — para confirmar por qué una venta no entra al ciclo
+    // (isActive / catalogAccess) sin depender de acceso directo a la DB.
+    // Se saca en cuanto quede diagnosticado.
+    if (!diagDumpDone) {
+      diagDumpDone = true;
+      try {
+        const allSales = await db.sale.findMany({
+          select: { name: true, house: true, catalogAccess: true, isActive: true, scheduleYear: true, scheduleSlug: true },
+        });
+        for (const s of allSales) {
+          console.log(`[diag-sales] "${s.name}" house=${s.house} catalogAccess=${s.catalogAccess} isActive=${s.isActive} scheduleYear=${s.scheduleYear ?? "null"} scheduleSlug=${s.scheduleSlug ?? "null"}`);
+        }
+      } catch (err) {
+        console.error("[diag-sales] Error listando ventas:", err);
+      }
+    }
+
     const organizations = await db.organization.findMany({ select: { id: true } });
     // catalogAccess FULL o MANUAL_CSV — ambas pueden tener Hips cargados
     // (FULL los trae sola vía API; MANUAL_CSV los recibe por
