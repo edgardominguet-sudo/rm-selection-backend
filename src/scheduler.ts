@@ -3,6 +3,7 @@ import { db } from "./db";
 import { config } from "./config";
 import { processSale, AnalysisBudget, cleanupExpiredRankingSnapshots } from "./rankingService";
 import { runSaleDiscovery } from "./saleDiscoveryService";
+import { runNightlyMediaSweep } from "./mediaSweepService";
 
 // Evita que dos ciclos corran superpuestos: si analizar todos los Hips
 // pendientes de un ciclo tarda más que el intervalo del próximo tick (algo
@@ -137,5 +138,42 @@ async function runDiscoveryCycle(): Promise<void> {
     console.error("[discovery] Error en la corrida de descubrimiento:", err);
   } finally {
     discoveryIsRunning = false;
+  }
+}
+
+// Mismo criterio de "no superponer ciclos" que los otros dos schedulers.
+let mediaSweepIsRunning = false;
+
+/**
+ * Barrido NOCTURNO de Media (2026-08-14, a pedido explícito): "un solo
+ * barrido automático al día... aproximadamente a las 3:00 a.m." — cron
+ * propio, separado del scheduler de ranking/análisis (cada 5 min, sigue
+ * exactamente igual que antes) y del de descubrimiento de ventas nuevas
+ * (cada 6h). Ver mediaSweepService.ts para qué hace exactamente y por qué
+ * es un mecanismo aparte. "0 3 * * *" = todos los días a las 3:00 (hora del
+ * servidor, UTC en Railway).
+ */
+export function startMediaSweepScheduler(): void {
+  cron.schedule("0 3 * * *", () => {
+    void runMediaSweepCycle();
+  });
+  console.log("[media-sweep] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor).");
+}
+
+async function runMediaSweepCycle(): Promise<void> {
+  if (mediaSweepIsRunning) {
+    console.warn("[media-sweep] El barrido anterior todavía está corriendo — se salta este tick.");
+    return;
+  }
+  mediaSweepIsRunning = true;
+  try {
+    const summary = await runNightlyMediaSweep();
+    console.log(
+      `[media-sweep] Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips con Media nueva: ${summary.hipsWithNewMedia}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+    );
+  } catch (err) {
+    console.error("[media-sweep] Error en el barrido nocturno de Media:", err);
+  } finally {
+    mediaSweepIsRunning = false;
   }
 }

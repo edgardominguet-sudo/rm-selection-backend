@@ -3,8 +3,9 @@ import cors from "cors";
 import { config } from "./config";
 import { router } from "./api/routes";
 import { requireApiKey } from "./api/auth";
-import { startScheduler, startDiscoveryScheduler } from "./scheduler";
+import { startScheduler, startDiscoveryScheduler, startMediaSweepScheduler } from "./scheduler";
 import { db } from "./db";
+import { runNightlyMediaSweep } from "./mediaSweepService";
 
 const app = express();
 app.use(cors());
@@ -33,25 +34,15 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.send(Buffer.from(photo.dataBase64, "base64"));
 });
 
-// DIAGNÓSTICO TEMPORAL (2026-08-14) — auditoría de Media de Fasig-Tipton
-// New York Bred Yearlings, se borra apenas termine la investigación.
-app.get("/_diag/ft-ny-media", async (_req, res) => {
+// DIAGNÓSTICO TEMPORAL (2026-08-14) — dispara a mano el mismo barrido que
+// corre solo a las 3am, para poder probar idempotencia (correrlo dos veces
+// seguidas y confirmar que la segunda vez no encuentra ni duplica nada)
+// sin tener que esperar hasta la madrugada. Se borra apenas termine la
+// prueba — mismo criterio que el diagnóstico anterior de esta misma tarea.
+app.get("/_diag/run-media-sweep", async (_req, res) => {
   try {
-    const sale = await db.sale.findFirst({ where: { house: "FASIG_TIPTON", name: { contains: "New York Bred" } } });
-    if (!sale) { res.json({ found: false }); return; }
-    const totalHips = await db.hip.count({ where: { saleId: sale.id } });
-    const allHips = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true, horseName: true, mediaJson: true } });
-    const withMedia = allHips.filter((h) => Array.isArray(h.mediaJson) && h.mediaJson.length > 0);
-    res.json({
-      found: true,
-      saleId: sale.id,
-      externalSaleId: sale.externalSaleId,
-      catalogAccess: sale.catalogAccess,
-      totalHips,
-      hipsWithMedia: withMedia.length,
-      sample: allHips.slice(0, 3),
-      sampleWithMedia: withMedia.slice(0, 3),
-    });
+    const summary = await runNightlyMediaSweep();
+    res.json(summary);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -65,6 +56,7 @@ const server = app.listen(config.port, () => {
   console.log(`[server] RM Selection backend escuchando en el puerto ${config.port}`);
   startScheduler();
   startDiscoveryScheduler();
+  startMediaSweepScheduler();
 });
 
 // Railway manda SIGTERM antes de matar el contenedor en cada redeploy —
