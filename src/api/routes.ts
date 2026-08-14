@@ -179,6 +179,64 @@ router.get("/sales/:saleId/hips/:hipNumber", requireUser, async (req, res) => {
   });
 });
 
+// Catálogo completo de una venta, ya guardado en la base de RM Selection —
+// pensado para ventas cuyo catálogo llegó por un camino que el DISPOSITIVO
+// no puede repetir solo (ej. MANUAL_CSV: un CSV que se subió una vez desde
+// afuera de la app) o para cualquier venta FULL cuando se prefiere leer lo
+// que el servidor ya sincronizó en vez de pegarle de nuevo a la casa de
+// ventas desde el propio dispositivo. Identificada por house+externalSaleId
+// (mismo criterio que /ranking y /hips/sale-history) para que la app nunca
+// necesite enterarse de ningún id interno de la base.
+//
+// 2026-08-13: agregado porque se detectó que "Fasig-Tipton — New York Bred
+// Yearlings" ya tenía 317 Hips reales importados en el servidor (vía CSV
+// manual) pero la app no tenía ninguna forma de leerlos — su SaleOption
+// usaba EmptyHipDataService() porque el único camino que existía hasta
+// ahora era pegarle en vivo a la API de la casa de ventas con un ID
+// numérico real, que Fasig-Tipton no expone públicamente para esta venta.
+router.get("/sales/hips", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.json({ saleName: null, catalogAccess: null, hipCount: 0, hips: [] });
+    return;
+  }
+
+  const hips = await db.hip.findMany({
+    where: { saleId: sale.id },
+    orderBy: { hipNumber: "asc" },
+    select: {
+      hipNumber: true,
+      horseName: true,
+      sex: true,
+      consignor: true,
+      sire: true,
+      dam: true,
+      damSire: true,
+      breeder: true,
+      foalYear: true,
+      color: true,
+      sessionDate: true,
+      mediaJson: true,
+      saleResultJson: true,
+    },
+  });
+
+  res.json({
+    saleName: sale.name,
+    catalogAccess: sale.catalogAccess,
+    hipCount: hips.length,
+    hips,
+  });
+});
+
 // Historial de Ventas de un Hip: quién lo crió (si se pudo determinar) y
 // cero, una o varias apariciones anteriores de este mismo caballo en otra
 // venta — ver plan "RM Selection — Módulo de Historial de Ventas" y

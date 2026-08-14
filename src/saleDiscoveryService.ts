@@ -75,32 +75,35 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
     where: { house_externalSaleId: { house, externalSaleId: announcement.externalSaleId } },
   });
   if (existing) {
-    // Autocuración: filas dadas de alta antes de que el descubrimiento
-    // supiera resolver scheduleYear/scheduleSlug (o alguna corrida vieja
-    // que no los haya podido leer) quedan con esos campos null para
-    // siempre — sin ellos, resolveKeenelandHipDates() nunca puede resolver
-    // ninguna sessionDate, así que la venta queda con startDate:null y
-    // afuera de la ventana de análisis, sin ningún error visible en los
-    // logs (no es un fallo, simplemente nunca avanza). Como este anuncio
-    // sí trae esos datos ahora, se completan solos en la fila existente; y
-    // como el bloqueo real era la falta de esos campos (no el intervalo de
-    // pollingPolicy), resetear lastCatalogCheckAt fuerza a que el próximo
-    // tick del scheduler (máx. 5 min) reintente el catálogo ya mismo en
-    // vez de esperar hasta el próximo chequeo programado.
-    const missingScheduleInfo =
-      (!!announcement.scheduleYear && !existing.scheduleYear) ||
-      (!!announcement.scheduleSlug && !existing.scheduleSlug);
-    if (missingScheduleInfo) {
-      await db.sale.update({
-        where: { id: existing.id },
-        data: {
-          scheduleYear: existing.scheduleYear ?? announcement.scheduleYear,
-          scheduleSlug: existing.scheduleSlug ?? announcement.scheduleSlug,
-          lastCatalogCheckAt: null,
-        },
-      });
-    }
-    return false;
+    return updateExistingDiscoveredSale(existing, announcement);
+  }
+
+  // Segunda pasada de dedup, POR FECHA (2026-08-13): el `externalSaleId`
+  // que trae un anuncio recién descubierto es casi siempre SINTÉTICO
+  // (derivado del slug de la página pública) — no coincide con el ID REAL
+  // que ya pueda tener una fila existente para ese mismo evento (cargada a
+  // mano, o resuelta a mano en una corrida anterior de descubrimiento). Sin
+  // este chequeo, la misma venta real termina con DOS filas: una con acceso
+  // de verdad (FULL o MANUAL_CSV, con Hips) y otra "fantasma" en PENDING_ID
+  // que nunca se sincroniza — confuso en /alerts y redundante. Se considera
+  // "la misma venta" cuando es la misma casa y el primer día cae dentro de
+  // una ventana de 3 días (cubre pequeñas diferencias entre "fecha del
+  // anuncio" y "fecha real de la primera sesión" sin arriesgar mezclar dos
+  // ventas distintas de la misma casa, que en la práctica nunca caen tan
+  // cerca una de otra).
+  const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+  const candidatesNearby = await db.sale.findMany({
+    where: {
+      house,
+      startDate: {
+        gte: new Date(announcement.startDate.getTime() - THREE_DAYS_MS),
+        lte: new Date(announcement.startDate.getTime() + THREE_DAYS_MS),
+      },
+    },
+  });
+  const sameEvent = candidatesNearby.find((s) => s.catalogAccess === "FULL" || s.catalogAccess === "MANUAL_CSV");
+  if (sameEvent) {
+    return updateExistingDiscoveredSale(sameEvent, announcement);
   }
 
   await db.$transaction(async (tx) => {
@@ -149,6 +152,45 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
   });
 
   return true;
+}
+
+/**
+ * Una venta que el descubrimiento ya conocía (match exacto por
+ * externalSaleId, o match "misma venta real" por fecha cercana — ver
+ * arriba) recibe un anuncio de nuevo. Nunca se duplica: como mucho, se
+ * completan campos que faltaban (scheduleYear/scheduleSlug) y se fuerza un
+ * re-chequeo si eso desbloquea algo que antes no podía resolverse.
+ */
+async function updateExistingDiscoveredSale(
+  existing: { id: string; scheduleYear: number | null; scheduleSlug: string | null },
+  announcement: DiscoveredSaleAnnouncement
+): Promise<boolean> {
+  // Autocuración: filas dadas de alta antes de que el descubrimiento
+  // supiera resolver scheduleYear/scheduleSlug (o alguna corrida vieja
+  // que no los haya podido leer) quedan con esos campos null para
+  // siempre — sin ellos, resolveKeenelandHipDates() nunca puede resolver
+  // ninguna sessionDate, así que la venta queda con startDate:null y
+  // afuera de la ventana de análisis, sin ningún error visible en los
+  // logs (no es un fallo, simplemente nunca avanza). Como este anuncio
+  // sí trae esos datos ahora, se completan solos en la fila existente; y
+  // como el bloqueo real era la falta de esos campos (no el intervalo de
+  // pollingPolicy), resetear lastCatalogCheckAt fuerza a que el próximo
+  // tick del scheduler (máx. 5 min) reintente el catálogo ya mismo en
+  // vez de esperar hasta el próximo chequeo programado.
+  const missingScheduleInfo =
+    (!!announcement.scheduleYear && !existing.scheduleYear) ||
+    (!!announcement.scheduleSlug && !existing.scheduleSlug);
+  if (missingScheduleInfo) {
+    await db.sale.update({
+      where: { id: existing.id },
+      data: {
+        scheduleYear: existing.scheduleYear ?? announcement.scheduleYear,
+        scheduleSlug: existing.scheduleSlug ?? announcement.scheduleSlug,
+        lastCatalogCheckAt: null,
+      },
+    });
+  }
+  return false;
 }
 
 function buildDetectedMessage(house: SaleHouse, name: string, access: "FULL" | "MANUAL_CSV" | "PENDING_ID" | "UNAVAILABLE"): string {

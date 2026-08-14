@@ -58,6 +58,26 @@ app.get("/diag/sales-overview", async (_req, res) => {
   res.json({ count: sales.length, sales });
 });
 
+// TEMPORAL (2026-08-13) — limpieza puntual de la fila duplicada que dejó
+// el descubrimiento automático para "The Saratoga Sale" (PENDING_ID, 0
+// Hips) antes de que existiera el dedup por fecha cercana (ver
+// saleDiscoveryService.ts). La desactiva en vez de borrarla (reversible).
+// Se borra este endpoint en el commit de limpieza al cerrar la tarea.
+app.post("/diag/deactivate-duplicate-sale", async (req, res) => {
+  const { house, externalSaleId } = req.body ?? {};
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan house, externalSaleId en el body." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house, externalSaleId } } });
+  if (!sale) {
+    res.status(404).json({ error: "No existe esa venta." });
+    return;
+  }
+  const updated = await db.sale.update({ where: { id: sale.id }, data: { isActive: false } });
+  res.json({ ok: true, id: updated.id, isActive: updated.isActive });
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
