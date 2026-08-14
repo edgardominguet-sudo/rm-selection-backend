@@ -63,6 +63,26 @@ export function angleFromHorizontal(a: Vec2, b: Vec2): number {
 }
 
 /**
+ * Ángulo (0°–90°) que el segmento a→b forma con el PLANO DEL SUELO
+ * (horizontal), sin importar hacia qué lado se incline — 90° = el
+ * segmento es perfectamente vertical (como un poste), 0° = perfectamente
+ * horizontal (acostado). A diferencia de `angleFromVertical`, que mide
+ * dirección con signo respecto a "derecho hacia abajo" (útil para ejes
+ * que SE ESPERA que apunten hacia abajo, como una plomada), esta función
+ * sirve para segmentos que naturalmente apuntan HACIA ARRIBA en la
+ * imagen (ej. talón→banda coronaria de la cuartilla) — usar
+ * `angleFromVertical` ahí daría valores en el rango [90°,180°] para
+ * cualquier orientación físicamente plausible, y `90 - abs(ese valor)`
+ * terminaría siempre negativo (bug real encontrado y corregido
+ * 2026-08-14 — ver rmPriorityRules.ts, cálculo del ángulo cuartilla-suelo,
+ * y el reporte de reproducibilidad de esa fecha).
+ */
+export function angleFromGroundPlane(a: Vec2, b: Vec2): number {
+  const v = sub(b, a);
+  return (Math.atan2(Math.abs(v.y), Math.abs(v.x)) * 180) / Math.PI;
+}
+
+/**
  * Ángulo interior (en grados, 0–180) en el vértice `at`, formado por los
  * segmentos at→p1 y at→p2. Sirve para medir el ángulo de una articulación
  * (ej. ángulo del corvejón: vértice=hock, p1=stifle, p2=fetlockHind).

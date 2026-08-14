@@ -11,6 +11,7 @@
 
 import { LandmarkPoint, Side, ViewLandmarks } from "./landmarks";
 import {
+  angleFromGroundPlane,
   angleFromVertical,
   combinedConfidence,
   distance,
@@ -219,11 +220,21 @@ export function evaluateLateralFindings(
   const hoofToeFront = get(lm, "hoofToeFront");
   const hoofHeelFront = get(lm, "hoofHeelFront");
   if (coronetFront && hoofHeelFront) {
-    // Ángulo de la pared del casco/cuartilla respecto al suelo (aprox.
-    // con la vertical de la foto — 90° - angleFromVertical da el ángulo
-    // respecto a la horizontal/suelo).
-    const angleFromVert = angleFromVertical(toVec(hoofHeelFront), toVec(coronetFront));
-    const angleFromGround = 90 - Math.abs(angleFromVert);
+    // Ángulo de la cuartilla respecto al PLANO DEL SUELO. BUG REAL
+    // corregido acá (2026-08-14, encontrado en la prueba controlada de
+    // reproducibilidad de esa fecha): el cálculo anterior usaba
+    // `90 - Math.abs(angleFromVertical(heel, coronet))`, pero
+    // `angleFromVertical` mide el ángulo respecto a "derecho hacia
+    // ABAJO" — como talón→banda coronaria siempre apunta hacia ARRIBA en
+    // la imagen, ese valor cae SIEMPRE en el rango [90°,180°] para
+    // cualquier cuartilla físicamente posible, y la resta daba SIEMPRE un
+    // número negativo (ej. una cuartilla perfectamente vertical de 90°
+    // reales daba -90, no +90). El resultado: este hallazgo salía
+    // "marcado" al tope (magnitude01=1) en el 100% de las corridas de la
+    // prueba, sin importar la cuartilla real — no era ruido de landmarks,
+    // era la fórmula. `angleFromGroundPlane` (geometry.ts) mide
+    // directamente el ángulo con el suelo sin ese problema de signo.
+    const angleFromGround = angleFromGroundPlane(toVec(hoofHeelFront), toVec(coronetFront));
     // Rango correcto profesional: 45°–50° (ver Kentucky Equine Research,
     // hoof-pastern axis). Centro de referencia: 47.5°.
     const idealCenter = 47.5;
