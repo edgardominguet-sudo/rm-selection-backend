@@ -672,6 +672,18 @@ model AnalysisResult {
   // filas legado. Ver PhotoClassification en src/analysis/prompt.ts.
   photoClassificationsJson Json?
 
+  // MOTOR PROFESIONAL DE ANÁLISIS ANATÓMICO (2026-08-14) — landmarks
+  // anatómicos crudos y hallazgos por vista, tal como los calculó el
+  // motor (ver src/analysis/anthropicClient.ts, ViewAnalysisDetail).
+  // Permite auditar CUALQUIER análisis pasado (qué landmarks se
+  // detectaron, con qué confianza, qué desviaciones se midieron) sin
+  // volver a llamar a la IA. null en filas de metodologías anteriores.
+  landmarksJson Json?
+  // Solo los hallazgos priorizados que efectivamente se seleccionaron
+  // para mostrar (ver findingsPrioritizer.ts) — subconjunto liviano de
+  // landmarksJson pensado para leer rápido sin recorrer todo el detalle.
+  findingsJson  Json?
+
   // Diagnóstico técnico (opcional, para depurar calidad del análisis):
   // cuántos fotogramas de marcha se pudieron usar y de qué duración.
   // LEGADO — la metodología nueva no usa video/marcha en este módulo (ver
@@ -982,6 +994,18 @@ model ReferenceHorse {
   frontalPhotoUrl   String?
   posteriorPhotoUrl String?
   updatedAt      DateTime     @updatedAt
+
+  // Calibración del motor de Análisis Anatómico (2026-08-14, "MOTOR
+  // PROFESIONAL DE ANÁLISIS ANATÓMICO RM SELECTION") — landmarks
+  // anatómicos ya extraídos de las 3 fotos del referente (pieza C:
+  // Reference Horse Calibration), calculados UNA sola vez y reusados en
+  // cada análisis de Hip. `calibrationHash` guarda un hash de las 3 URLs
+  // de foto; si cambian (se reemplaza el referente), la calibración se
+  // recalcula sola la próxima vez que se necesite — ver
+  // src/analysis/referenceCalibration.ts.
+  calibrationJson Json?
+  calibrationHash String?
+  calibratedAt    DateTime?
 
   @@unique([organizationId, key])
 }

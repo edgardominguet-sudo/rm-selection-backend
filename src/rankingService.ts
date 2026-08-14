@@ -351,6 +351,7 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
       const outcome = await analyzeHip({
         hipNumber: hip.hipNumber,
         horseName: hip.horseName ?? undefined,
+        organizationId,
         media,
         reference,
       });
@@ -381,6 +382,14 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
             classification,
             methodologyVersion: outcome.methodologyVersion,
             photoClassificationsJson: outcome.photoClassifications as unknown as object,
+            // Motor de Análisis Anatómico (2026-08-14) — landmarks y
+            // hallazgos crudos por vista, para poder auditar cualquier
+            // análisis pasado sin volver a llamar a la IA. Ver
+            // ViewAnalysisDetail en anthropicClient.ts.
+            landmarksJson: outcome.detail as unknown as object,
+            findingsJson: Object.fromEntries(
+              Object.entries(outcome.detail).map(([view, d]) => [view, d.displayFindings])
+            ) as unknown as object,
             summary: outcome.summary,
             model: config.anthropicModel,
           },
@@ -476,6 +485,7 @@ export async function analyzeHipOnDemand(
       const outcome = await analyzeHip({
         hipNumber: hip.hipNumber,
         horseName: hip.horseName ?? undefined,
+        organizationId,
         media,
         reference,
       });
@@ -495,6 +505,10 @@ export async function analyzeHipOnDemand(
           classification,
           methodologyVersion: outcome.methodologyVersion,
           photoClassificationsJson: outcome.photoClassifications as unknown as object,
+          landmarksJson: outcome.detail as unknown as object,
+          findingsJson: Object.fromEntries(
+            Object.entries(outcome.detail).map(([view, d]) => [view, d.displayFindings])
+          ) as unknown as object,
           summary: outcome.summary,
           model: config.anthropicModel,
           deviceId,

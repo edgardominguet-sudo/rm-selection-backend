@@ -1,24 +1,20 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config";
-import { buildPrompt, extractAnalysisResponse, PhotoClassification } from "./prompt";
 import { fetchAndDownscale } from "./imageDownscale";
 import { ALL_TRAIT_IDS, ConformationScores, emptyScores, setScore, METHODOLOGY_VERSION } from "./conformationScores";
 import { CatalogMediaItem } from "../types";
+import { PhotoClassification } from "./prompt";
+import { extractLandmarksFromPhoto } from "./landmarkVisionClient";
+import { ViewLandmarks, ViewName } from "./landmarks";
+import { evaluateFrontalFindings, evaluateLateralFindings, evaluatePosteriorFindings } from "./rmPriorityRules";
+import { scoreView, ViewScore } from "./scoringEngine";
+import { prioritizeFindings, DisplayFinding } from "./findingsPrioritizer";
+import { getOrComputeReferenceCalibration } from "./referenceCalibration";
+import { Finding } from "./findings";
+import { findDefect } from "./conformationKnowledgeBase";
 
 export class MissingReferenceHorseError extends Error {}
 export class NoPhotosError extends Error {}
 export class AIResponseError extends Error {}
-
-type ImageBlock = { type: "image"; source: { type: "base64"; media_type: "image/jpeg"; data: string } };
-type TextBlock = { type: "text"; text: string };
-type ContentBlock = ImageBlock | TextBlock;
-
-function imageBlock(jpeg: Buffer): ImageBlock {
-  return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: jpeg.toString("base64") } };
-}
-function textBlock(text: string): TextBlock {
-  return { type: "text", text };
-}
 
 // Patrón anatómico oficial (2026-08-13): EXACTAMENTE 3 fotos con rol fijo,
 // una por vista — ver comentario en ReferenceHorse, schema.prisma. El
@@ -31,22 +27,43 @@ export interface ReferenceHorseAssets {
   posteriorPhotoUrl?: string | null;
 }
 
+/** Landmarks + hallazgos + puntaje de UNA vista — lo que persiste ahora AnalysisResult además de los campos legado (ver rankingService.ts). */
+export interface ViewAnalysisDetail {
+  available: boolean;
+  landmarks: ViewLandmarks | null;
+  findings: Finding[];
+  score: ViewScore | null;
+  displayFindings: DisplayFinding[];
+}
+
 export interface AnalysisOutcome {
   scores: ConformationScores;
   photoClassifications: PhotoClassification[];
   summary: string | null;
   methodologyVersion: string;
+  /** Detalle completo del motor nuevo, por vista — landmarks crudos, hallazgos, y qué se decidió mostrar. Se persiste tal cual en AnalysisResult.landmarksJson/findingsJson (ver rankingService.ts) para poder auditar CUALQUIER resultado pasado sin volver a llamar a la IA. */
+  detail: Record<ViewName, ViewAnalysisDetail>;
 }
+
+const VIEW_SUBKEYS: Record<ViewName, readonly string[]> = {
+  frontal: ["alignment", "symmetry", "proportions"],
+  lateral: ["proportions", "topline", "structure"],
+  posterior: ["alignment", "structure", "symmetry"],
+};
 
 /**
  * Corre el análisis de conformación de un Hip contra el caballo referente
- * — metodología nueva (2026-08-13): anatomía comparativa por vista
- * (LATERAL/FRONTAL/POSTERIOR), sin Marcha. Puerto directo de
- * AnthropicVisionScoringService.analyze(hip:) de la app iOS.
+ * — MOTOR PROFESIONAL DE ANÁLISIS ANATÓMICO (2026-08-14): landmarks →
+ * ejes → mediciones → comparación con tolerancias profesionales →
+ * desviaciones → severidad → score determinístico → hallazgos
+ * priorizados. Reemplaza la metodología anterior (2026-08-13, "pedirle a
+ * la IA que puntúe 9 parámetros directamente") — ver
+ * conformationKnowledgeBase.ts para el porqué de fondo.
  */
 export async function analyzeHip(opts: {
   hipNumber: string;
   horseName?: string;
+  organizationId: string;
   media: CatalogMediaItem[];
   reference: ReferenceHorseAssets;
 }): Promise<AnalysisOutcome> {
@@ -64,109 +81,120 @@ export async function analyzeHip(opts: {
     throw new NoPhotosError("Este Hip todavía no tiene fotos cargadas para analizar.");
   }
 
-  const hipImageBlocks: ImageBlock[] = [];
-  for (const item of photoItems) {
+  // Paso 1 — calibración del referente (cacheada, ver referenceCalibration.ts).
+  const calibration = await getOrComputeReferenceCalibration(opts.organizationId, opts.reference);
+  if (!calibration) {
+    throw new MissingReferenceHorseError("No se pudo calibrar el caballo referente (no se pudieron leer sus 3 fotos).");
+  }
+
+  // Paso 2 — extraer landmarks de cada foto del Hip (clasificación de
+  // vista incluida, igual que el prompt legado hacía en su Paso 1).
+  const photoClassifications: PhotoClassification[] = [];
+  type PhotoResult = { index: number; view: ViewName | "unclear"; valid: boolean; landmarks: ViewLandmarks; overallConfidence: number };
+  const results: PhotoResult[] = [];
+
+  for (let i = 0; i < photoItems.length; i++) {
+    const item = photoItems[i];
     const jpeg = await fetchAndDownscale(item.url);
-    if (jpeg) hipImageBlocks.push(imageBlock(jpeg));
-  }
-  if (hipImageBlocks.length === 0) {
-    throw new NoPhotosError("No se pudo descargar ninguna foto de este Hip.");
-  }
-
-  const [lateralJpeg, frontalJpeg, posteriorJpeg] = await Promise.all([
-    fetchAndDownscale(opts.reference.lateralPhotoUrl),
-    fetchAndDownscale(opts.reference.frontalPhotoUrl),
-    fetchAndDownscale(opts.reference.posteriorPhotoUrl),
-  ]);
-  if (!lateralJpeg || !frontalJpeg || !posteriorJpeg) {
-    throw new MissingReferenceHorseError(
-      "No se pudo descargar alguna de las 3 fotos del caballo referente."
-    );
-  }
-
-  const promptText = buildPrompt({
-    hipNumber: opts.hipNumber,
-    horseName: opts.horseName,
-    photoCount: hipImageBlocks.length,
-  });
-
-  // Orden: instrucciones -> caballo referente (las 3 vistas, cada una
-  // etiquetada explícitamente para que la IA no tenga que adivinar cuál es
-  // cuál) -> fotos del Hip a evaluar, numeradas en el mismo orden que se le
-  // pide que devuelva en "photos".
-  const content: ContentBlock[] = [textBlock(promptText)];
-  content.push(textBlock("=== CABALLO REFERENTE — VISTA LATERAL (patrón anatómico oficial) ==="));
-  content.push(imageBlock(lateralJpeg));
-  content.push(textBlock("=== CABALLO REFERENTE — VISTA FRONTAL (patrón anatómico oficial) ==="));
-  content.push(imageBlock(frontalJpeg));
-  content.push(textBlock("=== CABALLO REFERENTE — VISTA POSTERIOR (patrón anatómico oficial) ==="));
-  content.push(imageBlock(posteriorJpeg));
-
-  const horseLabel = opts.horseName ? ` (${opts.horseName})` : "";
-  content.push(textBlock(`=== FOTOS DEL HIP A EVALUAR: Hip ${opts.hipNumber}${horseLabel} — clasificalas y validalas primero (Paso 1) ===`));
-  hipImageBlocks.forEach((block, i) => {
-    content.push(textBlock(`--- Foto del Hip #${i + 1} ---`));
-    content.push(block);
-  });
-
-  const client = new Anthropic({ apiKey: config.anthropicApiKey });
-  const response = await sendWithRetry(client, content);
-
-  const firstText = response.content.find((b) => b.type === "text");
-  if (!firstText || firstText.type !== "text") {
-    throw new AIResponseError("La IA no devolvió un resultado que se pudiera interpretar.");
-  }
-
-  const parsed = extractAnalysisResponse(firstText.text);
-  if (!parsed) {
-    throw new AIResponseError("La IA no devolvió un resultado que se pudiera interpretar.");
-  }
-
-  const scores = emptyScores();
-  for (const traitId of ALL_TRAIT_IDS) {
-    if (parsed.scores[traitId] !== undefined) {
-      setScore(scores, traitId, parsed.scores[traitId]);
+    if (!jpeg) {
+      photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "No se pudo descargar la foto." });
+      continue;
+    }
+    try {
+      const extraction = await extractLandmarksFromPhoto({ jpeg, photoLabel: `Foto del Hip ${opts.hipNumber} #${i + 1}` });
+      photoClassifications.push({
+        index: i + 1,
+        view: extraction.view,
+        valid: extraction.valid,
+        invalidReason: extraction.invalidReason,
+      });
+      if (extraction.valid && extraction.view !== "unclear") {
+        results.push({
+          index: i + 1,
+          view: extraction.view,
+          valid: true,
+          landmarks: extraction.landmarks as ViewLandmarks,
+          overallConfidence: extraction.overallConfidence,
+        });
+      }
+    } catch (err) {
+      console.error(`[analysis] Error extrayendo landmarks de la foto #${i + 1} del Hip ${opts.hipNumber}:`, err);
+      photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "Error al procesar la foto." });
     }
   }
 
-  // Defensa adicional (además de la instrucción del prompt): una vista sin
-  // ninguna foto válida clasificada no puede quedar con puntaje "inventado"
-  // por el modelo — se fuerza a 0 acá también, mismo criterio que ya usaba
-  // el motor legado para forzar Marcha a 0 sin video (ver comentario en
-  // conformationScores.ts, overallScore).
-  const validViews = new Set(parsed.photos.filter((p) => p.valid).map((p) => p.view));
-  if (!validViews.has("lateral")) for (const t of ["proportions", "topline", "structure"]) scores[`lateral.${t}`] = 0;
-  if (!validViews.has("frontal")) for (const t of ["alignment", "symmetry", "proportions"]) scores[`frontal.${t}`] = 0;
-  if (!validViews.has("posterior")) for (const t of ["alignment", "structure", "symmetry"]) scores[`posterior.${t}`] = 0;
+  if (results.length === 0) {
+    throw new NoPhotosError("No se pudo procesar ninguna foto válida de este Hip.");
+  }
+
+  // Paso 3 — por vista, la MEJOR foto disponible (mayor confianza global) — mismo criterio que la metodología legado.
+  const bestByView: Partial<Record<ViewName, PhotoResult>> = {};
+  for (const r of results) {
+    const current = bestByView[r.view as ViewName];
+    if (!current || r.overallConfidence > current.overallConfidence) {
+      bestByView[r.view as ViewName] = r;
+    }
+  }
+
+  // Paso 4 — mediciones + hallazgos + score, vista por vista.
+  const scores = emptyScores();
+  const detail = {} as Record<ViewName, ViewAnalysisDetail>;
+  const summaryLines: string[] = [];
+
+  for (const view of ["frontal", "lateral", "posterior"] as const) {
+    const best = bestByView[view];
+    if (!best) {
+      detail[view] = { available: false, landmarks: null, findings: [], score: null, displayFindings: [] };
+      for (const key of VIEW_SUBKEYS[view]) setScore(scores, `${view}.${key}`, 0);
+      summaryLines.push(`${viewLabelEs(view)}: sin foto válida, no evaluado.`);
+      continue;
+    }
+
+    const findings: Finding[] =
+      view === "frontal"
+        ? evaluateFrontalFindings(best.landmarks as ViewLandmarks<"frontal">, best.overallConfidence)
+        : view === "lateral"
+        ? evaluateLateralFindings(best.landmarks as ViewLandmarks<"lateral">, best.overallConfidence)
+        : evaluatePosteriorFindings(best.landmarks as ViewLandmarks<"posterior">, best.overallConfidence);
+
+    const viewScore = scoreView(findings);
+    const displayFindings = prioritizeFindings(findings, 2);
+
+    detail[view] = { available: true, landmarks: best.landmarks, findings, score: viewScore, displayFindings };
+    for (const key of VIEW_SUBKEYS[view]) setScore(scores, `${view}.${key}`, viewScore.score);
+
+    summaryLines.push(summarizeView(view, viewScore.score, displayFindings));
+  }
 
   return {
     scores,
-    photoClassifications: parsed.photos,
-    summary: parsed.summary,
+    photoClassifications,
+    summary: summaryLines.join(" "),
     methodologyVersion: METHODOLOGY_VERSION,
+    detail,
   };
 }
 
-async function sendWithRetry(client: Anthropic, content: ContentBlock[], attempt = 1): Promise<Anthropic.Message> {
-  try {
-    return await client.messages.create({
-      model: config.anthropicModel,
-      max_tokens: 2048,
-      // NOTA (2026-08-11, heredada de la metodología legado): NO se agrega
-      // temperature acá — claude-sonnet-5 devuelve 400 ("temperature is
-      // deprecated for this model") apenas el campo está presente, sea cual
-      // sea el valor. La reproducibilidad se apoya en lo que sí es 100%
-      // determinista: el armado del prompt (prompt.ts) y las 3 fotos fijas
-      // del referente (siempre las mismas URLs mientras no se reemplace el
-      // referente).
-      messages: [{ role: "user", content: content as unknown as Anthropic.MessageParam["content"] }],
-    });
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status && [502, 503, 504, 429].includes(status) && attempt < 3) {
-      await new Promise((r) => setTimeout(r, attempt * 1500));
-      return sendWithRetry(client, content, attempt + 1);
-    }
-    throw err;
-  }
+function viewLabelEs(view: ViewName): string {
+  if (view === "frontal") return "Frontal";
+  if (view === "lateral") return "Lateral";
+  return "Posterior";
 }
+
+/**
+ * Resumen determinístico (NO generado por un modelo — armado a partir de
+ * los mismos hallazgos priorizados que ve la pantalla) — mismas 2 entradas
+ * siempre producen el mismo texto, reforzando la reproducibilidad general
+ * del motor.
+ */
+function summarizeView(view: ViewName, score: number, displayFindings: DisplayFinding[]): string {
+  const label = viewLabelEs(view);
+  if (displayFindings.length === 0) return `${label}: correcto (${score.toFixed(1)}).`;
+  const names = displayFindings.map((f) => `${f.labelEs} (${f.severity})`).join(", ");
+  return `${label}: ${names} — ${score.toFixed(1)}.`;
+}
+
+// Re-exportado por compatibilidad con quien todavía importe findDefect
+// desde acá (ninguno al momento de escribir esto, pero evita romper algo
+// si se agrega en el futuro un import corto).
+export { findDefect };
