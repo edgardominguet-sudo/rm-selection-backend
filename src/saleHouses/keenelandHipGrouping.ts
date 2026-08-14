@@ -22,12 +22,20 @@ export async function resolveKeenelandHipGroupingUrl(year: number, saleId: strin
   let html: string;
   try {
     const response = await fetch(url, { headers: { Accept: "text/html" } });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.error(`[keeneland-hip-grouping] Página de Resources no disponible (status ${response.status}): ${url}`);
+      return null;
+    }
     html = await response.text();
-  } catch {
+  } catch (err) {
+    console.error(`[keeneland-hip-grouping] Error de red pidiendo la página de Resources (${url}):`, err);
     return null;
   }
-  return extractHipSummaryHref(html);
+  const href = extractHipSummaryHref(html);
+  if (!href) {
+    console.error(`[keeneland-hip-grouping] No se encontró el link "Hip Summary" en ${url} (posible cambio de estructura de la página).`);
+  }
+  return href;
 }
 
 export function extractHipSummaryHref(html: string): string | null {
@@ -49,19 +57,30 @@ export async function fetchAndParseKeenelandHipGrouping(pdfUrl: string): Promise
   let buffer: Buffer;
   try {
     const response = await fetch(pdfUrl, { headers: { Accept: "application/pdf" } });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      console.error(`[keeneland-hip-grouping] PDF no disponible (status ${response.status}): ${pdfUrl}`);
+      return [];
+    }
     buffer = Buffer.from(await response.arrayBuffer());
-  } catch {
+  } catch (err) {
+    console.error(`[keeneland-hip-grouping] Error de red pidiendo el PDF (${pdfUrl}):`, err);
     return [];
   }
-  if (buffer.length === 0) return [];
+  if (buffer.length === 0) {
+    console.error(`[keeneland-hip-grouping] PDF vacío (0 bytes): ${pdfUrl}`);
+    return [];
+  }
   try {
     // Import perezoso (mismo criterio que keenelandPedigreePdfCatalog.ts):
     // pdf-parse carga pdf.js, trabajo pesado que solo vale la pena pagar
     // cuando de verdad hace falta.
     const pdfParse = (await import("pdf-parse")).default;
     const parsed = await pdfParse(buffer);
-    return parseHipGroupingText(parsed.text);
+    const days = parseHipGroupingText(parsed.text);
+    if (days.length === 0) {
+      console.error(`[keeneland-hip-grouping] El PDF se leyó (${parsed.text.length} caracteres) pero el parser no encontró ninguna jornada — posible cambio de formato. Primeros 300 caracteres: ${JSON.stringify(parsed.text.slice(0, 300))}`);
+    }
+    return days;
   } catch (err) {
     console.error(`[keeneland-hip-grouping] No se pudo leer el PDF (${pdfUrl}):`, err);
     return [];

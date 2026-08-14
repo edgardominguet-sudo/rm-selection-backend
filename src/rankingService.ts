@@ -164,12 +164,17 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
  * a propósito: un fallo acá nunca debe tirar abajo el resto de syncCatalog.
  */
 async function syncSaleDays(sale: Sale, client: SaleHouseClient): Promise<void> {
-  if (!client.resolveSaleDays) return;
+  if (!client.resolveSaleDays) {
+    console.log(`[sale-days] "${sale.name}" (${sale.house}): esta casa todavía no implementa resolveSaleDays — calendario queda vacío por ahora.`);
+    return;
+  }
   try {
+    console.log(`[sale-days] "${sale.name}": resolviendo calendario (scheduleYear=${sale.scheduleYear ?? "null"}, scheduleSlug=${sale.scheduleSlug ?? "null"})…`);
     const days = await client.resolveSaleDays(sale.externalSaleId, {
       scheduleYear: sale.scheduleYear,
       scheduleSlug: sale.scheduleSlug,
     });
+    console.log(`[sale-days] "${sale.name}": ${days.length} jornada(s) resuelta(s) desde la fuente oficial.`);
     for (const day of days) {
       await db.saleDay.upsert({
         where: { saleId_date: { saleId: sale.id, date: day.date } },
