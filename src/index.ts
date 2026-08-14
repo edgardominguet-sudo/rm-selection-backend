@@ -33,52 +33,6 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.send(Buffer.from(photo.dataBase64, "base64"));
 });
 
-// TEMPORAL (2026-08-13, diagnóstico casas de venta) — sin autenticación a
-// propósito, mismo patrón que /health: solo expone metadata de catálogo ya
-// pública (nombre de venta, fecha, estado de acceso), nada sensible. Se
-// borra en el commit de limpieza al cerrar esta tarea.
-app.get("/diag/sales-overview", async (_req, res) => {
-  const sales = await db.sale.findMany({
-    orderBy: [{ house: "asc" }, { startDate: "asc" }],
-    select: {
-      house: true,
-      name: true,
-      externalSaleId: true,
-      startDate: true,
-      isActive: true,
-      catalogAccess: true,
-      scheduleYear: true,
-      scheduleSlug: true,
-      lastCatalogCheckAt: true,
-      discoveredAt: true,
-      announcementUrl: true,
-      _count: { select: { hips: true } },
-    },
-  });
-  res.json({ count: sales.length, sales });
-});
-
-// TEMPORAL (2026-08-13) — limpieza puntual de la fila duplicada que dejó
-// el descubrimiento automático para "The Saratoga Sale" (PENDING_ID, 0
-// Hips) antes de que existiera el dedup por fecha cercana (ver
-// saleDiscoveryService.ts). La desactiva en vez de borrarla (reversible).
-// Se borra este endpoint en el commit de limpieza al cerrar la tarea.
-app.get("/diag/deactivate-duplicate-sale", async (req, res) => {
-  const house = req.query.house as string | undefined;
-  const externalSaleId = req.query.externalSaleId as string | undefined;
-  if (!house || !externalSaleId) {
-    res.status(400).json({ error: "Faltan house, externalSaleId en query params." });
-    return;
-  }
-  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
-  if (!sale) {
-    res.status(404).json({ error: "No existe esa venta." });
-    return;
-  }
-  const updated = await db.sale.update({ where: { id: sale.id }, data: { isActive: false } });
-  res.json({ ok: true, id: updated.id, isActive: updated.isActive });
-});
-
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
