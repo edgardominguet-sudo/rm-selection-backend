@@ -86,6 +86,58 @@ app.get("/diag/keeneland-pdf-probe", async (req, res) => {
   }
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-14, se retira junto con el resto de /diag/*
+// al terminar la tarea de Keeneland): corre syncCatalog() REAL (el mismo
+// camino que usa el scheduler normal y el endpoint autenticado
+// /api/v1/sales/resync) contra la fila real de Sale — persiste en Postgres,
+// a diferencia de /diag/keeneland-pdf-probe que nunca toca la base. Se
+// agrega acá sin auth solo porque no tengo forma segura de leer
+// APP_API_KEY desde este entorno para llamar al endpoint ya protegido; la
+// lógica invocada es exactamente la misma (mismo upsert idempotente por
+// [saleId, hipNumber], ver upsertNormalizedHips en rankingService.ts — no
+// hay riesgo de duplicados por llamarlo más de una vez).
+app.get("/diag/keeneland-force-sync", async (req, res) => {
+  const { db } = await import("./db");
+  const { syncCatalog } = await import("./rankingService");
+  const { CatalogNotYetPublishedError } = await import("./types");
+  const externalSaleId = (req.query.externalSaleId as string | undefined) ?? "12";
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: "KEENELAND", externalSaleId } } });
+  if (!sale) {
+    res.status(404).json({ ok: false, error: `No existe ninguna Sale KEENELAND con externalSaleId=${externalSaleId}.` });
+    return;
+  }
+  const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
+  try {
+    await syncCatalog(sale);
+    const hipCountAfter = await db.hip.count({ where: { saleId: sale.id } });
+    // hipNumber es String en el schema (no todos los catálogos usan números
+    // puros) — un _min/_max de Prisma compararía lexicográficamente
+    // ("100" < "99"), así que el rango real se calcula acá a mano sobre los
+    // valores numéricos.
+    const allHipNumbers = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true } });
+    const numericHipNumbers = allHipNumbers.map((h) => Number(h.hipNumber)).filter((n) => Number.isFinite(n));
+    const minHipNumber = numericHipNumbers.length > 0 ? Math.min(...numericHipNumbers) : null;
+    const maxHipNumber = numericHipNumbers.length > 0 ? Math.max(...numericHipNumbers) : null;
+    res.json({
+      ok: true,
+      saleName: sale.name,
+      saleId: sale.id,
+      hipCountBefore,
+      hipCountAfter,
+      newHips: hipCountAfter - hipCountBefore,
+      minHipNumber,
+      maxHipNumber,
+    });
+  } catch (err) {
+    if (err instanceof CatalogNotYetPublishedError) {
+      res.json({ ok: false, published: false, message: err.message });
+      return;
+    }
+    console.error("[diag/keeneland-force-sync] Error:", err);
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
