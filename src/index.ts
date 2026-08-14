@@ -5,6 +5,9 @@ import { router } from "./api/routes";
 import { requireApiKey } from "./api/auth";
 import { startScheduler, startDiscoveryScheduler, startMediaSweepScheduler } from "./scheduler";
 import { db } from "./db";
+import { analyzeHip } from "./analysis/anthropicClient";
+import { getReferenceHorse } from "./referenceHorse";
+import { resolveReadUrl } from "./storage/r2Client";
 
 const app = express();
 app.use(cors());
@@ -31,6 +34,56 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.setHeader("Content-Type", photo.mimeType);
   res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   res.send(Buffer.from(photo.dataBase64, "base64"));
+});
+
+// DIAGNÓSTICO TEMPORAL (2026-08-14) — prueba de reproducibilidad del
+// motor nuevo de Análisis Anatómico: corre analyzeHip() DOS VECES sobre
+// exactamente las mismas fotos (sin pasar por el cache de mediaHash de
+// rankingService, a propósito, para forzar que la IA se llame de verdad
+// las 2 veces) y devuelve ambos resultados para comparar. NO escribe
+// nada en AnalysisResult (no ensucia el historial real). Se borra apenas
+// termine la prueba.
+app.get("/_diag/reproducibility-test", async (_req, res) => {
+  try {
+    const asset = await db.mediaAsset.findFirst({
+      where: { kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
+      orderBy: { createdAt: "asc" },
+    });
+    if (!asset) {
+      res.json({ found: false, reason: "No hay ningún MediaAsset AI_ANALYSIS_PHOTO en la base todavía." });
+      return;
+    }
+    const hip = await db.hip.findUnique({ where: { id: asset.hipId } });
+    if (!hip) {
+      res.json({ found: false, reason: "Hip no encontrado para ese MediaAsset." });
+      return;
+    }
+    const assets = await db.mediaAsset.findMany({
+      where: { hipId: hip.id, organizationId: asset.organizationId, kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
+      orderBy: { createdAt: "asc" },
+    });
+    if (assets.length < 3) {
+      res.json({ found: false, reason: `Hip ${hip.hipNumber} solo tiene ${assets.length} foto(s) AI_ANALYSIS_PHOTO, hacen falta 3.` });
+      return;
+    }
+    const media = assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey) }));
+    const reference = await getReferenceHorse(asset.organizationId);
+
+    const run1 = await analyzeHip({ hipNumber: hip.hipNumber, horseName: hip.horseName ?? undefined, organizationId: asset.organizationId, media, reference });
+    const run2 = await analyzeHip({ hipNumber: hip.hipNumber, horseName: hip.horseName ?? undefined, organizationId: asset.organizationId, media, reference });
+
+    res.json({
+      found: true,
+      hipNumber: hip.hipNumber,
+      organizationId: asset.organizationId,
+      run1: { scores: run1.scores, summary: run1.summary },
+      run2: { scores: run2.scores, summary: run2.summary },
+      scoresIdentical: JSON.stringify(run1.scores) === JSON.stringify(run2.scores),
+      summaryIdentical: run1.summary === run2.summary,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
+  }
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
