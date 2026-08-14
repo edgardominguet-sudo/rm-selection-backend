@@ -70,7 +70,7 @@ app.get("/diag/deactivate-duplicate-sale", async (req, res) => {
     res.status(400).json({ error: "Faltan house, externalSaleId en query params." });
     return;
   }
-  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house, externalSaleId } } });
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
   if (!sale) {
     res.status(404).json({ error: "No existe esa venta." });
     return;
