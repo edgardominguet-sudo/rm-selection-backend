@@ -53,6 +53,23 @@ export interface SaleFetchContext {
   hipCountBeforeSync: number;
 }
 
+// Una jornada real de venta (día de subasta) tal como la publica la casa
+// de ventas, para el "Calendario de Ventas" de la app — ver SaleDay en
+// schema.prisma. Genérico por casa: cada campo opcional que una casa no
+// pueda resolver todavía se deja undefined (nunca se inventa).
+export interface ResolvedSaleDay {
+  date: Date;
+  book?: string;
+  sessionNumber?: number;
+  startTimeLabel?: string;
+  hipRangeStart?: string;
+  hipRangeEnd?: string;
+  headCount?: number;
+  // De dónde salió esta fila (ej. "KEENELAND_HIP_GROUPING_PDF") — para
+  // poder diagnosticar sin adivinar cuando el dato se vea raro.
+  source: string;
+}
+
 // Lo que debe poder hacer el cliente de cualquier casa de ventas.
 export interface SaleHouseClient {
   fetchCatalog(externalSaleId: string, ctx?: SaleFetchContext): Promise<NormalizedHip[]>;
@@ -66,6 +83,16 @@ export interface SaleHouseClient {
     hips: NormalizedHip[],
     opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
   ): Promise<Map<string, Date>>;
+
+  // Calendario completo de la venta (Fecha → Libro → rango de Hip) para
+  // el Calendario de Ventas. Optativo: una casa que todavía no sepa
+  // resolverlo simplemente no implementa este método — el calendario de
+  // esa venta queda vacío, sin error (ver keenelandHipGrouping.ts para la
+  // única implementación real hoy).
+  resolveSaleDays?(
+    externalSaleId: string,
+    opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+  ): Promise<ResolvedSaleDay[]>;
 }
 
 // Se lanza cuando una casa de ventas contesta 200 OK pero con el body

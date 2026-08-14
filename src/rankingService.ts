@@ -7,7 +7,7 @@ import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { analyzeHip, MissingReferenceHorseError, NoPhotosError } from "./analysis/anthropicClient";
 import { overallScore, classify } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
-import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip } from "./types";
+import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip, SaleHouseClient } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
@@ -156,6 +156,51 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
 }
 
 /**
+ * Resuelve y persiste el Calendario de Ventas (SaleDay) de una venta —
+ * Fecha → Libro → rango de Hip, tal como lo publica la casa. Genérico por
+ * casa: si el cliente de esta casa todavía no implementa
+ * resolveSaleDays() (ver types.ts), no hace nada — el calendario de esa
+ * venta simplemente queda vacío, nunca es un error. Envuelto en try/catch
+ * a propósito: un fallo acá nunca debe tirar abajo el resto de syncCatalog.
+ */
+async function syncSaleDays(sale: Sale, client: SaleHouseClient): Promise<void> {
+  if (!client.resolveSaleDays) return;
+  try {
+    const days = await client.resolveSaleDays(sale.externalSaleId, {
+      scheduleYear: sale.scheduleYear,
+      scheduleSlug: sale.scheduleSlug,
+    });
+    for (const day of days) {
+      await db.saleDay.upsert({
+        where: { saleId_date: { saleId: sale.id, date: day.date } },
+        create: {
+          saleId: sale.id,
+          date: day.date,
+          book: day.book ?? null,
+          sessionNumber: day.sessionNumber ?? null,
+          startTimeLabel: day.startTimeLabel ?? null,
+          hipRangeStart: day.hipRangeStart ?? null,
+          hipRangeEnd: day.hipRangeEnd ?? null,
+          headCount: day.headCount ?? null,
+          source: day.source,
+        },
+        update: {
+          book: day.book ?? null,
+          sessionNumber: day.sessionNumber ?? null,
+          startTimeLabel: day.startTimeLabel ?? null,
+          hipRangeStart: day.hipRangeStart ?? null,
+          hipRangeEnd: day.hipRangeEnd ?? null,
+          headCount: day.headCount ?? null,
+          source: day.source,
+        },
+      });
+    }
+  } catch (err) {
+    console.error(`[sale-days] Error resolviendo calendario de "${sale.name}":`, err);
+  }
+}
+
+/**
  * Paso 1 de cada ciclo: sincroniza el catálogo completo de una venta
  * contra la casa de ventas correspondiente (solo si ya toca según
  * pollingPolicy — ver processSale) y guarda/actualiza cada Hip vía
@@ -189,6 +234,18 @@ export async function syncCatalog(sale: Sale): Promise<void> {
   });
 
   await upsertNormalizedHips(sale.id, hips, sessionDates);
+
+  // Calendario de Ventas (SaleDay): se resuelve UNA sola vez por venta
+  // (cuando todavía no tiene ninguna fila) para no golpear la casa de
+  // ventas en cada ciclo del scheduler pidiendo el mismo documento
+  // publicado — ver comentario en syncSaleDays. Si en el futuro hace
+  // falta refrescarlo (la casa corrigió una fecha ya publicada), alcanza
+  // con borrar las filas de esa venta a mano; el próximo ciclo las vuelve
+  // a resolver solas.
+  const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
+  if (existingSaleDayCount === 0) {
+    await syncSaleDays(sale, client);
+  }
 
   if (hipCountBefore === 0 && hips.length > 0) {
     await db.saleAlert.create({

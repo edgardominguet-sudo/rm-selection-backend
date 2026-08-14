@@ -266,8 +266,44 @@ model Sale {
   rankingSnapshotVersions RankingSnapshotVersion[]
   alerts                  SaleAlert[]
   catalogImports          CatalogImport[]
+  saleDays                SaleDay[]
 
   @@unique([house, externalSaleId])
+}
+
+// Calendario de la venta: un día real de subasta (jornada) con su Book,
+// horario y rango de Hip — lo que necesita el "Calendario de Ventas" de la
+// app para mostrar Fecha → Libro → rango de Hip sin que nadie lo cargue a
+// mano. Genérico por casa (no específico de Keeneland): cada
+// SaleHouseClient que sepa resolverlo publica sus propias filas acá vía
+// resolveSaleDays() (ver types.ts) — Keeneland lo resuelve leyendo el PDF
+// oficial "Hip Grouping" de la venta (keenelandHipGrouping.ts), Fasig-Tipton
+// y OBS pueden sumar su propia fuente después sin tocar este modelo.
+// Nunca se inventa una fila: si una casa no puede resolver el dato real
+// todavía, simplemente no hay filas para esa venta (la UI lo trata como
+// "calendario no disponible todavía", no como error).
+model SaleDay {
+  id            String   @id @default(cuid())
+  saleId        String
+  sale          Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  date          DateTime
+  book          String?
+  sessionNumber Int?
+  // Hora de inicio tal como la publica la casa (ej. "10:00 am"), en texto
+  // crudo — no se reconstruye una hora con huso horario inventado.
+  startTimeLabel String?
+  hipRangeStart String?
+  hipRangeEnd   String?
+  headCount     Int?
+  // De dónde salió esta fila (ej. "KEENELAND_HIP_GROUPING_PDF") — para
+  // poder diagnosticar sin adivinar cuando el dato se vea raro.
+  source        String
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([saleId, date])
 }
 
 // Auditoría de cada carga manual de catálogo (ver SaleCatalogAccess.MANUAL_CSV

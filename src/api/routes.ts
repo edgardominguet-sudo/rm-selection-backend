@@ -237,6 +237,45 @@ router.get("/sales/hips", requireUser, async (req, res) => {
   });
 });
 
+// Calendario de Ventas (SaleDay) de una venta: Fecha → Libro → rango de
+// Hip, ya resuelto solo por el backend (ver syncSaleDays en
+// rankingService.ts / keenelandHipGrouping.ts) — nunca cargado a mano.
+// Mismo criterio de identidad que el resto (house+externalSaleId).
+// Devuelve lista vacía (no error) cuando la venta todavía no tiene
+// calendario resuelto — la app debe tratarlo como "calendario no
+// disponible todavía", no como una falla.
+router.get("/sales/days", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.json({ saleName: null, days: [] });
+    return;
+  }
+
+  const days = await db.saleDay.findMany({
+    where: { saleId: sale.id },
+    orderBy: { date: "asc" },
+    select: {
+      date: true,
+      book: true,
+      sessionNumber: true,
+      startTimeLabel: true,
+      hipRangeStart: true,
+      hipRangeEnd: true,
+      headCount: true,
+    },
+  });
+
+  res.json({ saleName: sale.name, days });
+});
+
 // Historial de Ventas de un Hip: quién lo crió (si se pudo determinar) y
 // cero, una o varias apariciones anteriores de este mismo caballo en otra
 // venta — ver plan "RM Selection — Módulo de Historial de Ventas" y

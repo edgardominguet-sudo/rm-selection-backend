@@ -1,6 +1,7 @@
-import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError, SaleFetchContext } from "../types";
+import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError, SaleFetchContext, ResolvedSaleDay } from "../types";
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
 import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
+import { resolveKeenelandSaleDays } from "./keenelandHipGrouping";
 
 // Forma cruda de la API interna de Keeneland
 // (GET https://www.keeneland.com/json/sale_api/get/catalog/{saleID}) —
@@ -182,5 +183,18 @@ export class KeenelandClient implements SaleHouseClient {
   ): Promise<Map<string, Date>> {
     if (!opts.scheduleYear || !opts.scheduleSlug) return new Map();
     return resolveKeenelandHipDates(opts.scheduleYear, _externalSaleId, opts.scheduleSlug);
+  }
+
+  // Calendario de la venta (Book/Session/Fecha/Hora/rango de Hip) para el
+  // Calendario de Ventas — ver keenelandHipGrouping.ts. Mismo criterio que
+  // resolveSessionDates: sin scheduleYear/scheduleSlug no hay forma de
+  // encontrar la página "Resources" de la venta, así que se devuelve []
+  // en vez de adivinar.
+  async resolveSaleDays(
+    externalSaleId: string,
+    opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+  ): Promise<ResolvedSaleDay[]> {
+    if (!opts.scheduleYear || !opts.scheduleSlug) return [];
+    return resolveKeenelandSaleDays(opts.scheduleYear, externalSaleId, opts.scheduleSlug);
   }
 }
