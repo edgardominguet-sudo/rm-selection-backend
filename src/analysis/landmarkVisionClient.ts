@@ -38,13 +38,20 @@ export async function extractLandmarksFromPhoto(opts: {
   if (!firstText || firstText.type !== "text") {
     throw new LandmarkExtractionError(`No se pudo interpretar la respuesta de extracción de landmarks para ${opts.photoLabel}.`);
   }
+  if (response.stop_reason === "max_tokens") {
+    // Causa raíz real (diagnosticada 2026-08-14): con max_tokens=2048 el
+    // modelo alcanza a describir solo ~4 de los ~18-20 landmarks de una
+    // vista antes de cortar la respuesta a mitad de un valor — el JSON
+    // queda truncado y el parser lo descarta (con razón: no es JSON
+    // válido). Subido a 8192 más abajo; este chequeo deja el motivo
+    // explícito en vez de un genérico "formato inesperado" si algún día
+    // vuelve a pasar (foto más compleja, prompt más largo, etc.).
+    throw new LandmarkExtractionError(
+      `La respuesta de landmarks para ${opts.photoLabel} se cortó por límite de tokens (max_tokens) antes de completar el JSON.`
+    );
+  }
   const parsed = extractLandmarkResponse(firstText.text);
   if (!parsed) {
-    // DIAGNÓSTICO TEMPORAL (2026-08-14): se incluye un fragmento de la
-    // respuesta cruda en el mensaje de error para poder ver EXACTAMENTE
-    // por qué falló el parseo (JSON truncado, texto extra, etc.) sin tener
-    // que loguear la respuesta completa en cada corrida normal. Quitar
-    // este fragmento una vez diagnosticado y corregido el parser.
     const snippet = firstText.text.slice(0, 400).replace(/\s+/g, " ");
     throw new LandmarkExtractionError(
       `Respuesta de landmarks con formato inesperado para ${opts.photoLabel}. Fragmento crudo: ${snippet}`
@@ -57,7 +64,12 @@ async function sendWithRetry(client: Anthropic, content: Array<ImageBlock | Text
   try {
     return await client.messages.create({
       model: config.anthropicModel,
-      max_tokens: 2048,
+      // Subido de 2048 a 8192 (2026-08-14): con 2048 el modelo cortaba a
+      // mitad de la lista de landmarks en vistas con ~20 puntos (lateral
+      // es la más larga — ver LATERAL_LANDMARK_IDS en landmarks.ts) y el
+      // JSON quedaba truncado/inválido. 8192 deja margen holgado incluso
+      // si el modelo agrega algo de formato extra.
+      max_tokens: 8192,
       // Mismo criterio que anthropicClient.ts: NO se agrega `temperature`
       // (claude-sonnet-5 devuelve 400 con ese campo presente). La
       // reproducibilidad de ESTE motor no depende de eso — depende de que
