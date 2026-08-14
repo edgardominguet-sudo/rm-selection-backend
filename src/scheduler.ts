@@ -63,10 +63,18 @@ async function runCycle(): Promise<void> {
       diagDumpDone = true;
       try {
         const allSales = await db.sale.findMany({
-          select: { name: true, house: true, catalogAccess: true, isActive: true, scheduleYear: true, scheduleSlug: true },
+          select: { id: true, name: true, house: true, catalogAccess: true, isActive: true, scheduleYear: true, scheduleSlug: true },
         });
         for (const s of allSales) {
           console.log(`[diag-sales] "${s.name}" house=${s.house} catalogAccess=${s.catalogAccess} isActive=${s.isActive} scheduleYear=${s.scheduleYear ?? "null"} scheduleSlug=${s.scheduleSlug ?? "null"}`);
+          const dayCount = await db.saleDay.count({ where: { saleId: s.id } });
+          console.log(`[diag-sales]   -> SaleDay count = ${dayCount}`);
+          if (dayCount > 0) {
+            const sample = await db.saleDay.findMany({ where: { saleId: s.id }, orderBy: { date: "asc" }, take: 5 });
+            for (const d of sample) {
+              console.log(`[diag-sales]      ${d.date.toISOString().slice(0, 10)} book=${d.book ?? "null"} session=${d.sessionNumber ?? "null"} hips=${d.hipRangeStart ?? "?"}-${d.hipRangeEnd ?? "?"} source=${d.source}`);
+            }
+          }
         }
       } catch (err) {
         console.error("[diag-sales] Error listando ventas:", err);
