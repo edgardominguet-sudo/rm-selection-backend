@@ -166,19 +166,27 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
  */
 export async function syncCatalog(sale: Sale): Promise<void> {
   const client = clientFor(sale.house);
-  const hips = await client.fetchCatalog(sale.externalSaleId);
-  const sessionDates = await client.resolveSessionDates(sale.externalSaleId, hips, {
-    scheduleYear: sale.scheduleYear,
-    scheduleSlug: sale.scheduleSlug,
-  });
 
   // "NEW CATALOG DETECTED" (a pedido, 2026-08-12): se compara la cantidad
   // de Hips ANTES de este sync — si esta venta no tenía ninguno todavía y
   // ahora la casa de ventas sí trae datos, es la primera vez que su
-  // catálogo aparece disponible. Se mide antes del upsert a propósito,
-  // para no perder el "0 -> N" una vez que upsertNormalizedHips ya haya
-  // guardado los nuevos Hips.
+  // catálogo aparece disponible. Se mide ANTES de pedir el catálogo (no
+  // solo antes del upsert) porque desde 2026-08-14 KeenelandClient también
+  // usa este número para decidir si vale la pena correr el mecanismo de
+  // respaldo pesado (probing de PDFs por Hip) — ver
+  // keenelandPedigreePdfCatalog.ts: solo se corre la primera vez, nunca en
+  // cada ciclo del scheduler.
   const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
+
+  const hips = await client.fetchCatalog(sale.externalSaleId, {
+    name: sale.name,
+    startDate: sale.startDate,
+    hipCountBeforeSync: hipCountBefore,
+  });
+  const sessionDates = await client.resolveSessionDates(sale.externalSaleId, hips, {
+    scheduleYear: sale.scheduleYear,
+    scheduleSlug: sale.scheduleSlug,
+  });
 
   await upsertNormalizedHips(sale.id, hips, sessionDates);
 

@@ -42,9 +42,20 @@ export interface NormalizedHip {
   color?: string;
 }
 
+// Contexto opcional de la venta que algún cliente puede necesitar además
+// del externalSaleId (hoy solo lo usa KeenelandClient, para el mecanismo
+// de respaldo por PDF de pedigree — ver keenelandPedigreePdfCatalog.ts).
+// Opcional en la firma para no afectar a FasigTiptonClient/ObsClient, que
+// lo ignoran.
+export interface SaleFetchContext {
+  name: string;
+  startDate: Date | null;
+  hipCountBeforeSync: number;
+}
+
 // Lo que debe poder hacer el cliente de cualquier casa de ventas.
 export interface SaleHouseClient {
-  fetchCatalog(externalSaleId: string): Promise<NormalizedHip[]>;
+  fetchCatalog(externalSaleId: string, ctx?: SaleFetchContext): Promise<NormalizedHip[]>;
 
   // hipNumber -> fecha de sesión (día calendario). Los Hips que no se
   // puedan resolver simplemente no aparecen en el mapa — nunca se

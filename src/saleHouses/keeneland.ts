@@ -1,5 +1,6 @@
-import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
+import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError, SaleFetchContext } from "../types";
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
+import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
 
 // Forma cruda de la API interna de Keeneland
 // (GET https://www.keeneland.com/json/sale_api/get/catalog/{saleID}) —
@@ -123,9 +124,51 @@ export class KeenelandClient implements SaleHouseClient {
     return entries;
   }
 
-  async fetchCatalog(externalSaleId: string): Promise<NormalizedHip[]> {
-    const entries = await this.fetchRaw(externalSaleId);
-    return entries.map(normalize);
+  async fetchCatalog(externalSaleId: string, ctx?: SaleFetchContext): Promise<NormalizedHip[]> {
+    try {
+      const entries = await this.fetchRaw(externalSaleId);
+      return entries.map(normalize);
+    } catch (err) {
+      // MECANISMO DE RESPALDO (2026-08-14): la API interna de Drupal de
+      // Keeneland (arriba) puede seguir "sin publicar" (200 vacío) durante
+      // varios días DESPUÉS de que Keeneland ya haya publicado el catálogo
+      // real de otra forma — ver keenelandPedigreePdfCatalog.ts para la
+      // investigación completa. Se confirmó en vivo que September Yearling
+      // Sale 2026 (externalSaleId 12) ya tiene Hips reales (1 a 4650, con
+      // huecos) disponibles vía PDF público de pedigree por Hip, mientras
+      // que este endpoint seguía devolviendo vacío.
+      //
+      // Solo se activa cuando: (a) el error es genuinamente "todavía no
+      // publicado" (no un 500/timeout real, que debe seguir
+      // propagándose); (b) hay contexto de la venta (nombre + año) para
+      // derivar el código real de la carpeta de PDFs, sin inventar nada; y
+      // (c) esta venta todavía no tiene NINGÚN Hip guardado — el probing
+      // completo (miles de PDFs) es pesado, así que corre UNA sola vez
+      // (la primera vez que el catálogo aparece disponible). Ciclos
+      // siguientes del scheduler: si Drupal se pobló mientras tanto, este
+      // mismo catch ya no se dispara (fetchRaw no vuelve a tirar
+      // CatalogNotYetPublishedError) y la vía normal retoma el control
+      // sola, enriqueciendo lo que ya se importó (upsertNormalizedHips
+      // nunca borra, solo agrega/actualiza).
+      if (!(err instanceof CatalogNotYetPublishedError)) throw err;
+      if (!ctx || ctx.hipCountBeforeSync > 0) throw err;
+
+      const year = ctx.startDate ? ctx.startDate.getUTCFullYear() : null;
+      const saleCode = deriveKeenelandPedigreeSaleCode(ctx.name, year);
+      if (!saleCode) throw err;
+
+      console.log(`[keeneland] Catálogo interno todavía vacío para "${ctx.name}" — probando mecanismo de respaldo (PDFs de pedigree, carpeta ${saleCode})...`);
+      const fallbackHips = await probeKeenelandCatalogViaPedigreePdfs(saleCode, {
+        onProgress: (found, lastChecked) => {
+          if (lastChecked % 500 === 0) {
+            console.log(`[keeneland] Respaldo PDF "${saleCode}": ${found} Hips encontrados, último número probado ${lastChecked}.`);
+          }
+        },
+      });
+      if (fallbackHips.length === 0) throw err; // ni el respaldo encontró nada real — se conserva el error original (no inventar un catálogo vacío como si fuera éxito).
+      console.log(`[keeneland] Respaldo PDF "${saleCode}" completo: ${fallbackHips.length} Hips reales encontrados para "${ctx.name}".`);
+      return fallbackHips;
+    }
   }
 
   // A diferencia de Fasig-Tipton, Keeneland NO trae una fecha directa por
