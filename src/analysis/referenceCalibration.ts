@@ -5,22 +5,36 @@
 // landmarks de las 3 fotos del referente UNA SOLA VEZ (no en cada análisis
 // de Hip — sería carísimo y no aporta nada distinto entre corridas, ya que
 // el referente no cambia), corre las mismas reglas RM sobre esos
-// landmarks como CHEQUEO DE CONSISTENCIA (si el propio referente saliera
-// "moderado" o "marcado" en algún criterio prioritario, es señal de que
-// algo en la extracción o en la calibración de tolerancias necesita
-// revisión — se registra como advertencia, nunca bloquea el análisis), y
-// guarda el resultado en ReferenceHorse.calibrationJson para reusarlo.
+// landmarks tanto para un CHEQUEO DE CONSISTENCIA (si el propio referente
+// saliera "moderado" o "marcado" en algún criterio prioritario, es señal
+// de que algo en la extracción o en la calibración de tolerancias
+// necesita revisión — se registra como advertencia, nunca bloquea el
+// análisis) como para capturar sus VALORES CRUDOS por métrica
+// (referenceMetrics), y guarda todo en ReferenceHorse.calibrationJson
+// para reusarlo.
 //
-// Nota de diseño (para el reporte a Ramon): las tolerancias de
-// conformationKnowledgeBase.ts son estándares profesionales absolutos
-// (ángulos/proporciones de referencias veterinarias), NO relativas al
-// referente puntual — un carpo desviado 3° del vertical es una desviación
-// de 3°, sea cual sea el caballo. El referente calibra el CRITERIO del
-// Método RM (qué le importa a Ramon, con qué peso) y sirve de chequeo de
-// cordura del motor, pero no reemplaza los ángulos anatómicos
-// profesionales por los del caballo puntual que se haya cargado — así el
-// motor no se "malacostumbra" si alguna vez el referente tiene una sola
-// foto con una perspectiva imperfecta.
+// CORRECCIÓN DE RAMON (2026-08-14) sobre cómo debe participar el
+// referente — reemplaza la nota de diseño anterior de esta misma pieza:
+//
+//   ESTÁNDAR PROFESIONAL = define la anatomía correcta y protege contra
+//     errores. Las bandas de tolerancia de conformationKnowledgeBase.ts
+//     siguen siendo absolutas — NUNCA se mueven por el referente. Un
+//     carpo desviado 8° del vertical sigue siendo "moderado" aunque el
+//     referente mida 8° en esa misma métrica.
+//   CABALLO REFERENTE = calibra, DENTRO de esa anatomía correcta, el
+//     patrón estructural que valora el Método RM — representa 10.0/10.
+//     `referenceMetrics` (ver rmPriorityRules.ts, ReferenceMetrics) es el
+//     valor crudo que mide el propio referente en cada métrica geométrica
+//     (proporciones, ángulos articulares, offsets de eje) — se usa en
+//     severity.ts SOLO para afinar la puntuación DENTRO de la banda ya
+//     anatómicamente segura ("Correct"), nunca para reclasificar una
+//     desviación real como correcta ni para desplazar el límite de
+//     seguridad hacia afuera (ver clamp en severity.classifySeverity).
+//
+// No es una comparación de "parecido visual": nunca se comparan pixeles,
+// colores, musculatura aparente ni tamaño de foto — solo las mismas
+// mediciones geométricas (landmarks → ejes → ángulos → proporciones) que
+// se usan para cualquier Hip.
 
 import crypto from "crypto";
 import { db } from "../db";
@@ -28,7 +42,7 @@ import { ReferenceHorseAssets } from "./anthropicClient";
 import { fetchAndDownscale } from "./imageDownscale";
 import { extractLandmarksFromPhoto } from "./landmarkVisionClient";
 import { ViewLandmarks } from "./landmarks";
-import { evaluateFrontalFindings, evaluateLateralFindings, evaluatePosteriorFindings } from "./rmPriorityRules";
+import { evaluateFrontalFindings, evaluateLateralFindings, evaluatePosteriorFindings, ReferenceMetrics } from "./rmPriorityRules";
 import { findDefect } from "./conformationKnowledgeBase";
 
 export interface ReferenceCalibration {
@@ -39,6 +53,8 @@ export interface ReferenceCalibration {
   sourceHash: string;
   /** Hallazgos del propio referente sobre sus 9 criterios prioritarios — se espera que todos den "correct". Si no, queda documentado acá como chequeo de consistencia (ver nota de diseño arriba). */
   consistencyWarnings: string[];
+  /** Valores crudos por métrica que mide el propio referente en cada vista — el patrón estructural RM de 10.0/10 (ver nota de diseño arriba). Ausente en calibraciones calculadas antes de 2026-08-14 (se recalculan automáticamente, ver getOrComputeReferenceCalibration). */
+  referenceMetrics: { frontal: ReferenceMetrics; lateral: ReferenceMetrics; posterior: ReferenceMetrics };
 }
 
 export function referenceSourceHash(assets: ReferenceHorseAssets): string {
@@ -65,9 +81,21 @@ async function computeCalibration(assets: ReferenceHorseAssets): Promise<Referen
     assets.posteriorPhotoUrl ? extractViewLandmarks(assets.posteriorPhotoUrl, "posterior", "CABALLO REFERENTE — vista posterior") : Promise.resolve(null),
   ]);
 
+  // IMPORTANTE: acá evaluamos las reglas SOBRE LAS PROPIAS MEDICIONES del
+  // referente (ideal=0 abstracto, sin `referenceMetrics` — el referente no
+  // se compara consigo mismo con su propio patrón, sería circular). Esto
+  // sirve para (a) el chequeo de consistencia de siempre, y (b) capturar
+  // `rawMetrics`, que SÍ se guarda como el patrón RM de 10.0/10 para
+  // usarse después en cada análisis de Hip (ver nota de diseño arriba).
   const consistencyWarnings: string[] = [];
+  let frontalMetrics: ReferenceMetrics = {};
+  let lateralMetrics: ReferenceMetrics = {};
+  let posteriorMetrics: ReferenceMetrics = {};
+
   if (frontal) {
-    for (const f of evaluateFrontalFindings(frontal, 1)) {
+    const evalResult = evaluateFrontalFindings(frontal, 1);
+    frontalMetrics = evalResult.rawMetrics;
+    for (const f of evalResult.findings) {
       if (f.severity !== "correct") {
         const defect = findDefect(f.defectId);
         consistencyWarnings.push(
@@ -77,7 +105,9 @@ async function computeCalibration(assets: ReferenceHorseAssets): Promise<Referen
     }
   }
   if (lateral) {
-    for (const f of evaluateLateralFindings(lateral, 1)) {
+    const evalResult = evaluateLateralFindings(lateral, 1);
+    lateralMetrics = evalResult.rawMetrics;
+    for (const f of evalResult.findings) {
       if (f.severity !== "correct") {
         const defect = findDefect(f.defectId);
         consistencyWarnings.push(
@@ -87,7 +117,9 @@ async function computeCalibration(assets: ReferenceHorseAssets): Promise<Referen
     }
   }
   if (posterior) {
-    for (const f of evaluatePosteriorFindings(posterior, 1)) {
+    const evalResult = evaluatePosteriorFindings(posterior, 1);
+    posteriorMetrics = evalResult.rawMetrics;
+    for (const f of evalResult.findings) {
       if (f.severity !== "correct") {
         const defect = findDefect(f.defectId);
         consistencyWarnings.push(
@@ -104,6 +136,7 @@ async function computeCalibration(assets: ReferenceHorseAssets): Promise<Referen
     computedAt: new Date().toISOString(),
     sourceHash: referenceSourceHash(assets),
     consistencyWarnings,
+    referenceMetrics: { frontal: frontalMetrics, lateral: lateralMetrics, posterior: posteriorMetrics },
   };
 }
 
@@ -122,7 +155,15 @@ export async function getOrComputeReferenceCalibration(
   const currentHash = referenceSourceHash(assets);
   const row = await db.referenceHorse.findUnique({ where: { organizationId_key: { organizationId, key: "default" } } });
   if (row?.calibrationJson && row.calibrationHash === currentHash) {
-    return row.calibrationJson as unknown as ReferenceCalibration;
+    const cached = row.calibrationJson as unknown as ReferenceCalibration;
+    // Las calibraciones calculadas ANTES de la integración del patrón RM
+    // (2026-08-14) no tienen `referenceMetrics` — se recalculan una sola
+    // vez automáticamente acá en vez de servir un caché incompleto que
+    // dejaría al referente sin influir en el score (ver corrección de
+    // Ramon en el comentario grande de arriba).
+    if (cached.referenceMetrics) {
+      return cached;
+    }
   }
 
   const calibration = await computeCalibration(assets);

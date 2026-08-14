@@ -22,15 +22,38 @@ import { classifySeverity } from "./severity";
 import { findDefect } from "./conformationKnowledgeBase";
 import { Finding } from "./findings";
 
+/**
+ * Mapa de "valores crudos que mide el propio caballo referente en cada
+ * métrica", independiente de qué defectId terminó ganando en el
+ * referente (ver nota larga más abajo, y corrección de Ramon 2026-08-14
+ * sobre integración del referente). Las claves son los mismos strings
+ * que usan las funciones evaluate*Findings acá abajo — ver comentarios
+ * "clave de métrica" en cada bloque.
+ */
+export type ReferenceMetrics = Record<string, number>;
+
+export interface ViewEvaluation {
+  findings: Finding[];
+  /** Valores crudos de cada métrica calculada, se hayan reportado o no como Finding — es lo que se guarda como ReferenceMetrics cuando esta función corre sobre las fotos del caballo referente (ver referenceCalibration.ts). */
+  rawMetrics: ReferenceMetrics;
+}
+
 function get<M extends Record<string, LandmarkPoint | undefined>>(map: M, id: keyof M): LandmarkPoint | undefined {
   const p = map[id];
   return p && p.visible ? p : undefined;
 }
 
-function buildFinding(defectId: string, side: Side | undefined, measuredValue: number, absDeviation: number, confidence: number): Finding {
+function buildFinding(
+  defectId: string,
+  side: Side | undefined,
+  measuredValue: number,
+  absDeviation: number,
+  confidence: number,
+  referenceValue?: number | null
+): Finding {
   const defect = findDefect(defectId);
   if (!defect) throw new Error(`Defecto desconocido en la biblioteca: ${defectId}`);
-  const { severity, magnitude01 } = classifySeverity(absDeviation, defect.tolerance);
+  const { severity, magnitude01 } = classifySeverity(measuredValue, defect.tolerance, referenceValue);
   return { defectId, view: defect.view, side, measuredValue, absDeviation, severity, magnitude01, confidence };
 }
 
@@ -46,8 +69,14 @@ function medialSign(side: Side): 1 | -1 {
 // ============================================================
 // FRONTAL — F1 (medial) / F2 (lateral) / F3 (asimetría de cascos).
 // ============================================================
-export function evaluateFrontalFindings(lm: ViewLandmarks<"frontal">, viewConfidence: number): Finding[] {
+export function evaluateFrontalFindings(
+  lm: ViewLandmarks<"frontal">,
+  viewConfidence: number,
+  referenceMetrics?: ReferenceMetrics
+): ViewEvaluation {
   const findings: Finding[] = [];
+  const rawMetrics: ReferenceMetrics = {};
+  const ref = (key: string): number | undefined => referenceMetrics?.[key];
   const chest = get(lm, "chestCenter");
   const shoulderL = get(lm, "shoulderLeft");
   const shoulderR = get(lm, "shoulderRight");
@@ -60,9 +89,10 @@ export function evaluateFrontalFindings(lm: ViewLandmarks<"frontal">, viewConfid
     const hoofWidth = distance(toVec(hoofL), toVec(hoofR));
     if (shoulderWidth > 0) {
       const ratio = (hoofWidth - shoulderWidth) / shoulderWidth; // negativo = más angosto abajo (base-narrow), positivo = base-wide
+      rawMetrics.baseWidthRatio = ratio;
       const conf = combinedConfidence([shoulderL, shoulderR, hoofL, hoofR]);
       const defectId = ratio < 0 ? "base_narrow" : "base_wide";
-      findings.push(buildFinding(defectId, undefined, ratio, Math.abs(ratio), conf));
+      findings.push(buildFinding(defectId, undefined, ratio, Math.abs(ratio), conf, ref("baseWidthRatio")));
     }
   }
 
@@ -75,50 +105,63 @@ export function evaluateFrontalFindings(lm: ViewLandmarks<"frontal">, viewConfid
     const hoofToe = get(lm, side === "left" ? "hoofToeLeft" : "hoofToeRight");
     const sign = medialSign(side);
 
-    type Candidate = { defectId: string; measured: number; absDev: number; conf: number };
+    type Candidate = { defectId: string; measured: number; absDev: number; conf: number; metricKey: string };
     const candidates: Candidate[] = [];
 
     // Origen 1: pecho→carpo (carpus_valgus/varus) — offset del carpo respecto a la línea hombro→casco de SU PROPIA pata.
+    const carpusOffsetKey = `carpusOffset.${side}`;
     if (shoulder && hoof && carpus) {
       const legLength = distance(toVec(shoulder), toVec(hoof));
       if (legLength > 0) {
         const rawOffset = signedPerpendicularOffset(toVec(carpus), toVec(shoulder), toVec(hoof));
         const normalized = rawOffset / legLength;
         const medialComponent = normalized * sign; // positivo = medial, negativo = lateral
+        rawMetrics[carpusOffsetKey] = medialComponent;
         const conf = combinedConfidence([shoulder, hoof, carpus]);
         candidates.push({
           defectId: medialComponent >= 0 ? "carpus_valgus" : "carpus_varus",
           measured: medialComponent,
           absDev: Math.abs(medialComponent),
           conf,
+          metricKey: carpusOffsetKey,
         });
       }
     }
 
     // Origen 2: menudillo→casco (toe_in/toe_out) — rotación del casco respecto a la vertical que baja del menudillo.
+    const hoofRotationKey = `hoofRotation.${side}`;
     if (fetlock && hoofToe) {
       const angle = angleFromVertical(toVec(fetlock), toVec(hoofToe)); // grados, + = hacia +x
       const medialAngle = angle * sign; // positivo = rotación medial
+      rawMetrics[hoofRotationKey] = medialAngle;
       const conf = combinedConfidence([fetlock, hoofToe]);
       candidates.push({
         defectId: medialAngle >= 0 ? "toe_in" : "toe_out",
         measured: medialAngle,
         absDev: Math.abs(medialAngle),
         conf,
+        metricKey: hoofRotationKey,
       });
     }
 
     if (candidates.length > 0) {
-      // Dominante = mayor desviación relativa a SU PROPIA tolerancia (no
-      // en unidades crudas, porque una está en "ratio" y la otra en
-      // "grados" — comparables recién después de pasar por severity).
+      // Dominante = mayor desviación relativa a SU PROPIA tolerancia
+      // profesional (no en unidades crudas, porque una está en "ratio" y
+      // la otra en "grados"). La elección del origen dominante es SIEMPRE
+      // 100% anatómica/profesional — el referente nunca participa acá,
+      // solo puede afinar la magnitud DESPUÉS de que ya se decidió cuál
+      // defecto (si alguno) se reporta.
       let best: { c: Candidate; magnitude01: number } | null = null;
       for (const c of candidates) {
         const defect = findDefect(c.defectId)!;
-        const { magnitude01 } = classifySeverity(c.absDev, defect.tolerance);
+        const { magnitude01 } = classifySeverity(c.measured, defect.tolerance);
         if (!best || magnitude01 > best.magnitude01) best = { c, magnitude01 };
       }
-      if (best) findings.push(buildFinding(best.c.defectId, side, best.c.measured, best.c.absDev, best.c.conf));
+      if (best) {
+        findings.push(
+          buildFinding(best.c.defectId, side, best.c.measured, best.c.absDev, best.c.conf, ref(best.c.metricKey))
+        );
+      }
     }
   }
 
@@ -133,20 +176,27 @@ export function evaluateFrontalFindings(lm: ViewLandmarks<"frontal">, viewConfid
     const avg = (widthL + widthR) / 2;
     if (avg > 0) {
       const ratio = Math.abs(widthL - widthR) / avg;
+      rawMetrics.hoofAsymmetryRatio = ratio;
       const conf = combinedConfidence([hoofMedialL, hoofLateralL, hoofMedialR, hoofLateralR]);
-      findings.push(buildFinding("hoof_asymmetry", undefined, ratio, ratio, conf));
+      findings.push(buildFinding("hoof_asymmetry", undefined, ratio, ratio, conf, ref("hoofAsymmetryRatio")));
     }
   }
 
-  return findings;
+  return { findings, rawMetrics };
 }
 
 // ============================================================
 // LATERAL — L1 (over at the knee) / L2 (vertical) / L3 (cuartilla) /
 // L4 (alineación posterior).
 // ============================================================
-export function evaluateLateralFindings(lm: ViewLandmarks<"lateral">, viewConfidence: number): Finding[] {
+export function evaluateLateralFindings(
+  lm: ViewLandmarks<"lateral">,
+  viewConfidence: number,
+  referenceMetrics?: ReferenceMetrics
+): ViewEvaluation {
   const findings: Finding[] = [];
+  const rawMetrics: ReferenceMetrics = {};
+  const ref = (key: string): number | undefined => referenceMetrics?.[key];
 
   // --- L1: over_at_the_knee / calf_kneed ---
   const elbow = get(lm, "elbow");
@@ -157,9 +207,10 @@ export function evaluateLateralFindings(lm: ViewLandmarks<"lateral">, viewConfid
     if (legLength > 0) {
       const rawOffset = signedPerpendicularOffset(toVec(carpus), toVec(elbow), toVec(fetlockFront));
       const normalized = rawOffset / legLength; // convención: positivo = craneal (adelante), ver nota abajo
+      rawMetrics.kneeOffset = normalized;
       const conf = combinedConfidence([elbow, carpus, fetlockFront]);
       const defectId = normalized >= 0 ? "over_at_the_knee" : "calf_kneed";
-      findings.push(buildFinding(defectId, undefined, normalized, Math.abs(normalized), conf));
+      findings.push(buildFinding(defectId, undefined, normalized, Math.abs(normalized), conf, ref("kneeOffset")));
     }
   }
 
@@ -177,17 +228,19 @@ export function evaluateLateralFindings(lm: ViewLandmarks<"lateral">, viewConfid
     // hoof-pastern axis). Centro de referencia: 47.5°.
     const idealCenter = 47.5;
     const deviation = angleFromGround - idealCenter; // positivo = más vertical de lo ideal (upright), negativo = más inclinado (sloping)
+    rawMetrics.pasternAngleDeviation = deviation;
     const conf = combinedConfidence([coronetFront, hoofHeelFront]);
     const defectId = deviation >= 0 ? "upright_pastern" : "long_sloping_pastern";
-    findings.push(buildFinding(defectId, undefined, deviation, Math.abs(deviation), conf));
+    findings.push(buildFinding(defectId, undefined, deviation, Math.abs(deviation), conf, ref("pasternAngleDeviation")));
   }
 
   // --- L2 (catch-all): verticalidad de toda la extremidad ---
   const cannonMidFront = get(lm, "cannonMidFront");
   if (carpus && cannonMidFront && fetlockFront) {
     const angle = angleFromVertical(toVec(carpus), toVec(fetlockFront));
+    rawMetrics.legVerticality = angle;
     const conf = combinedConfidence([carpus, cannonMidFront, fetlockFront]);
-    findings.push(buildFinding("excessively_vertical_leg", undefined, angle, Math.abs(angle), conf));
+    findings.push(buildFinding("excessively_vertical_leg", undefined, angle, Math.abs(angle), conf, ref("legVerticality")));
   }
 
   // --- L4: familia posterior (sickle-hocked / post-legged / camped-under / camped-out) ---
@@ -198,18 +251,20 @@ export function evaluateLateralFindings(lm: ViewLandmarks<"lateral">, viewConfid
   const hoofHeelHind = get(lm, "hoofHeelHind");
   if (buttock && hoofHeelHind && hock) {
     const legLength = distance(toVec(buttock), toVec(hoofHeelHind));
-    type Candidate = { defectId: string; measured: number; absDev: number; conf: number };
+    type Candidate = { defectId: string; measured: number; absDev: number; conf: number; metricKey: string };
     const candidates: Candidate[] = [];
 
     if (legLength > 0) {
       // Offset de TODA la pierna (a la altura del corvejón) respecto a la plomada punta-de-nalga→talón.
       const legOffset = signedPerpendicularOffset(toVec(hock), toVec(buttock), toVec(hoofHeelHind)) / legLength;
+      rawMetrics.hindLegOffset = legOffset;
       const legConf = combinedConfidence([buttock, hoofHeelHind, hock]);
       candidates.push({
         defectId: legOffset >= 0 ? "camped_under" : "camped_out",
         measured: legOffset,
         absDev: Math.abs(legOffset),
         conf: legConf,
+        metricKey: "hindLegOffset",
       });
     }
 
@@ -218,12 +273,14 @@ export function evaluateLateralFindings(lm: ViewLandmarks<"lateral">, viewConfid
       const angle = jointAngle(toVec(hock), toVec(stifle), toVec(fetlockHind));
       const idealAngle = 155; // referencia profesional aproximada de ángulo de corvejón funcional
       const deviation = idealAngle - angle; // positivo = ángulo menor a lo ideal (más doblado = sickle-hocked); negativo = más recto (post-legged)
+      rawMetrics.hockAngleDeviation = deviation;
       const conf = combinedConfidence([hock, stifle, fetlockHind]);
       candidates.push({
         defectId: deviation >= 0 ? "sickle_hocked" : "post_legged",
         measured: deviation,
         absDev: Math.abs(deviation),
         conf,
+        metricKey: "hockAngleDeviation",
       });
     }
 
@@ -231,21 +288,31 @@ export function evaluateLateralFindings(lm: ViewLandmarks<"lateral">, viewConfid
       let best: { c: Candidate; magnitude01: number } | null = null;
       for (const c of candidates) {
         const defect = findDefect(c.defectId)!;
-        const { magnitude01 } = classifySeverity(c.absDev, defect.tolerance);
+        const { magnitude01 } = classifySeverity(c.measured, defect.tolerance);
         if (!best || magnitude01 > best.magnitude01) best = { c, magnitude01 };
       }
-      if (best) findings.push(buildFinding(best.c.defectId, undefined, best.c.measured, best.c.absDev, best.c.conf));
+      if (best) {
+        findings.push(
+          buildFinding(best.c.defectId, undefined, best.c.measured, best.c.absDev, best.c.conf, ref(best.c.metricKey))
+        );
+      }
     }
   }
 
-  return findings;
+  return { findings, rawMetrics };
 }
 
 // ============================================================
 // POSTERIOR — P1 (cow-hocked) / P2 (bow-hocked).
 // ============================================================
-export function evaluatePosteriorFindings(lm: ViewLandmarks<"posterior">, viewConfidence: number): Finding[] {
+export function evaluatePosteriorFindings(
+  lm: ViewLandmarks<"posterior">,
+  viewConfidence: number,
+  referenceMetrics?: ReferenceMetrics
+): ViewEvaluation {
   const findings: Finding[] = [];
+  const rawMetrics: ReferenceMetrics = {};
+  const ref = (key: string): number | undefined => referenceMetrics?.[key];
   const coxaeL = get(lm, "tuberCoxaeLeft");
   const coxaeR = get(lm, "tuberCoxaeRight");
   const hockL = get(lm, "hockLeft");
@@ -269,11 +336,12 @@ export function evaluatePosteriorFindings(lm: ViewLandmarks<"posterior">, viewCo
       // patrón es ambiguo y se pondera hacia 0 (menos confianza en el
       // patrón, no en los landmarks individuales).
       const composite = (hockVsPelvis + hockVsHoof) / 2;
+      rawMetrics.hockWidthComposite = composite;
       const conf = combinedConfidence([coxaeL, coxaeR, hockL, hockR, hoofL, hoofR]);
       const defectId = composite < 0 ? "cow_hocked" : "bow_hocked";
-      findings.push(buildFinding(defectId, undefined, composite, Math.abs(composite), conf));
+      findings.push(buildFinding(defectId, undefined, composite, Math.abs(composite), conf, ref("hockWidthComposite")));
     }
   }
 
-  return findings;
+  return { findings, rawMetrics };
 }

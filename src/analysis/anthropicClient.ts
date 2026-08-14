@@ -150,12 +150,17 @@ export async function analyzeHip(opts: {
       continue;
     }
 
-    const findings: Finding[] =
+    // El patrón RM de 10.0/10 del referente (ver referenceCalibration.ts)
+    // entra acá — SOLO afina la puntuación dentro de la banda ya
+    // anatómicamente segura (ver severity.classifySeverity), nunca
+    // reclasifica un defecto real como correcto.
+    const referenceMetrics = calibration.referenceMetrics?.[view];
+    const { findings } =
       view === "frontal"
-        ? evaluateFrontalFindings(best.landmarks as ViewLandmarks<"frontal">, best.overallConfidence)
+        ? evaluateFrontalFindings(best.landmarks as ViewLandmarks<"frontal">, best.overallConfidence, referenceMetrics)
         : view === "lateral"
-        ? evaluateLateralFindings(best.landmarks as ViewLandmarks<"lateral">, best.overallConfidence)
-        : evaluatePosteriorFindings(best.landmarks as ViewLandmarks<"posterior">, best.overallConfidence);
+        ? evaluateLateralFindings(best.landmarks as ViewLandmarks<"lateral">, best.overallConfidence, referenceMetrics)
+        : evaluatePosteriorFindings(best.landmarks as ViewLandmarks<"posterior">, best.overallConfidence, referenceMetrics);
 
     const viewScore = scoreView(findings);
     const displayFindings = prioritizeFindings(findings, 2);

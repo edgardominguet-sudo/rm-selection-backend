@@ -22,17 +22,53 @@ export interface SeverityResult {
 }
 
 /**
- * Clasifica una magnitud de desviación (YA en las mismas unidades que
- * `tolerance.unit`, ya sea grados, offset normalizado o ratio) contra las
- * bandas configurables del defecto. `absDeviation` debe venir en valor
- * absoluto — la dirección (medial/lateral, craneal/caudal) es un dato
- * aparte del hallazgo, no de la severidad.
+ * Clasifica una DESVIACIÓN FIRMADA (misma unidad que `tolerance.unit`, ya
+ * sea grados, offset normalizado o ratio; 0 = eje/ángulo anatómico ideal)
+ * contra las bandas profesionales del defecto.
+ *
+ * `referenceValue` (opcional, 2026-08-14 — corrección de Ramon sobre cómo
+ * debe participar el caballo referente): el valor que el propio caballo
+ * referente mide en esta misma métrica, en las mismas unidades. Cuando se
+ * provee, y SOLO SI la medición ya cae dentro de la banda "Correct" (es
+ * decir, ya es anatómicamente segura según el estándar profesional), se
+ * usa para afinar qué tan cerca del PATRÓN ESTRUCTURAL RM está el
+ * caballo evaluado, dentro de esa misma banda seguridad. El valor de
+ * referencia SIEMPRE se recorta (clamp) a los límites de la banda
+ * "Correct" antes de usarse — así el referente nunca puede convertir una
+ * desviación real (leve/moderado/marcado) en "correcto", ni desplazar el
+ * límite de seguridad anatómica hacia afuera. Fuera de la banda "Correct"
+ * el referente NO participa en absoluto: severidad y etiqueta del
+ * defecto siguen gobernadas 100% por el estándar profesional.
+ *
+ * Resumen (ver corrección de Ramon, 2026-08-14):
+ *   ESTÁNDAR PROFESIONAL = define qué es anatomía correcta y protege
+ *     contra errores (bandas leve/moderado/marcado, sin tocar).
+ *   CABALLO REFERENTE = calibra, DENTRO de esa anatomía correcta, el
+ *     patrón estructural que valora el Método RM (afina el 0.00–0.15 de
+ *     magnitud dentro de la banda "Correct", nunca más allá).
  */
-export function classifySeverity(absDeviation: number, tolerance: ToleranceBands): SeverityResult {
+export function classifySeverity(
+  measuredValue: number,
+  tolerance: ToleranceBands,
+  referenceValue?: number | null
+): SeverityResult {
+  const absDeviation = Math.abs(measuredValue);
   const { correctoMax, leveMax, moderadoMax } = tolerance;
   if (absDeviation <= correctoMax) {
-    // Dentro de tolerancia: magnitud proporcional a cuánto de ese margen se usó (0 = perfecto, 1 = justo en el límite), solo informativo.
-    const magnitude01 = correctoMax > 0 ? Math.min(1, absDeviation / correctoMax) * 0.15 : 0;
+    // Dentro de la zona segura profesional. Si tenemos el valor que mide
+    // el propio referente en esta métrica, usamos la distancia al PATRÓN
+    // RM (recortado para no salirse nunca de esta misma banda) en vez de
+    // la distancia al 0 abstracto — así "igual al referente" tiende a
+    // magnitude01→0 (más cerca de 10) y "anatómicamente correcto pero
+    // distinto del patrón RM" sigue en el rango 0–0.15 (nunca cruza a
+    // "leve"). Sin referenceValue, se comporta exactamente igual que
+    // antes (distancia al 0 = ideal anatómico abstracto).
+    let effectiveDeviation = absDeviation;
+    if (referenceValue !== undefined && referenceValue !== null && Number.isFinite(referenceValue) && correctoMax > 0) {
+      const clampedTarget = Math.max(-correctoMax, Math.min(correctoMax, referenceValue));
+      effectiveDeviation = Math.abs(measuredValue - clampedTarget);
+    }
+    const magnitude01 = correctoMax > 0 ? Math.min(1, effectiveDeviation / correctoMax) * 0.15 : 0;
     return { severity: "correct", magnitude01 };
   }
   if (absDeviation <= leveMax) {
