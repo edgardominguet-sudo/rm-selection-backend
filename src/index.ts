@@ -160,7 +160,28 @@ app.get("/diag/keeneland-force-sync", async (req, res) => {
 });
 
 app.get("/diag/keeneland-force-sync-status", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   res.json(keenelandForceSyncState);
+});
+
+// Lee directo de Postgres (fuente de verdad), sin pasar por la variable en
+// memoria de arriba — para descartar cualquier problema de caché/proxy
+// intermedio al confirmar si el import realmente terminó.
+app.get("/diag/keeneland-db-status", async (req, res) => {
+  const { db } = await import("./db");
+  const externalSaleId = (req.query.externalSaleId as string | undefined) ?? "12";
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: "KEENELAND", externalSaleId } } });
+  if (!sale) {
+    res.status(404).setHeader("Cache-Control", "no-store").json({ ok: false, error: "Sale no encontrada." });
+    return;
+  }
+  const hipCount = await db.hip.count({ where: { saleId: sale.id } });
+  const allHipNumbers = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true } });
+  const numericHipNumbers = allHipNumbers.map((h) => Number(h.hipNumber)).filter((n) => Number.isFinite(n));
+  const minHipNumber = numericHipNumbers.length > 0 ? Math.min(...numericHipNumbers) : null;
+  const maxHipNumber = numericHipNumbers.length > 0 ? Math.max(...numericHipNumbers) : null;
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, saleName: sale.name, hipCount, minHipNumber, maxHipNumber, checkedAt: new Date().toISOString() });
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
