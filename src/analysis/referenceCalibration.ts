@@ -57,8 +57,19 @@ export interface ReferenceCalibration {
   referenceMetrics: { frontal: ReferenceMetrics; lateral: ReferenceMetrics; posterior: ReferenceMetrics };
 }
 
+// Se incluye en el hash de origen para que un cambio en las FÓRMULAS de
+// geometry.ts/rmPriorityRules.ts (no solo en las fotos) invalide el
+// caché automáticamente — sin esto, corregir un bug como el de
+// angleFromGroundPlane (2026-08-14, ver rmPriorityRules.ts) dejaría
+// `referenceMetrics` calculado con la fórmula VIEJA hasta que alguien
+// recargara a mano las fotos del referente. Subir este número cualquier
+// vez que un cambio de código afecte los valores que mide el propio
+// referente (no hace falta subirlo por cambios que NO tocan geometría,
+// como ajustar pesos o textos).
+const ENGINE_FORMULA_VERSION = "2026-08-14-groundplane-fix";
+
 export function referenceSourceHash(assets: ReferenceHorseAssets): string {
-  const parts = [assets.lateralPhotoUrl ?? "", assets.frontalPhotoUrl ?? "", assets.posteriorPhotoUrl ?? ""];
+  const parts = [assets.lateralPhotoUrl ?? "", assets.frontalPhotoUrl ?? "", assets.posteriorPhotoUrl ?? "", ENGINE_FORMULA_VERSION];
   return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
 }
 
