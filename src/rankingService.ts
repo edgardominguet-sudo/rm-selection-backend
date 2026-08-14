@@ -235,17 +235,12 @@ export async function syncCatalog(sale: Sale): Promise<void> {
 
   await upsertNormalizedHips(sale.id, hips, sessionDates);
 
-  // Calendario de Ventas (SaleDay): se resuelve UNA sola vez por venta
-  // (cuando todavía no tiene ninguna fila) para no golpear la casa de
-  // ventas en cada ciclo del scheduler pidiendo el mismo documento
-  // publicado — ver comentario en syncSaleDays. Si en el futuro hace
-  // falta refrescarlo (la casa corrigió una fecha ya publicada), alcanza
-  // con borrar las filas de esa venta a mano; el próximo ciclo las vuelve
-  // a resolver solas.
-  const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
-  if (existingSaleDayCount === 0) {
-    await syncSaleDays(sale, client);
-  }
+  // Calendario de Ventas (SaleDay): resuelto en processSale(), NO acá —
+  // corre en todos los ciclos del scheduler (no atado a la cadencia de
+  // shouldCheckNow de esta función), así una venta con catálogo pero sin
+  // calendario todavía se resuelve sola en el siguiente ciclo, sin esperar
+  // el intervalo largo de re-chequeo de catálogo completo. Ver comentario
+  // completo en processSale.
 
   if (hipCountBefore === 0 && hips.length > 0) {
     await db.saleAlert.create({
@@ -658,6 +653,27 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
   // actualiza solo cuando alguien sube un CSV nuevo (POST
   // /sales/:saleId/catalog/import ya deja lastCatalogCheckAt al día en ese
   // momento). El resto de esta función no distingue el origen del catálogo.
+
+  // Calendario de Ventas (SaleDay) — a pedido explícito (2026-08-14): "esto
+  // no debe depender de que el usuario haga un resync manual". Por eso NO
+  // se ata a shouldCheckNow/pollingPolicy de arriba (esa ventana existe
+  // para no golpear de más la API de catálogo completo, mucho más pesada) —
+  // corre en TODOS los ciclos del scheduler, pero el propio conteo de abajo
+  // hace que solo pegue a la casa de ventas la primera vez que a esta venta
+  // le falta calendario. Como el scheduler corre un ciclo inmediato al
+  // arrancar (ver scheduler.ts), cualquier venta que ya tenga catálogo pero
+  // todavía no tenga calendario lo resuelve sola en el siguiente redeploy,
+  // sin esperar ningún intervalo largo.
+  if (sale.catalogAccess === "FULL") {
+    try {
+      const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
+      if (existingSaleDayCount === 0) {
+        await syncSaleDays(sale, clientFor(sale.house));
+      }
+    } catch (err) {
+      console.error(`[scheduler] Error resolviendo Calendario de Ventas de ${sale.name}:`, err);
+    }
+  }
 
   const leadMs = config.rankingLeadHours * 60 * 60 * 1000;
   const sessionDates = await db.hip.findMany({
