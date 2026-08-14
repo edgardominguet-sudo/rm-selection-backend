@@ -52,7 +52,7 @@ function pedigreePdfUrl(saleCode: string, hipNumber: number): string {
  * Devuelve null (no lanza error) si el Hip no existe en este catálogo —
  * eso es información válida (numeración no continua), no una falla.
  */
-async function fetchPedigreePdfText(saleCode: string, hipNumber: number): Promise<string | null> {
+export async function fetchPedigreePdfText(saleCode: string, hipNumber: number): Promise<string | null> {
   const url = pedigreePdfUrl(saleCode, hipNumber);
   let response: Response;
   try {

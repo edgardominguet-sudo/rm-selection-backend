@@ -41,10 +41,15 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
 // correr la importación completa (pedido explícito del propietario,
 // punto 8: "no realices inmediatamente una modificación masiva").
 app.get("/diag/keeneland-pdf-probe", async (req, res) => {
-  const { probeKeenelandCatalogViaPedigreePdfs } = await import("./saleHouses/keenelandPedigreePdfCatalog");
+  const { probeKeenelandCatalogViaPedigreePdfs, fetchPedigreePdfText } = await import("./saleHouses/keenelandPedigreePdfCatalog");
   const saleCode = (req.query.saleCode as string | undefined) ?? "k226";
   const startAt = Number(req.query.startAt ?? "1");
   const count = Number(req.query.count ?? "3");
+  if (req.query.raw === "1") {
+    const text = await fetchPedigreePdfText(saleCode, startAt);
+    res.type("text/plain").send(text ?? "(no encontrado)");
+    return;
+  }
   try {
     const hips = await probeKeenelandCatalogViaPedigreePdfs(saleCode, {
       startAt,
