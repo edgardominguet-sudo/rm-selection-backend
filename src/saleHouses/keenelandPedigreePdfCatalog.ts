@@ -79,8 +79,13 @@ async function fetchPedigreePdfText(saleCode: string, hipNumber: number): Promis
 const COLOR_SEX_LINE = /\n([A-Z][A-Z ]{2,30}?)\s+(COLT|FILLY|GELDING|RIG)\.?\s*\n/;
 const FOALED_LINE = /Foaled\s+([A-Za-z]+\s+\d{1,2},\s*\d{4})/;
 const CONSIGNOR_LINE = /Consigned by\s+([^\n]+)/;
-const SIRE_LINE = /\bBy\s+([A-Z][A-Za-z'.\- ]*?)\s*\(\d{4}\)\./;
-const DAM_LINE = /1st dam\s*\n\s*([A-Z][A-Za-z' .\-]*?),\s*by\s+([^.\n]+)\./;
+// Ambas listas de caracteres incluyen paréntesis (2026-08-14, bug real
+// encontrado probando el Hip 2300): varios caballos traen sufijo de país
+// en el nombre — ej. dam "LOVEE DOVEE (GB)", damSire "Candy Ride (ARG)" —
+// sin esto, el regex cortaba ahí y perdía Dam/DamSire enteros para
+// cualquier Hip con un padre/madre nacido fuera de EE. UU.
+const SIRE_LINE = /\bBy\s+([A-Z][A-Za-z'.\-() ]*?)\s*\(\d{4}\)\./;
+const DAM_LINE = /1st dam\s*\n\s*([A-Z][A-Za-z' .()\-]*?),\s*by\s+([^.\n]+)\./;
 const BARN_HIP_BLOCK = /Barn\s*\n([^\n]+)\s*\nHip No\.\s*\n\s*(\d+)/;
 
 /** Extrae los campos que RM Selection necesita del texto plano del PDF de pedigree de un Hip. */
