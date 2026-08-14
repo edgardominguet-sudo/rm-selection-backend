@@ -2,6 +2,8 @@
 cd /Users/ramonminguet/Downloads/RMSelection/backend || exit 1
 echo "=== npm install (agrega pdf-parse al lockfile) ==="
 npm install
+echo "=== npx prisma generate (cliente Prisma actualizado antes del chequeo de tipos) ==="
+npx prisma generate
 echo "=== npx tsc --noEmit (chequeo de tipos antes de subir nada) ==="
 npx tsc --noEmit -p tsconfig.json
 TSC_STATUS=$?
