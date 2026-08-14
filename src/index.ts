@@ -33,6 +33,31 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
   res.send(Buffer.from(photo.dataBase64, "base64"));
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-14, se retira al terminar la tarea de
+// Keeneland — ver convención ya usada para /diag/* en commits previos):
+// prueba controlada de un puñado de Hips reales vía el mecanismo de
+// respaldo por PDF de pedigree, SIN tocar la base de datos — para
+// verificar sire/dam/damSire/sexo/color/consignor/foalYear antes de
+// correr la importación completa (pedido explícito del propietario,
+// punto 8: "no realices inmediatamente una modificación masiva").
+app.get("/diag/keeneland-pdf-probe", async (req, res) => {
+  const { probeKeenelandCatalogViaPedigreePdfs } = await import("./saleHouses/keenelandPedigreePdfCatalog");
+  const saleCode = (req.query.saleCode as string | undefined) ?? "k226";
+  const startAt = Number(req.query.startAt ?? "1");
+  const count = Number(req.query.count ?? "3");
+  try {
+    const hips = await probeKeenelandCatalogViaPedigreePdfs(saleCode, {
+      startAt,
+      hardCap: startAt + count - 1,
+      maxConsecutiveMisses: count + 5,
+      concurrency: 3,
+    });
+    res.json({ ok: true, saleCode, startAt, count, found: hips.length, hips });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
