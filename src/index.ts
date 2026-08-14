@@ -63,10 +63,11 @@ app.get("/diag/sales-overview", async (_req, res) => {
 // Hips) antes de que existiera el dedup por fecha cercana (ver
 // saleDiscoveryService.ts). La desactiva en vez de borrarla (reversible).
 // Se borra este endpoint en el commit de limpieza al cerrar la tarea.
-app.post("/diag/deactivate-duplicate-sale", async (req, res) => {
-  const { house, externalSaleId } = req.body ?? {};
+app.get("/diag/deactivate-duplicate-sale", async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
   if (!house || !externalSaleId) {
-    res.status(400).json({ error: "Faltan house, externalSaleId en el body." });
+    res.status(400).json({ error: "Faltan house, externalSaleId en query params." });
     return;
   }
   const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house, externalSaleId } } });
