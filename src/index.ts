@@ -45,37 +45,64 @@ app.get("/api/v1/reference-horse/photos/:id", async (req, res) => {
 // termine la prueba.
 app.get("/_diag/reproducibility-test", async (_req, res) => {
   try {
+    let hipNumber: string;
+    let horseName: string | undefined;
+    let organizationId: string;
+    let media: { kind: "photo"; url: string }[];
+
     const asset = await db.mediaAsset.findFirst({
       where: { kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
       orderBy: { createdAt: "asc" },
     });
-    if (!asset) {
-      res.json({ found: false, reason: "No hay ningún MediaAsset AI_ANALYSIS_PHOTO en la base todavía." });
-      return;
+    if (asset) {
+      const hip = await db.hip.findUnique({ where: { id: asset.hipId } });
+      const assets = hip
+        ? await db.mediaAsset.findMany({
+            where: { hipId: hip.id, organizationId: asset.organizationId, kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
+            orderBy: { createdAt: "asc" },
+          })
+        : [];
+      if (hip && assets.length >= 3) {
+        hipNumber = hip.hipNumber;
+        horseName = hip.horseName ?? undefined;
+        organizationId = asset.organizationId;
+        media = assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey) }));
+      } else {
+        res.json({ found: false, reason: `No hay ningún Hip con las 3 fotos AI_ANALYSIS_PHOTO todavía (encontrado: ${assets.length}).`, fallbackAttempted: false });
+        return;
+      }
+    } else {
+      // FALLBACK: todavía no hay ningún Hip con fotos de Análisis IA
+      // cargadas — se usan las 3 fotos del propio caballo referente como
+      // sujeto de prueba. No dice nada sobre la CALIDAD del análisis
+      // (comparar al referente contra sí mismo no es representativo),
+      // pero SÍ ejercita el pipeline completo de punta a punta
+      // (extracción de landmarks real vía Claude + geometría +
+      // severidad + score) para medir reproducibilidad, que es lo único
+      // que esta prueba necesita confirmar.
+      const orgRow = await db.referenceHorse.findFirst({ where: { key: "default" } });
+      if (!orgRow || !orgRow.lateralPhotoUrl || !orgRow.frontalPhotoUrl || !orgRow.posteriorPhotoUrl) {
+        res.json({ found: false, reason: "No hay ningún Hip con fotos de Análisis IA, y tampoco hay caballo referente configurado para usar como fallback." });
+        return;
+      }
+      hipNumber = "TEST-REFERENCE-SELF";
+      horseName = "Prueba de reproducibilidad (caballo referente)";
+      organizationId = orgRow.organizationId;
+      media = [
+        { kind: "photo", url: orgRow.lateralPhotoUrl },
+        { kind: "photo", url: orgRow.frontalPhotoUrl },
+        { kind: "photo", url: orgRow.posteriorPhotoUrl },
+      ];
     }
-    const hip = await db.hip.findUnique({ where: { id: asset.hipId } });
-    if (!hip) {
-      res.json({ found: false, reason: "Hip no encontrado para ese MediaAsset." });
-      return;
-    }
-    const assets = await db.mediaAsset.findMany({
-      where: { hipId: hip.id, organizationId: asset.organizationId, kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
-      orderBy: { createdAt: "asc" },
-    });
-    if (assets.length < 3) {
-      res.json({ found: false, reason: `Hip ${hip.hipNumber} solo tiene ${assets.length} foto(s) AI_ANALYSIS_PHOTO, hacen falta 3.` });
-      return;
-    }
-    const media = assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey) }));
-    const reference = await getReferenceHorse(asset.organizationId);
 
-    const run1 = await analyzeHip({ hipNumber: hip.hipNumber, horseName: hip.horseName ?? undefined, organizationId: asset.organizationId, media, reference });
-    const run2 = await analyzeHip({ hipNumber: hip.hipNumber, horseName: hip.horseName ?? undefined, organizationId: asset.organizationId, media, reference });
+    const reference = await getReferenceHorse(organizationId);
+    const run1 = await analyzeHip({ hipNumber, horseName, organizationId, media, reference });
+    const run2 = await analyzeHip({ hipNumber, horseName, organizationId, media, reference });
 
     res.json({
       found: true,
-      hipNumber: hip.hipNumber,
-      organizationId: asset.organizationId,
+      hipNumber,
+      organizationId,
       run1: { scores: run1.scores, summary: run1.summary },
       run2: { scores: run2.scores, summary: run2.summary },
       scoresIdentical: JSON.stringify(run1.scores) === JSON.stringify(run2.scores),
