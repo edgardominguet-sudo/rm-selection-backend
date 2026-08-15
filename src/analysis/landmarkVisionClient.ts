@@ -60,26 +60,40 @@ export async function extractLandmarksFromPhoto(opts: {
   return parsed;
 }
 
+// Timeout explícito por llamada (2026-08-14, mismo día que se detectó
+// durante la prueba de reproducibilidad de Ramon): antes de esto, una
+// llamada a Anthropic sin respuesta se quedaba colgada indefinidamente —
+// sin lanzar excepción, sin timeout del SDK, bloqueando esa foto (y por
+// lo tanto ese Hip) para siempre. 4 minutos es holgado para una sola
+// imagen con max_tokens=8192, pero acota el peor caso — al vencer, cae
+// en el mismo catch que cualquier otro error de esta función y el
+// llamador (anthropicClient.ts) ya sabe tratar una foto fallida como
+// "no se pudo procesar" sin tumbar el análisis completo.
+const REQUEST_TIMEOUT_MS = 4 * 60 * 1000;
+
 async function sendWithRetry(client: Anthropic, content: Array<ImageBlock | TextBlock>, attempt = 1): Promise<Anthropic.Message> {
   try {
-    return await client.messages.create({
-      model: config.anthropicModel,
-      // Subido de 2048 a 8192 (2026-08-14): con 2048 el modelo cortaba a
-      // mitad de la lista de landmarks en vistas con ~20 puntos (lateral
-      // es la más larga — ver LATERAL_LANDMARK_IDS en landmarks.ts) y el
-      // JSON quedaba truncado/inválido. 8192 deja margen holgado incluso
-      // si el modelo agrega algo de formato extra.
-      max_tokens: 8192,
-      // Mismo criterio que anthropicClient.ts: NO se agrega `temperature`
-      // (claude-sonnet-5 devuelve 400 con ese campo presente). La
-      // reproducibilidad de ESTE motor no depende de eso — depende de que
-      // la geometría (geometry.ts, rmPriorityRules.ts, scoringEngine.ts)
-      // sea 100% determinística una vez que hay coordenadas, y de que la
-      // tarea de extracción sea lo más acotada/objetiva posible (ubicar un
-      // punto es mucho más estable entre llamadas que "elegir un puntaje
-      // 0-10"). Ver reporte de reproducibilidad de esta tarea.
-      messages: [{ role: "user", content: content as unknown as Anthropic.MessageParam["content"] }],
-    });
+    return await client.messages.create(
+      {
+        model: config.anthropicModel,
+        // Subido de 2048 a 8192 (2026-08-14): con 2048 el modelo cortaba a
+        // mitad de la lista de landmarks en vistas con ~20 puntos (lateral
+        // es la más larga — ver LATERAL_LANDMARK_IDS en landmarks.ts) y el
+        // JSON quedaba truncado/inválido. 8192 deja margen holgado incluso
+        // si el modelo agrega algo de formato extra.
+        max_tokens: 8192,
+        // Mismo criterio que anthropicClient.ts: NO se agrega `temperature`
+        // (claude-sonnet-5 devuelve 400 con ese campo presente). La
+        // reproducibilidad de ESTE motor no depende de eso — depende de que
+        // la geometría (geometry.ts, rmPriorityRules.ts, scoringEngine.ts)
+        // sea 100% determinística una vez que hay coordenadas, y de que la
+        // tarea de extracción sea lo más acotada/objetiva posible (ubicar un
+        // punto es mucho más estable entre llamadas que "elegir un puntaje
+        // 0-10"). Ver reporte de reproducibilidad de esta tarea.
+        messages: [{ role: "user", content: content as unknown as Anthropic.MessageParam["content"] }],
+      },
+      { timeout: REQUEST_TIMEOUT_MS }
+    );
   } catch (err) {
     const status = (err as { status?: number }).status;
     if (status && [502, 503, 504, 429].includes(status) && attempt < 3) {

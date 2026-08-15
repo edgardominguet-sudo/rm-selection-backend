@@ -98,6 +98,8 @@ app.get("/_diag/multirun/start/:slot", async (req, res) => {
         detail: AnalysisOutcome["detail"];
       }> = [];
       for (let i = 0; i < n; i++) {
+        const t0 = Date.now();
+        console.log(`[multirun ${slot}] corrida ${i + 1}/${n}: iniciando analyzeHip()...`);
         const outcome = await analyzeHip({
           hipNumber: subject.hipNumber,
           horseName: subject.horseName,
@@ -105,6 +107,7 @@ app.get("/_diag/multirun/start/:slot", async (req, res) => {
           media: subject.media,
           reference,
         });
+        console.log(`[multirun ${slot}] corrida ${i + 1}/${n}: terminada en ${Date.now() - t0}ms`);
         runs.push({ runIndex: i + 1, scores: outcome.scores, detail: outcome.detail });
         multiRunResults[slot] = { status: "running", completedRuns: i + 1, totalRuns: n };
       }
