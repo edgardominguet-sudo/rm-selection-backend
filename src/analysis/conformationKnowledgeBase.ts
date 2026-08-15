@@ -86,12 +86,15 @@ export const CONFORMATION_KNOWLEDGE_BASE: ConformationDefect[] = [
     nameEn: "Base-narrow",
     nameEs: "Base estrecha",
     view: "frontal",
-    // carpusLeft/Right y fetlockLeft/Right agregados 2026-08-14 (corrección
-    // de estabilidad): la referencia proximal ahora promedia hombro+carpo+
-    // menudillo cuando están disponibles, en vez de depender únicamente
-    // del par hombro-hombro — ver comentario largo en rmPriorityRules.ts.
-    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "carpusLeft", "carpusRight", "fetlockLeft", "fetlockRight", "hoofCenterLeft", "hoofCenterRight"],
-    expectedAxis: "Ancho entre cascos ≈ ancho promedio de la extremidad entre el nacimiento en el pecho y el menudillo.",
+    // Recalculado 2026-08-14 (corrección de estabilidad, segundo intento):
+    // ahora es el promedio de la desviación horizontal casco↔hombro de
+    // CADA pata por separado (mismo tipo de cálculo que carpus_valgus/
+    // varus), no una comparación de anchos entre las 2 patas — ver
+    // comentario largo en rmPriorityRules.ts. Vuelve a depender solo de
+    // shoulderLeft/Right y hoofCenterLeft/Right (ya no de carpo/menudillo,
+    // que fue el primer intento y no funcionó).
+    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "El casco de cada pata cae sobre la vertical que baja desde el hombro de esa misma pata.",
     deviationDirection: "Cascos más juntos entre sí que el nacimiento de los miembros en el pecho.",
     tolerance: { unit: "ratio", correctoMax: 0.08, leveMax: 0.16, moderadoMax: 0.28 },
     rmWeight: 0.85,
@@ -106,8 +109,8 @@ export const CONFORMATION_KNOWLEDGE_BASE: ConformationDefect[] = [
     nameEs: "Base ancha",
     view: "frontal",
     // Ver nota en base_narrow (mismo cambio 2026-08-14).
-    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "carpusLeft", "carpusRight", "fetlockLeft", "fetlockRight", "hoofCenterLeft", "hoofCenterRight"],
-    expectedAxis: "Ancho entre cascos ≈ ancho promedio de la extremidad entre el nacimiento en el pecho y el menudillo.",
+    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "El casco de cada pata cae sobre la vertical que baja desde el hombro de esa misma pata.",
     deviationDirection: "Cascos más separados entre sí que el nacimiento de los miembros en el pecho.",
     tolerance: { unit: "ratio", correctoMax: 0.08, leveMax: 0.16, moderadoMax: 0.28 },
     rmWeight: 0.85,

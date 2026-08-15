@@ -83,51 +83,64 @@ export function evaluateFrontalFindings(
   const shoulderR = get(lm, "shoulderRight");
   const hoofL = get(lm, "hoofCenterLeft");
   const hoofR = get(lm, "hoofCenterRight");
-  const carpusLBase = get(lm, "carpusLeft");
-  const carpusRBase = get(lm, "carpusRight");
-  const fetlockLBase = get(lm, "fetlockLeft");
-  const fetlockRBase = get(lm, "fetlockRight");
 
   // --- base_narrow / base_wide (bilateral, un solo hallazgo para las 2 patas) ---
   //
-  // CORRECCIÓN DE ESTABILIDAD (2026-08-14, pedida por Ramon tras ver que
-  // la MISMA foto frontal podía leerse "base ancha" en una corrida y
-  // "base estrecha" en otra): la prueba de 10 corridas mostró que el
-  // ancho entre HOMBROS solo (2 puntos) es sensible al ruido normal de
-  // ubicación de landmarks entre llamadas — un desplazamiento de pocos
-  // pixeles en shoulderLeft/Right cambia el denominador entero del ratio.
-  // Esto NO es un problema del estándar anatómico (las bandas de
-  // tolerancia de base_narrow/base_wide en conformationKnowledgeBase.ts
-  // no se tocaron) sino de qué tan robusta es la REFERENCIA "arriba" que
-  // se usa para comparar contra el ancho de apoyo (cascos).
+  // CORRECCIÓN DE ESTABILIDAD, SEGUNDO INTENTO (2026-08-14, pedida por
+  // Ramon tras ver que la MISMA foto frontal podía leerse "base ancha" en
+  // una corrida y "base estrecha" en otra). PRIMER INTENTO (promediar
+  // ancho de hombro+carpo+menudillo) NO funcionó — probado con 10
+  // corridas reales: el ratio siguió variando de -0.71 a +0.15 y la
+  // clasificación siguió cruzando Excelente/Bien en 4 de 10 corridas. Se
+  // descarta y se documenta acá para no repetirlo.
   //
-  // Fix: promediar el ancho de hombros con el ancho de carpo y de
-  // menudillo (mismos landmarks que YA se extraen para carpus_valgus/
-  // varus y toe_in/out en este mismo llamado — no agrega ningún landmark
-  // ni llamada nueva) para obtener una referencia proximal menos volátil.
-  // Sigue siendo exactamente la misma comparación anatómica ("¿el caballo
-  // se abre o se cierra desde el nacimiento de la extremidad hasta el
-  // casco?"), solo que promediada sobre 2-3 alturas del miembro en vez de
-  // depender de un único par de puntos. Si carpo/menudillo no están
-  // visibles, cae de vuelta al comportamiento anterior (solo hombros).
+  // Causa raíz real (identificada comparando contra carpus_valgus/varus y
+  // toe_in/toe_out EN LA MISMA PRUEBA, que salieron mucho más consistentes
+  // entre corridas): comparar un ANCHO ENTRE DOS PATAS (hoofWidth vs.
+  // shoulderWidth, cada uno ya calculado a partir de 2 puntos con su
+  // propio error de ubicación) resta dos cantidades ya ruidosas y ese
+  // ruido se acumula en la diferencia — un error de pocos pixeles en
+  // cualquiera de los 4 puntos involucrados mueve el resultado. En
+  // cambio, carpus_valgus/varus y toe_in/toe_out miden la desviación de
+  // UN punto de SU PROPIA pata respecto a una línea de referencia de esa
+  // misma pata (hombro→casco) — un cálculo con menos puntos independientes
+  // y normalizado por longitud de pata, que la prueba de reproducibilidad
+  // ya mostró que es sensiblemente más estable.
+  //
+  // Fix real: base_narrow/base_wide se calcula ahora igual que
+  // carpus_valgus/varus — el desplazamiento horizontal del CASCO de cada
+  // pata respecto a una vertical que baja desde el HOMBRO de esa misma
+  // pata (no respecto al casco de la otra pata), normalizado por la
+  // longitud hombro→casco de esa pata, promediado entre ambas patas. Es
+  // la MISMA definición anatómica (¿el caballo se abre o se cierra desde
+  // el nacimiento de la extremidad hasta el casco?) pero medida como el
+  // promedio de 2 desviaciones de una sola pata cada una, en vez de la
+  // diferencia entre dos anchos de 2 patas. No se tocó ninguna banda de
+  // tolerancia — sigue en las mismas unidades ("ratio" normalizado por
+  // longitud de pata) y con los mismos umbrales de conformationKnowledgeBase.ts.
   if (shoulderL && shoulderR && hoofL && hoofR) {
-    const shoulderWidth = distance(toVec(shoulderL), toVec(shoulderR));
-    const hoofWidth = distance(toVec(hoofL), toVec(hoofR));
-    const proximalWidths: number[] = [shoulderWidth];
-    const proximalPoints: LandmarkPoint[] = [shoulderL, shoulderR];
-    if (carpusLBase && carpusRBase) {
-      proximalWidths.push(distance(toVec(carpusLBase), toVec(carpusRBase)));
-      proximalPoints.push(carpusLBase, carpusRBase);
+    const legs: Array<{ side: Side; shoulder: LandmarkPoint; hoof: LandmarkPoint }> = [
+      { side: "left", shoulder: shoulderL, hoof: hoofL },
+      { side: "right", shoulder: shoulderR, hoof: hoofR },
+    ];
+    const lateralOffsets: number[] = [];
+    const involvedPoints: LandmarkPoint[] = [];
+    for (const leg of legs) {
+      const legLength = distance(toVec(leg.shoulder), toVec(leg.hoof));
+      if (legLength <= 0) continue;
+      const horizontalOffset = leg.hoof.x - leg.shoulder.x;
+      const normalized = horizontalOffset / legLength;
+      // lateralSign: para la pata izquierda, "lateral" (hacia afuera,
+      // ensanchando la base) es +x; para la derecha es -x — el inverso de
+      // medialSign (ver esa función más arriba).
+      const lateralSign = leg.side === "left" ? 1 : -1;
+      lateralOffsets.push(normalized * lateralSign);
+      involvedPoints.push(leg.shoulder, leg.hoof);
     }
-    if (fetlockLBase && fetlockRBase) {
-      proximalWidths.push(distance(toVec(fetlockLBase), toVec(fetlockRBase)));
-      proximalPoints.push(fetlockLBase, fetlockRBase);
-    }
-    const proximalWidth = proximalWidths.reduce((a, b) => a + b, 0) / proximalWidths.length;
-    if (proximalWidth > 0) {
-      const ratio = (hoofWidth - proximalWidth) / proximalWidth; // negativo = más angosto abajo (base-narrow), positivo = base-wide
+    if (lateralOffsets.length > 0) {
+      const ratio = lateralOffsets.reduce((a, b) => a + b, 0) / lateralOffsets.length; // negativo = ambas patas hacia adentro (base-narrow), positivo = hacia afuera (base-wide)
       rawMetrics.baseWidthRatio = ratio;
-      const conf = combinedConfidence([...proximalPoints, hoofL, hoofR]);
+      const conf = combinedConfidence(involvedPoints);
       const defectId = ratio < 0 ? "base_narrow" : "base_wide";
       findings.push(buildFinding(defectId, undefined, ratio, Math.abs(ratio), conf, ref("baseWidthRatio")));
     }

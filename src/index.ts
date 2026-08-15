@@ -85,6 +85,7 @@ app.get("/_diag/frontalrepeat/start/:slot", async (req, res) => {
         classification: string;
         baseWidthRatio: number | null;
         findings: Array<{ defectId: string; severity: string; measuredValue: number }>;
+        landmarks?: Record<string, unknown>;
       }> = [];
       for (let i = 0; i < n; i++) {
         const extraction = await extractLandmarksFromPhoto({
@@ -107,6 +108,12 @@ app.get("/_diag/frontalrepeat/start/:slot", async (req, res) => {
             classification: classifyViewScore(viewScore.score),
             baseWidthRatio: rawMetrics.baseWidthRatio ?? null,
             findings: findings.map((f) => ({ defectId: f.defectId, severity: f.severity, measuredValue: f.measuredValue })),
+            landmarks: {
+              shoulderLeft: extraction.landmarks.shoulderLeft,
+              shoulderRight: extraction.landmarks.shoulderRight,
+              hoofCenterLeft: extraction.landmarks.hoofCenterLeft,
+              hoofCenterRight: extraction.landmarks.hoofCenterRight,
+            },
           });
         }
         frontalRepeatResults[slot] = { status: "running", completedRuns: i + 1, totalRuns: n };
