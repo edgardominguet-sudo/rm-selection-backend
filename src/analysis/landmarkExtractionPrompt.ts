@@ -64,6 +64,8 @@ Para CADA landmark de la lista correspondiente a la vista detectada, devolvé:
 
 Sé preciso: cada landmark tiene una definición anatómica específica (ver nombres de los IDs, en inglés técnico estándar — ej. "carpusLeft" es el centro del carpo/rodilla del miembro izquierdo del caballo, "hoofToeFront" es el borde más craneal del casco anterior a nivel del suelo). "Left"/"Right" son SIEMPRE el lado del CABALLO (su izquierda/derecha anatómica), no el lado de la imagen — cuando el caballo mira hacia la cámara, su lado izquierdo aparece del lado derecho de la foto.
 
+Precisión adicional para landmarks de las extremidades ANTERIORES en vista FRONTAL (shoulderLeft/Right, carpusLeft/Right, fetlockLeft/Right, hoofCenterLeft/Right): estos puntos se usan para comparar qué tan ancho o angosto está parado el caballo a distintas alturas de la pata. Si el caballo NO está parado perfectamente cuadrado hacia la cámara (una mano ligeramente más adelantada que la otra, común en fotos de parada), estimá la posición horizontal de cada landmark como si vieras la extremidad proyectada de frente sobre el plano de la cámara — no la posición aparente distorsionada por la perspectiva de una pata más cerca o más lejos del lente. Mantené el mismo criterio de estimación en TODOS los landmarks de esta lista dentro de esta misma foto, para que las comparaciones de ancho entre alturas (hombro vs. carpo vs. menudillo vs. casco) sean consistentes entre sí.
+
 Si la vista es "unclear" o "valid" es false, devolvé "landmarks": {} (objeto vacío).
 
 Respondé ÚNICAMENTE con un objeto JSON, sin texto adicional, con esta forma exacta:

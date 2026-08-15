@@ -86,8 +86,12 @@ export const CONFORMATION_KNOWLEDGE_BASE: ConformationDefect[] = [
     nameEn: "Base-narrow",
     nameEs: "Base estrecha",
     view: "frontal",
-    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "hoofCenterLeft", "hoofCenterRight"],
-    expectedAxis: "Ancho entre cascos ≈ ancho entre hombros (a nivel del pecho).",
+    // carpusLeft/Right y fetlockLeft/Right agregados 2026-08-14 (corrección
+    // de estabilidad): la referencia proximal ahora promedia hombro+carpo+
+    // menudillo cuando están disponibles, en vez de depender únicamente
+    // del par hombro-hombro — ver comentario largo en rmPriorityRules.ts.
+    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "carpusLeft", "carpusRight", "fetlockLeft", "fetlockRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "Ancho entre cascos ≈ ancho promedio de la extremidad entre el nacimiento en el pecho y el menudillo.",
     deviationDirection: "Cascos más juntos entre sí que el nacimiento de los miembros en el pecho.",
     tolerance: { unit: "ratio", correctoMax: 0.08, leveMax: 0.16, moderadoMax: 0.28 },
     rmWeight: 0.85,
@@ -101,8 +105,9 @@ export const CONFORMATION_KNOWLEDGE_BASE: ConformationDefect[] = [
     nameEn: "Base-wide",
     nameEs: "Base ancha",
     view: "frontal",
-    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "hoofCenterLeft", "hoofCenterRight"],
-    expectedAxis: "Ancho entre cascos ≈ ancho entre hombros (a nivel del pecho).",
+    // Ver nota en base_narrow (mismo cambio 2026-08-14).
+    landmarks: ["chestCenter", "shoulderLeft", "shoulderRight", "carpusLeft", "carpusRight", "fetlockLeft", "fetlockRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "Ancho entre cascos ≈ ancho promedio de la extremidad entre el nacimiento en el pecho y el menudillo.",
     deviationDirection: "Cascos más separados entre sí que el nacimiento de los miembros en el pecho.",
     tolerance: { unit: "ratio", correctoMax: 0.08, leveMax: 0.16, moderadoMax: 0.28 },
     rmWeight: 0.85,

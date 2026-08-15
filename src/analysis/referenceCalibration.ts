@@ -66,7 +66,7 @@ export interface ReferenceCalibration {
 // vez que un cambio de código afecte los valores que mide el propio
 // referente (no hace falta subirlo por cambios que NO tocan geometría,
 // como ajustar pesos o textos).
-const ENGINE_FORMULA_VERSION = "2026-08-14-groundplane-fix";
+const ENGINE_FORMULA_VERSION = "2026-08-14-basewidth-stability-fix";
 
 export function referenceSourceHash(assets: ReferenceHorseAssets): string {
   const parts = [assets.lateralPhotoUrl ?? "", assets.frontalPhotoUrl ?? "", assets.posteriorPhotoUrl ?? "", ENGINE_FORMULA_VERSION];
