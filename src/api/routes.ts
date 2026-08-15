@@ -6,6 +6,7 @@ import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
+import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
 import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
 import {
@@ -1071,4 +1072,46 @@ router.get("/sales/:saleId/catalog/imports", requireUser, async (req, res) => {
     include: { importedByUser: { select: { displayName: true, email: true } } },
   });
   res.json(imports);
+});
+
+// MARK: - Barrido de Media (fotos/video de catálogo) — ver mediaSweepService.ts.
+//
+// Disparo MANUAL de diagnóstico (2026-08-15, a pedido explícito de Ramon:
+// "necesitamos comprobar AHORA que el mecanismo realmente funciona, no
+// esperar hasta las 3am"). Corre exactamente el mismo mecanismo que el
+// cron nocturno (runNightlyMediaSweep), acotado a UNA sola venta — nunca
+// se reinventa un camino aparte. Se ejecuta de forma SÍNCRONA (se espera
+// la respuesta) a propósito: es una corrida de diagnóstico puntual sobre
+// una sola venta, no el barrido completo de todas las ventas activas, así
+// que el tiempo de respuesta es razonable y el llamador necesita ver el
+// resultado real (Hips revisados, fotos/videos encontrados) en la misma
+// respuesta, no adivinar consultando logs después.
+router.post("/sales/:saleId/media-sweep", requireUser, async (req, res) => {
+  const { saleId } = req.params;
+  const sale = await db.sale.findUnique({ where: { id: saleId } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  try {
+    const summary = await runNightlyMediaSweep({ trigger: "manual", saleId });
+    res.json(summary);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[media-sweep] Error en corrida manual para "${sale.name}":`, err);
+    res.status(500).json({ error: `Error corriendo el barrido de Media para "${sale.name}": ${message}` });
+  }
+});
+
+// Historial de corridas del barrido de Media (automáticas Y manuales) —
+// para poder confirmar "¿corrió anoche a las 3am? ¿qué encontró?" sin
+// depender de los logs de Railway (mismo espíritu que
+// /sales/:saleId/catalog/imports). Más reciente primero.
+router.get("/media-sweep/runs", requireUser, async (req, res) => {
+  const limit = Math.min(50, Number(req.query.limit) || 20);
+  const runs = await db.mediaSweepRun.findMany({
+    orderBy: { startedAt: "desc" },
+    take: limit,
+  });
+  res.json(runs);
 });

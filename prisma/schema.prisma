@@ -960,6 +960,37 @@ model SchedulerRun {
   @@index([startedAt])
 }
 
+// Registro de cada corrida del barrido de Media (mediaSweepService.ts) —
+// 2026-08-15, a pedido explícito de Ramon tras confirmar que el barrido
+// automático (cron "0 3 * * *", ver scheduler.ts) no dejaba ningún estado
+// consultable, solo logs de Railway que rotan. Une la corrida automática
+// nocturna y cualquier corrida manual de diagnóstico (mismo trigger que
+// usa /api/v1/sales/:saleId/media-sweep) bajo el mismo registro — se
+// distinguen por `trigger`. `detailsJson` guarda el resumen POR VENTA
+// (nombre, Hips revisados, Hips con media nueva, fotos/videos nuevos
+// encontrados, Hips todavía sin media publicada) — sirve para responder
+// "¿qué pasó anoche a las 3am?" o "¿qué encontró la corrida manual de
+// Fasig-Tipton?" sin depender de tener los logs de Railway abiertos en
+// ese momento.
+model MediaSweepRun {
+  id               String    @id @default(cuid())
+  startedAt        DateTime  @default(now())
+  finishedAt       DateTime?
+  // "scheduled" (cron 3am) | "manual" (POST /sales/:saleId/media-sweep).
+  trigger          String
+  // "running" | "completed" | "failed".
+  status           String    @default("running")
+  salesChecked     Int       @default(0)
+  salesSkipped     Int       @default(0)
+  hipsReviewed     Int       @default(0)
+  hipsWithNewMedia Int       @default(0)
+  resourcesFound   Int       @default(0)
+  errorMessage     String?
+  detailsJson      Json?
+
+  @@index([startedAt])
+}
+
 // Fotos (y, opcionalmente, video de marcha) del caballo referente del
 // Método RM — el patrón oficial contra el que se compara cada Hip. Se
 // carga una sola vez desde un panel de administración simple; el backend

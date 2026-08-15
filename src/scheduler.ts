@@ -167,9 +167,9 @@ async function runMediaSweepCycle(): Promise<void> {
   }
   mediaSweepIsRunning = true;
   try {
-    const summary = await runNightlyMediaSweep();
+    const summary = await runNightlyMediaSweep({ trigger: "scheduled" });
     console.log(
-      `[media-sweep] Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips con Media nueva: ${summary.hipsWithNewMedia}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+      `[media-sweep] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
     );
   } catch (err) {
     console.error("[media-sweep] Error en el barrido nocturno de Media:", err);
