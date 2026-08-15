@@ -153,6 +153,7 @@ export function evaluateFrontalFindings(
     const carpus = get(lm, side === "left" ? "carpusLeft" : "carpusRight");
     const fetlock = get(lm, side === "left" ? "fetlockLeft" : "fetlockRight");
     const hoofToe = get(lm, side === "left" ? "hoofToeLeft" : "hoofToeRight");
+    const hoofHeel = get(lm, side === "left" ? "hoofHeelLeft" : "hoofHeelRight");
     const sign = medialSign(side);
 
     type Candidate = { defectId: string; measured: number; absDev: number; conf: number; metricKey: string };
@@ -178,13 +179,50 @@ export function evaluateFrontalFindings(
       }
     }
 
-    // Origen 2: menudillo→casco (toe_in/toe_out) — rotación del casco respecto a la vertical que baja del menudillo.
-    const hoofRotationKey = `hoofRotation.${side}`;
+    // Origen 2: menudillo→casco (toe_in/toe_out) — rotación del casco
+    // respecto a la vertical que baja del menudillo.
+    //
+    // CORRECCIÓN DE ESTABILIDAD (2026-08-14, autorizada por Ramon junto
+    // con la corrección de consistencia izquierda/derecha, como
+    // continuación del trabajo de baseWidthRatio). Causa raíz real
+    // (confirmada con los datos crudos de la prueba de 10 corridas de
+    // baseWidthRatio, donde ya se veía este mismo síntoma en toe_in/
+    // toe_out): el cálculo original usaba SOLO fetlock→hoofToe, un
+    // segmento corto (el menudillo y la punta del casco están muy cerca
+    // verticalmente en la foto) — un ángulo calculado sobre un tramo
+    // corto es extremadamente sensible a ruido de landmarks, porque el
+    // mismo error de pocos pixeles en x pesa mucho más cuando el tramo
+    // en y es corto (misma causa raíz que baseWidthRatio antes de
+    // corregirse, ver comentario grande más arriba).
+    //
+    // Fix: se promedia esa medición con fetlock→hoofHeel, que mide la
+    // MISMA rotación del casco (el talón y la punta de un casco rotan
+    // juntos, es una sola cápsula rígida) con el mismo origen anatómico
+    // (menudillo) — sigue siendo una desviación puramente distal, no se
+    // mezcla con carpus_valgus/varus ni con base_narrow/wide. Promediar
+    // 2 mediciones independientes de la MISMA rotación reduce el ruido
+    // propio de cada punto sin cambiar qué se mide, sus unidades
+    // (grados) ni su tolerancia — mismo principio que ya se usó para
+    // baseWidthRatio. Si algún día falta hoofHeel en una foto, se sigue
+    // midiendo solo con hoofToe (no se pierde disponibilidad, solo se
+    // pierde el promedio).
+    const rotationSamples: number[] = [];
+    const rotationPoints: LandmarkPoint[] = [];
+    if (fetlock) rotationPoints.push(fetlock);
     if (fetlock && hoofToe) {
-      const angle = angleFromVertical(toVec(fetlock), toVec(hoofToe)); // grados, + = hacia +x
+      rotationSamples.push(angleFromVertical(toVec(fetlock), toVec(hoofToe))); // grados, + = hacia +x
+      rotationPoints.push(hoofToe);
+    }
+    if (fetlock && hoofHeel) {
+      rotationSamples.push(angleFromVertical(toVec(fetlock), toVec(hoofHeel)));
+      rotationPoints.push(hoofHeel);
+    }
+    const hoofRotationKey = `hoofRotation.${side}`;
+    if (rotationSamples.length > 0) {
+      const angle = rotationSamples.reduce((a, b) => a + b, 0) / rotationSamples.length;
       const medialAngle = angle * sign; // positivo = rotación medial
       rawMetrics[hoofRotationKey] = medialAngle;
-      const conf = combinedConfidence([fetlock, hoofToe]);
+      const conf = combinedConfidence(rotationPoints);
       candidates.push({
         defectId: medialAngle >= 0 ? "toe_in" : "toe_out",
         measured: medialAngle,

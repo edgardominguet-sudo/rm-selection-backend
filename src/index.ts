@@ -84,9 +84,27 @@ app.get("/_diag/frontalrepeat/start/:slot", async (req, res) => {
         score: number;
         classification: string;
         baseWidthRatio: number | null;
-        findings: Array<{ defectId: string; severity: string; measuredValue: number }>;
+        findings: Array<{ defectId: string; severity: string; side?: string; measuredValue: number }>;
         landmarks?: Record<string, unknown>;
       }> = [];
+      const debugLandmarkIds = [
+        "shoulderLeft",
+        "shoulderRight",
+        "carpusLeft",
+        "carpusRight",
+        "fetlockLeft",
+        "fetlockRight",
+        "hoofCenterLeft",
+        "hoofCenterRight",
+        "hoofToeLeft",
+        "hoofToeRight",
+        "hoofHeelLeft",
+        "hoofHeelRight",
+        "hoofMedialLeft",
+        "hoofMedialRight",
+        "hoofLateralLeft",
+        "hoofLateralRight",
+      ];
       for (let i = 0; i < n; i++) {
         const extraction = await extractLandmarksFromPhoto({
           jpeg,
@@ -102,18 +120,17 @@ app.get("/_diag/frontalrepeat/start/:slot", async (req, res) => {
             referenceMetrics
           );
           const viewScore = scoreView(findings);
+          const landmarksOut: Record<string, unknown> = {};
+          for (const id of debugLandmarkIds) {
+            if (extraction.landmarks[id]) landmarksOut[id] = extraction.landmarks[id];
+          }
           runs.push({
             runIndex: i + 1,
             score: viewScore.score,
             classification: classifyViewScore(viewScore.score),
             baseWidthRatio: rawMetrics.baseWidthRatio ?? null,
-            findings: findings.map((f) => ({ defectId: f.defectId, severity: f.severity, measuredValue: f.measuredValue })),
-            landmarks: {
-              shoulderLeft: extraction.landmarks.shoulderLeft,
-              shoulderRight: extraction.landmarks.shoulderRight,
-              hoofCenterLeft: extraction.landmarks.hoofCenterLeft,
-              hoofCenterRight: extraction.landmarks.hoofCenterRight,
-            },
+            findings: findings.map((f) => ({ defectId: f.defectId, severity: f.severity, side: f.side, measuredValue: f.measuredValue })),
+            landmarks: landmarksOut,
           });
         }
         frontalRepeatResults[slot] = { status: "running", completedRuns: i + 1, totalRuns: n };

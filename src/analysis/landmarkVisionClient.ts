@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config";
 import { buildLandmarkExtractionPrompt, extractLandmarkResponse, ParsedLandmarkExtraction } from "./landmarkExtractionPrompt";
 import { ViewName } from "./landmarks";
+import { correctLeftRightConsistency } from "./landmarkSideConsistency";
 
 export class LandmarkExtractionError extends Error {}
 
@@ -57,6 +58,24 @@ export async function extractLandmarksFromPhoto(opts: {
       `Respuesta de landmarks con formato inesperado para ${opts.photoLabel}. Fragmento crudo: ${snippet}`
     );
   }
+
+  // Corrección de consistencia izquierda/derecha (2026-08-14, autorizada
+  // por Ramon) — ver landmarkSideConsistency.ts para la justificación
+  // completa. Se aplica ACÁ, en el único lugar por donde pasa toda
+  // extracción de landmarks (Hips reales Y calibración del referente),
+  // para que ningún cálculo aguas abajo (rmPriorityRules.ts) reciba
+  // nunca un lado invertido. No cambia ningún criterio ni tolerancia —
+  // solo corrige la IDENTIFICACIÓN de qué pata es cuál antes de medir.
+  if (parsed.valid) {
+    const correction = correctLeftRightConsistency(parsed.view, parsed.landmarks);
+    if (correction.swapped) {
+      console.warn(
+        `[analysis] Consistencia izquierda/derecha: se corrigió una inversión de lado en "${opts.photoLabel}" (vista ${parsed.view}) — ${correction.votesInverted} de ${correction.votesInverted + correction.votesNormal} pares de landmarks salieron con el lado invertido respecto al esperado. Se intercambiaron todos los pares Left/Right de esta foto antes de calcular hallazgos.`
+      );
+      parsed.landmarks = correction.landmarks;
+    }
+  }
+
   return parsed;
 }
 
