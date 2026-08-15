@@ -1,4 +1,5 @@
-import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
+import { NormalizedHip, ResolvedSaleDay, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
+import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
 
 // Forma cruda de la API interna de Fasig-Tipton
 // (GET https://www.fasigtipton.com/django/api/horses/?sale={saleID}).
@@ -136,5 +137,20 @@ export class FasigTiptonClient implements SaleHouseClient {
       }
     }
     return result;
+  }
+
+  // Calendario de Ventas para Fasig-Tipton (implementado 2026-08-15, a
+  // pedido: "utilizando exactamente el mismo funcionamiento, diseño y
+  // ubicación que ya está implementado para Keeneland"). A diferencia de
+  // Keeneland, acá no hace falta ningún scraping de programa oficial: el
+  // campo "session" que ya trae cada Hip del catálogo (ver
+  // resolveSessionDates arriba) es fuente suficiente y real para agrupar
+  // por día — se reutiliza el mismo dato, sin pedirlo dos veces.
+  async resolveSaleDays(
+    externalSaleId: string,
+    _opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+  ): Promise<ResolvedSaleDay[]> {
+    const sessionDates = await this.resolveSessionDates(externalSaleId);
+    return resolveSaleDaysFromSessionDates(sessionDates, "FASIG_TIPTON_CATALOG_SESSION_FIELD");
   }
 }

@@ -1,4 +1,5 @@
-import { NormalizedHip, SaleHouseClient } from "../types";
+import { NormalizedHip, ResolvedSaleDay, SaleHouseClient } from "../types";
+import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
 
 // OBS (Ocala Breeders' Sales) — NO HAY todavía ninguna integración de
 // catálogo real, ni en el backend ni en la app de iOS (se confirmó
@@ -18,5 +19,19 @@ export class OBSClient implements SaleHouseClient {
 
   async resolveSessionDates(): Promise<Map<string, Date>> {
     return new Map();
+  }
+
+  // Arquitectura del Calendario de Ventas dejada LISTA para OBS (a pedido,
+  // 2026-08-15: "aunque en este momento no haya que introducir manualmente
+  // una venta específica de OBS"). Usa el mismo helper genérico que
+  // Fasig-Tipton — hoy resolveSessionDates() de arriba siempre devuelve un
+  // Map vacío (no hay integración de catálogo real todavía), así que esto
+  // simplemente devuelve [] sin error. El día que se dé de alta la
+  // integración real de catálogo de OBS y resolveSessionDates() empiece a
+  // devolver fechas reales, este método empieza a producir el calendario
+  // automáticamente, sin tocar nada más.
+  async resolveSaleDays(): Promise<ResolvedSaleDay[]> {
+    const sessionDates = await this.resolveSessionDates();
+    return resolveSaleDaysFromSessionDates(sessionDates, "OBS_CATALOG_SESSION_FIELD");
   }
 }

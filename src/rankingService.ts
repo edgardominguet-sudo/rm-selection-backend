@@ -11,6 +11,7 @@ import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip, SaleHouse
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
+import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 
 /**
  * Fotos de un Hip que puede usar el motor de Análisis IA — Tarea "Análisis
@@ -202,6 +203,63 @@ async function syncSaleDays(sale: Sale, client: SaleHouseClient): Promise<void> 
     }
   } catch (err) {
     console.error(`[sale-days] Error resolviendo calendario de "${sale.name}":`, err);
+  }
+}
+
+/**
+ * Equivalente a syncSaleDays() de arriba, pero para ventas MANUAL_CSV (hoy,
+ * el único camino real de catálogo de OBS — ver manualCatalogImport.ts — y
+ * también el camino usado para Fasig-Tipton cuando su ID real de venta
+ * todavía no se pudo resolver, ej. "New York Bred Yearlings", importada por
+ * CSV el 2026-08-15). Estas ventas no tienen ningún SaleHouseClient al que
+ * pedirle el calendario (no hay ID de API real contra el que consultar) —
+ * pero SÍ pueden tener, Hip por Hip, una "Session Date" real ya cargada por
+ * el propio CSV (ver parseManualCatalogCsv → upsertNormalizedHips →
+ * Hip.sessionDate). En vez de inventar un calendario o dejarlo vacío para
+ * siempre, se arma con el MISMO helper genérico que usan Fasig-Tipton/OBS
+ * en su variante FULL (resolveSaleDaysFromSessionDates), pero leyendo las
+ * fechas ya persistidas en la base en vez de llamar a ninguna API — nunca
+ * se inventa una fecha que el CSV no trajo.
+ */
+async function syncSaleDaysFromStoredHips(sale: Sale): Promise<void> {
+  const hips = await db.hip.findMany({
+    where: { saleId: sale.id, sessionDate: { not: null } },
+    select: { hipNumber: true, sessionDate: true },
+  });
+  if (hips.length === 0) {
+    console.log(`[sale-days] "${sale.name}" (${sale.house}, MANUAL_CSV): todavía no hay ningún Hip con Session Date cargada — calendario queda vacío por ahora.`);
+    return;
+  }
+  const sessionDates = new Map<string, Date>();
+  for (const hip of hips) {
+    if (hip.sessionDate) sessionDates.set(hip.hipNumber, hip.sessionDate);
+  }
+  const days = resolveSaleDaysFromSessionDates(sessionDates, "MANUAL_CSV_IMPORTED_SESSION_DATE");
+  console.log(`[sale-days] "${sale.name}" (MANUAL_CSV): ${days.length} jornada(s) resuelta(s) desde las Session Date ya importadas.`);
+  for (const day of days) {
+    await db.saleDay.upsert({
+      where: { saleId_date: { saleId: sale.id, date: day.date } },
+      create: {
+        saleId: sale.id,
+        date: day.date,
+        book: day.book ?? null,
+        sessionNumber: day.sessionNumber ?? null,
+        startTimeLabel: day.startTimeLabel ?? null,
+        hipRangeStart: day.hipRangeStart ?? null,
+        hipRangeEnd: day.hipRangeEnd ?? null,
+        headCount: day.headCount ?? null,
+        source: day.source,
+      },
+      update: {
+        book: day.book ?? null,
+        sessionNumber: day.sessionNumber ?? null,
+        startTimeLabel: day.startTimeLabel ?? null,
+        hipRangeStart: day.hipRangeStart ?? null,
+        hipRangeEnd: day.hipRangeEnd ?? null,
+        headCount: day.headCount ?? null,
+        source: day.source,
+      },
+    });
   }
 }
 
@@ -683,11 +741,20 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
   // arrancar (ver scheduler.ts), cualquier venta que ya tenga catálogo pero
   // todavía no tenga calendario lo resuelve sola en el siguiente redeploy,
   // sin esperar ningún intervalo largo.
-  if (sale.catalogAccess === "FULL") {
+  if (sale.catalogAccess === "FULL" || sale.catalogAccess === "MANUAL_CSV") {
     try {
       const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
       if (existingSaleDayCount === 0) {
-        await syncSaleDays(sale, clientFor(sale.house));
+        if (sale.catalogAccess === "FULL") {
+          await syncSaleDays(sale, clientFor(sale.house));
+        } else {
+          // MANUAL_CSV (ej. OBS, o Fasig-Tipton importado a mano sin ID de
+          // API real todavía) — ver syncSaleDaysFromStoredHips arriba: no
+          // hay API que consultar, así que se reintenta en cada ciclo del
+          // scheduler igual que el camino FULL, hasta que algún import CSV
+          // traiga Session Date real. Sigue siendo "ESPERA", nunca inventa.
+          await syncSaleDaysFromStoredHips(sale);
+        }
       }
     } catch (err) {
       console.error(`[scheduler] Error resolviendo Calendario de Ventas de ${sale.name}:`, err);
