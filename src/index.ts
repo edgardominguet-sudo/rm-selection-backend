@@ -7,7 +7,6 @@ import { startScheduler, startDiscoveryScheduler, startMediaSweepScheduler } fro
 import { db } from "./db";
 import { analyzeHip, AnalysisOutcome } from "./analysis/anthropicClient";
 import { getReferenceHorse } from "./referenceHorse";
-import { resolveReadUrl } from "./storage/r2Client";
 
 const app = express();
 app.use(cors());
@@ -55,27 +54,15 @@ const multiRunResults: Record<
 async function resolveMultiRunSubject(): Promise<
   { hipNumber: string; horseName?: string; organizationId: string; media: { kind: "photo"; url: string }[] } | { error: string }
 > {
-  const asset = await db.mediaAsset.findFirst({
-    where: { kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
-    orderBy: { createdAt: "asc" },
-  });
-  if (asset) {
-    const hip = await db.hip.findUnique({ where: { id: asset.hipId } });
-    const assets = hip
-      ? await db.mediaAsset.findMany({
-          where: { hipId: hip.id, organizationId: asset.organizationId, kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
-          orderBy: { createdAt: "asc" },
-        })
-      : [];
-    if (hip && assets.length >= 3) {
-      return {
-        hipNumber: hip.hipNumber,
-        horseName: hip.horseName ?? undefined,
-        organizationId: asset.organizationId,
-        media: assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey) })),
-      };
-    }
-  }
+  // CORRECCIÓN (2026-08-14, misma tarde): la primera versión de esto
+  // buscaba un Hip real con >=3 AI_ANALYSIS_PHOTO y le pasaba TODOS sus
+  // assets — pero un Hip real puede acumular más de 3 fotos de Análisis
+  // IA con el tiempo (reintentos, reemplazos de foto rechazada), lo cual
+  // (a) viola el pedido explícito de Ramon de correr "exactamente las
+  // mismas tres fotografías" en cada corrida, y (b) multiplica el tiempo
+  // de cada corrida sin motivo. Usar SIEMPRE las 3 fotos fijas del
+  // caballo referente — es el único conjunto garantizado de exactamente 3
+  // fotos, estable entre corridas.
   const orgRow = await db.referenceHorse.findFirst({ where: { key: "default" } });
   if (!orgRow || !orgRow.lateralPhotoUrl || !orgRow.frontalPhotoUrl || !orgRow.posteriorPhotoUrl) {
     return { error: "No hay ningún Hip con fotos de Análisis IA, y tampoco hay caballo referente configurado." };
