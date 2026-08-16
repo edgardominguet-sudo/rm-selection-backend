@@ -14,6 +14,7 @@ interface RawEntry {
   sire_of_dam?: string | null;
   consignor?: string | null;
   consignor_name?: string | null;
+  barn?: string | null;
   photo?: string | null;
   generalhorsephoto_set?: { photo: string }[];
   enhancedhorsephoto_set?: { photo: string }[];
@@ -56,6 +57,7 @@ function normalize(entry: RawEntry): NormalizedHip {
     horseName: entry.name ?? undefined,
     sex: entry.sex ?? undefined,
     consignor: entry.consignor ?? entry.consignor_name ?? undefined,
+    barn: entry.barn ?? undefined,
     sire: entry.sire ?? undefined,
     dam: entry.dam ?? undefined,
     damSire: entry.sire_of_dam ?? undefined,

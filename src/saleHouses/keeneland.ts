@@ -22,6 +22,11 @@ interface RawEntry {
   field_foaling_date?: string | null;
   field_sex?: string | null;
   field_consignor?: string | null;
+  // Array porque un yearling puede figurar en más de un establo durante
+  // la venta — se usa el primero (mismo criterio que el mapeo viejo,
+  // Hip+CatalogMapping.swift, antes de que este campo se perdiera al
+  // generalizar el importador).
+  field_barns?: string[] | null;
   field_sale_price?: string | null;
   field_buyer_name?: string | null;
   field_out?: string | null;
@@ -68,6 +73,7 @@ function normalize(entry: RawEntry): NormalizedHip {
     horseName: entry.title || undefined,
     sex: entry.field_sex ?? undefined,
     consignor: entry.field_consignor ?? undefined,
+    barn: entry.field_barns?.[0] ?? undefined,
     sire: entry.field_sire ?? undefined,
     dam: entry.field_dam ?? undefined,
     damSire: entry.field_broodmare_sire ?? undefined,

@@ -105,6 +105,13 @@ export function parseKeenelandPedigreePdfText(text: string, fallbackHipNumber: n
     sex: colorSexMatch ? colorSexMatch[2] : undefined,
     color: colorSexMatch ? colorSexMatch[1].trim() : undefined,
     consignor: consignorMatch ? consignorMatch[1].trim() : undefined,
+    // CORRECCIÓN 2026-08-15: el regex BARN_HIP_BLOCK ya capturaba el
+    // establo (grupo 1) — se usaba SOLO para confirmar el número de Hip
+    // (grupo 2), el valor del establo en sí nunca se copiaba al objeto
+    // devuelto. Es el camino que trae hoy el catálogo real de Keeneland
+    // September (4640 Hips, ver SaleOption.swift) mientras la API
+    // estructurada de Keeneland siga sin publicar su catálogo.
+    barn: barnMatch ? barnMatch[1].trim() : undefined,
     sire: sireMatch ? sireMatch[1].trim() : undefined,
     dam: damMatch ? damMatch[1].trim() : undefined,
     damSire: damMatch ? damMatch[2].trim() : undefined,

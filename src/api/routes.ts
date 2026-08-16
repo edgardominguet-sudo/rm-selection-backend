@@ -218,6 +218,7 @@ router.get("/sales/hips", requireUser, async (req, res) => {
       horseName: true,
       sex: true,
       consignor: true,
+      barn: true,
       sire: true,
       dam: true,
       damSire: true,

@@ -380,6 +380,18 @@ model Hip {
   horseName         String?
   sex               String?
   consignor         String?
+  // Establo (Barn) donde está alojado el yearling durante la venta —
+  // CORRECCIÓN 2026-08-15: existía en el modelo de dominio de la app
+  // (RMSelection/Models/Hip.swift) y en los mapeos viejos por casa
+  // (Hip+FasigTiptonMapping.swift, Hip+CatalogMapping.swift de Keeneland),
+  // pero nunca se agregó acá ni al contrato genérico NormalizedHip
+  // (types.ts) cuando se generalizó el importador por casa (provider
+  // pattern) — así que TODA venta que pasa por el camino nuevo
+  // (BackendCatalogHipDataService en iOS, el único que usan las ventas
+  // activas hoy) perdía el dato sin que ningún importador rompiera ni
+  // avisara. Mismo criterio que breeder/foalYear/color: opcional, cada
+  // casa lo completa si su fuente lo publica.
+  barn              String?
   sire              String?
   dam               String?
   damSire           String?

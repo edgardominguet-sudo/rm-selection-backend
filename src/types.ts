@@ -21,6 +21,15 @@ export interface NormalizedHip {
   horseName?: string;
   sex?: string;
   consignor?: string;
+  // Establo (Barn) tal como lo publica la casa de ventas — CORRECCIÓN
+  // 2026-08-15: campo permanente del modelo de dominio (Hip.barn en la
+  // app) que nunca se agregó acá al generalizar el importador por casa,
+  // así que se perdía en toda venta nueva sin importar la fuente
+  // (API en vivo o CSV manual). Cada casa lo completa si su fuente lo
+  // trae (ver saleHouses/fasigTipton.ts, keeneland.ts,
+  // manualCatalogImport.ts); si no lo trae, queda undefined y
+  // upsertNormalizedHips no toca el valor ya guardado.
+  barn?: string;
   sire?: string;
   dam?: string;
   damSire?: string;
