@@ -512,9 +512,19 @@ export async function analyzeHipOnDemand(
   // pantalla Análisis (IA) de este Hip — nunca el catálogo (hip.mediaJson)
   // ni Media general. Ver resolveAIAnalysisMedia.
   const media = await resolveAIAnalysisMedia(hip.id, organizationId);
-  if (media.length < 3) {
+  // CORRECCIÓN 2026-08-15 (bug real reportado: "las tres fotos no se
+  // reconocen ni se guardan"): antes exigía las 3 fotos ANTES de llamar a
+  // la IA — con eso, la primera y segunda foto tomadas no recibían ninguna
+  // validación (ni verde ni rojo), quedaban invisibles hasta la 3ra. El
+  // prompt (buildPrompt) ya soporta clasificar/validar cualquier cantidad
+  // de fotos por separado — el puntaje final (PASO 2) sigue en 0.0 para
+  // toda vista sin foto válida, así que nada cambia ahí. El único cambio
+  // real es que ahora se llama a la IA con 1 o 2 fotos también, para poder
+  // mostrarle al usuario el resultado (válida/inválida) de CADA foto apenas
+  // la toma, en vez de recién al completar las 3.
+  if (media.length === 0) {
     throw new NoPhotosError(
-      "Todavía no hay las 3 fotos (frontal, lateral, posterior) tomadas desde Análisis (IA) para este Hip."
+      "Todavía no hay ninguna foto tomada desde Análisis (IA) para este Hip."
     );
   }
   const currentHash = mediaFingerprint(media);
