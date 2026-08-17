@@ -274,7 +274,7 @@ async function syncSaleDaysFromStoredHips(sale: Sale): Promise<void> {
  * Solo aplica a ventas catalogAccess FULL — ver manualCatalogImport.ts para
  * el camino equivalente de ventas MANUAL_CSV.
  */
-export async function syncCatalog(sale: Sale): Promise<void> {
+export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } = {}): Promise<void> {
   const client = clientFor(sale.house);
 
   // "NEW CATALOG DETECTED" (a pedido, 2026-08-12): se compara la cantidad
@@ -292,6 +292,7 @@ export async function syncCatalog(sale: Sale): Promise<void> {
     name: sale.name,
     startDate: sale.startDate,
     hipCountBeforeSync: hipCountBefore,
+    forcePdfProbe: opts.forcePdfProbe,
   });
   const sessionDates = await client.resolveSessionDates(sale.externalSaleId, hips, {
     scheduleYear: sale.scheduleYear,
