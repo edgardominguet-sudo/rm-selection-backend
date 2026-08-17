@@ -1,7 +1,13 @@
 import cron from "node-cron";
 import { db } from "./db";
 import { config } from "./config";
-import { processSale, syncCatalogsForActiveSales, AnalysisBudget, cleanupExpiredRankingSnapshots } from "./rankingService";
+import {
+  processSale,
+  syncCatalogsForActiveSales,
+  syncLivePricesForActiveSessions,
+  AnalysisBudget,
+  cleanupExpiredRankingSnapshots,
+} from "./rankingService";
 import { runSaleDiscovery } from "./saleDiscoveryService";
 import { runNightlyMediaSweep } from "./mediaSweepService";
 
@@ -159,5 +165,51 @@ async function runNightlySyncCycle(): Promise<void> {
     }
   } finally {
     nightlySyncIsRunning = false;
+  }
+}
+
+// Mismo criterio de "no superponer ciclos" que los dos schedulers de arriba.
+let livePriceIsRunning = false;
+
+/**
+ * PRECIO EN VIVO cada 10 minutos (2026-08-17, corrección posterior a pedido
+ * explícito del propietario, mismo día que el job nocturno de arriba):
+ * "lo único que debe ser en tiempo real cada 10 minutos es el precio de
+ * venta, en la ventana de Decisiones, mientras dicha venta esté en
+ * proceso, única y exclusivamente allí, para todas las casas de ventas".
+ *
+ * Es la ÚNICA excepción a "todo a las 3am, nada en otro horario": el resto
+ * (catálogo, media, descubrimiento de ventas nuevas) sigue siendo
+ * exclusivo del job de arriba. Cada tick acá adentro es casi siempre un
+ * no-op barato (una query) — solo hace algo si hay al menos una venta con
+ * jornada en curso hoy, ver rankingService.syncLivePricesForActiveSessions.
+ * A propósito NO corre una vez extra al arrancar el servidor (mismo
+ * criterio que el job nocturno): el próximo tick del cron llega, como
+ * mucho, 10 minutos después de cualquier redeploy.
+ */
+export function startLivePriceScheduler(): void {
+  cron.schedule("*/10 * * * *", () => {
+    void runLivePriceCycle();
+  });
+  console.log("[live-price] Iniciado (cron cada 10 min: */10 * * * *) — SOLO precio de venta (Hip.saleResultJson) de ventas con jornada en curso hoy, para la ventana de Decisión. No toca catálogo, media ni calendario.");
+}
+
+async function runLivePriceCycle(): Promise<void> {
+  if (livePriceIsRunning) {
+    console.warn("[live-price] La corrida anterior todavía está en curso — se salta este tick.");
+    return;
+  }
+  livePriceIsRunning = true;
+  try {
+    const summary = await syncLivePricesForActiveSessions();
+    if (summary.salesInProgress > 0) {
+      console.log(
+        `[live-price] Ventas en curso: ${summary.salesInProgress}, Hips con precio actualizado: ${summary.hipsUpdated}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+      );
+    }
+  } catch (err) {
+    console.error("[live-price] Error en el ciclo de precio en vivo:", err);
+  } finally {
+    livePriceIsRunning = false;
   }
 }
