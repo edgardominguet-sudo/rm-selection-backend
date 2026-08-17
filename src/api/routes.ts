@@ -923,6 +923,43 @@ router.post("/sales", async (req, res) => {
   res.json(sale);
 });
 
+// Actualiza el ID real de catálogo de una venta YA EXISTENTE, por su id
+// interno — pensado para el caso "esta venta quedó con
+// catalogAccess=PENDING_ID o MANUAL_CSV porque no se conocía su ID numérico
+// real (ver saleHouses/discovery/fasigTiptonDiscovery.ts), y ahora sí se
+// consiguió". A diferencia de POST /sales de arriba (que upsert-ea por
+// [house, externalSaleId] y por eso crearía una fila NUEVA si el
+// externalSaleId cambia), esto actualiza la MISMA fila — conserva todos los
+// Hips, Decisiones, Favoritos y anotaciones ya cargados contra este
+// sale.id. Pasa a catalogAccess=FULL y resetea lastCatalogCheckAt a null
+// para que el próximo tick del scheduler (cada 5 min) dispare un
+// syncCatalog inmediato en vez de esperar el intervalo normal de
+// pollingPolicy. Cambio chico y reversible: para revertir, basta volver a
+// hacer este mismo POST con el externalSaleId sintético anterior y
+// catalogAccess a mano en la base.
+router.post("/sales/:id/resolve-external-id", async (req, res) => {
+  const { id } = req.params;
+  const { externalSaleId } = req.body as { externalSaleId?: string };
+  if (!externalSaleId) {
+    res.status(400).json({ error: "Falta externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { id } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  const updated = await db.sale.update({
+    where: { id },
+    data: { externalSaleId, catalogAccess: "FULL", lastCatalogCheckAt: null },
+  });
+  res.json({
+    ok: true,
+    sale: updated,
+    note: "catalogAccess ahora FULL. El scheduler (cada 5 min) va a sincronizar catálogo, Media y resultados automáticamente en el próximo ciclo.",
+  });
+});
+
 // Fuerza AHORA un chequeo de catálogo contra la API en vivo de la casa de
 // ventas, saltando el intervalo normal de pollingPolicy (ver
 // saleHouses/pollingPolicy.ts) — pensado para el caso "sé que la casa de
