@@ -3,7 +3,7 @@ import cors from "cors";
 import { config } from "./config";
 import { router } from "./api/routes";
 import { requireApiKey } from "./api/auth";
-import { startScheduler, startNightlySyncScheduler } from "./scheduler";
+import { startScheduler, startNightlySyncScheduler, startLivePriceScheduler } from "./scheduler";
 import { db } from "./db";
 import { getReferenceHorse } from "./referenceHorse";
 import { getOrComputeReferenceCalibration } from "./analysis/referenceCalibration";
@@ -154,6 +154,7 @@ const server = app.listen(config.port, () => {
   console.log(`[server] RM Selection backend escuchando en el puerto ${config.port}`);
   startScheduler();
   startNightlySyncScheduler();
+  startLivePriceScheduler();
 });
 
 // Railway manda SIGTERM antes de matar el contenedor en cada redeploy —
