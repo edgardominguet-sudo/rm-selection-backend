@@ -266,13 +266,22 @@ async function syncSaleDaysFromStoredHips(sale: Sale): Promise<void> {
 }
 
 /**
- * Paso 1 de cada ciclo: sincroniza el catálogo completo de una venta
- * contra la casa de ventas correspondiente (solo si ya toca según
- * pollingPolicy — ver processSale) y guarda/actualiza cada Hip vía
- * upsertNormalizedHips: datos de catálogo, media, resultado de venta
- * oficial (precio/comprador/RNA) y fecha de sesión resuelta automáticamente.
- * Solo aplica a ventas catalogAccess FULL — ver manualCatalogImport.ts para
- * el camino equivalente de ventas MANUAL_CSV.
+ * Sincroniza el catálogo completo de una venta contra la casa de ventas
+ * correspondiente y guarda/actualiza cada Hip vía upsertNormalizedHips:
+ * datos de catálogo, media, resultado de venta oficial (precio/comprador/
+ * RNA) y fecha de sesión resuelta automáticamente. Solo aplica a ventas
+ * catalogAccess FULL — ver manualCatalogImport.ts para el camino
+ * equivalente de ventas MANUAL_CSV.
+ *
+ * CORRECCIÓN 2026-08-17: hasta ahora corría automáticamente dentro de
+ * processSale() en cada ciclo del scheduler (cada 5 min, con cadencia
+ * variable según pollingPolicy). A pedido explícito del propietario, el
+ * llamado automático se movió a syncCatalogsForActiveSales(), que corre UNA
+ * sola vez al día a las 3:00 a.m. (ver scheduler.ts/runNightlySyncCycle).
+ * Esta función en sí no cambió — sigue siendo el mismo camino que también
+ * usan los endpoints de resync manual en api/routes.ts (handleCatalogResync),
+ * que pueden seguir llamándola en cualquier momento a pedido explícito del
+ * usuario (eso no es "automático en segundo plano", es una acción manual).
  */
 export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } = {}): Promise<void> {
   const client = clientFor(sale.house);
@@ -682,6 +691,54 @@ async function flagInconclusiveIfCloseToSale(sale: Sale, now: Date): Promise<voi
 }
 
 /**
+ * PASO DIARIO ÚNICO (2026-08-17, a pedido explícito del propietario):
+ * "toda actualización de precios de ventas, videos, fotos y descarga de
+ * catálogos de nuevas ventas disponibles" debe correr SOLO a las 3:00 a.m.,
+ * nunca en otro horario ni en segundo plano. Antes, la descarga/actualización
+ * de catálogo (que incluye precios oficiales — ver recordOfficialSaleResult
+ * dentro de upsertNormalizedHips — y la media que la propia casa declara en
+ * el catálogo) corría dentro de processSale(), en cada ciclo del scheduler
+ * de 5 minutos, con una cadencia variable según pollingPolicy.ts. Ahora
+ * corre acá, en un solo lugar, llamado UNA vez al día desde
+ * scheduler.ts/runNightlySyncCycle (cron "0 3 * * *"), sin ninguna otra
+ * cadencia posible. pollingPolicy.ts (shouldCheckNow/pollIntervalMinutes)
+ * queda sin usar a propósito — no se borra, sigue siendo código válido por
+ * si en el futuro hace falta volver a un chequeo más frecuente.
+ */
+export async function syncCatalogsForActiveSales(): Promise<void> {
+  const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: "FULL" } });
+  const now = new Date();
+  for (const sale of sales) {
+    try {
+      await syncCatalog(sale);
+    } catch (err) {
+      // Mismo criterio que antes: catálogo todavía no publicado (200 con
+      // body vacío) es un estado ESPERADO para ventas anunciadas con
+      // anticipación — se loguea aparte, sin nivel "error". Cualquier otro
+      // fallo (red, HTTP no-2xx, JSON roto de verdad) sigue yendo como
+      // error real. Un fallo en una venta nunca debe impedir que se
+      // sincronicen las demás.
+      if (err instanceof CatalogNotYetPublishedError) {
+        console.log(`[daily-sync] ${sale.name}: ${err.message}`);
+        try {
+          await flagInconclusiveIfCloseToSale(sale, now);
+        } catch (flagErr) {
+          console.error(`[daily-sync] Error marcando "${sale.name}" como inconclusa:`, flagErr);
+        }
+      } else {
+        console.error(`[daily-sync] Error sincronizando catálogo de "${sale.name}":`, err);
+      }
+    } finally {
+      try {
+        await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
+      } catch (updateErr) {
+        console.error(`[daily-sync] Error actualizando lastCatalogCheckAt de "${sale.name}":`, updateErr);
+      }
+    }
+  }
+}
+
+/**
  * Un ciclo completo del scheduler para UNA venta: decide si toca volver a
  * chequear el catálogo (según pollingPolicy, UNA sola vez — el catálogo es
  * global, no se duplica por organización), sincroniza si corresponde, y
@@ -704,45 +761,21 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
 
   const now = new Date();
 
-  if (sale.catalogAccess === "FULL") {
-    const upcoming = await nextSessionDate(sale.id);
-
-    if (shouldCheckNow(now, sale.lastCatalogCheckAt, upcoming)) {
-      // lastCatalogCheckAt se actualiza pase lo que pase (éxito o error) —
-      // antes solo se actualizaba adentro de syncCatalog() al terminar bien,
-      // así que una venta que fallara SIEMPRE (ej. Keeneland todavía sin
-      // publicar el catálogo de un sale, devolviendo 200 con body vacío)
-      // nunca llegaba a esa línea y quedaba con lastCatalogCheckAt en null
-      // para siempre — shouldCheckNow() la volvía a intentar en CADA ciclo
-      // del scheduler en vez de respetar el intervalo normal de
-      // pollingPolicy, golpeando la API de la casa de ventas mucho más
-      // seguido de lo necesario para un catálogo que legítimamente no
-      // existe todavía.
-      try {
-        await syncCatalog(sale);
-      } catch (err) {
-        // Catálogo todavía no publicado (200 con body vacío) es un estado
-        // ESPERADO para ventas anunciadas con anticipación — se loguea
-        // aparte, sin nivel "error", para no ensuciar los logs con algo que
-        // no hay que arreglar, solo esperar a que la casa de ventas publique.
-        // Cualquier otro fallo (red, HTTP no-2xx, JSON roto de verdad) sigue
-        // yendo como error real.
-        if (err instanceof CatalogNotYetPublishedError) {
-          console.log(`[scheduler] ${sale.name}: ${err.message} Se reintenta según el intervalo normal.`);
-          await flagInconclusiveIfCloseToSale(sale, now);
-        } else {
-          console.error(`[scheduler] Error sincronizando catálogo de ${sale.name}:`, err);
-        }
-        await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
-        return;
-      }
-      await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
-    }
-  }
-  // MANUAL_CSV: no hay ninguna API contra la que chequear — el catálogo se
-  // actualiza solo cuando alguien sube un CSV nuevo (POST
-  // /sales/:saleId/catalog/import ya deja lastCatalogCheckAt al día en ese
-  // momento). El resto de esta función no distingue el origen del catálogo.
+  // CORRECCIÓN 2026-08-17 (a pedido explícito del propietario: "toda
+  // actualización de precios de ventas, videos, fotos y descarga de
+  // catálogos de nuevas ventas disponibles... no lo quiero en otro horario
+  // ni en segundo plano"): la sincronización de catálogo (incluye precios
+  // oficiales de venta y la media que la propia casa declara en el
+  // catálogo) YA NO corre acá, en cada ciclo de 5 minutos del scheduler —
+  // se movió a un job diario único a las 3:00 a.m. (ver
+  // syncCatalogsForActiveSales más abajo, llamado desde
+  // scheduler.ts/runNightlySyncCycle). Este ciclo de acá (processSale)
+  // sigue corriendo cada 5 min SOLO para Análisis IA / Ranking del Día, que
+  // no descarga nada de ninguna casa de ventas — solo recalcula sobre Hips
+  // y fotos que ya están guardados. pollingPolicy.ts
+  // (shouldCheckNow/pollIntervalMinutes) queda sin usar acá a propósito, no
+  // se borró: sigue siendo código válido por si hace falta volver a un
+  // chequeo más frecuente en el futuro.
 
   // Calendario de Ventas (SaleDay) — a pedido explícito (2026-08-14): "esto
   // no debe depender de que el usuario haga un resync manual". Por eso NO
