@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import { db } from "./db";
 import { config } from "./config";
-import { processSale, AnalysisBudget, cleanupExpiredRankingSnapshots } from "./rankingService";
+import { processSale, syncCatalogsForActiveSales, AnalysisBudget, cleanupExpiredRankingSnapshots } from "./rankingService";
 import { runSaleDiscovery } from "./saleDiscoveryService";
 import { runNightlyMediaSweep } from "./mediaSweepService";
 
@@ -96,84 +96,68 @@ async function runCycle(): Promise<void> {
   }
 }
 
-// Mismo criterio de "no superponer ciclos" que el scheduler de análisis,
-// pero como guard independiente — un descubrimiento lento (3 casas de
-// ventas, una por una) no debería bloquear ni ser bloqueado por el ciclo
-// de análisis, que corre mucho más seguido.
-let discoveryIsRunning = false;
+// Mismo criterio de "no superponer ciclos" que el scheduler de análisis.
+let nightlySyncIsRunning = false;
 
 /**
- * Arranca el chequeo periódico de páginas públicas de anuncios (Fasig-Tipton,
- * Keeneland, OBS) para detectar ventas nuevas y darlas de alta solas — ver
- * saleDiscoveryService.ts. Corre en un cron SEPARADO del de análisis, a un
- * intervalo mucho más relajado (config.discoveryIntervalCron, 6h por
- * defecto): a diferencia de una foto/video nuevo en un Hip, una casa de
- * ventas anuncia eventos nuevos solo un puñado de veces por año.
+ * JOB NOCTURNO ÚNICO (2026-08-17, a pedido explícito del propietario):
+ * "toda actualización de precios de ventas, videos, fotos y descarga de
+ * catálogos de nuevas ventas disponibles" — antes repartido en tres
+ * mecanismos con cadencias distintas (descubrimiento de ventas nuevas cada
+ * 6h, sincronización de catálogo/precios dentro del ciclo de 5 min de
+ * análisis, y barrido de Media ya a las 3am) — ahora corre TODO junto, una
+ * sola vez al día, a las 3:00 a.m. hora del servidor (UTC en Railway), en
+ * este orden fijo:
+ *   1) descubrimiento de ventas nuevas (Fasig-Tipton/Keeneland/OBS) —
+ *      ver saleDiscoveryService.ts;
+ *   2) sincronización de catálogo (incluye precios oficiales de venta y la
+ *      media que la propia casa declara) para toda venta activa con
+ *      catalogAccess FULL — ver rankingService.syncCatalogsForActiveSales;
+ *   3) barrido de Media (fotos/videos publicados por la casa fuera del
+ *      catálogo) — ver mediaSweepService.ts.
+ * A propósito NO corre una vez extra al arrancar el servidor (a diferencia
+ * del scheduler de análisis de arriba): el pedido explícito fue "no lo
+ * quiero en otro horario ni en segundo plano" — un redeploy a cualquier
+ * hora del día no debe disparar esto fuera de las 3am. Cada paso va en su
+ * propio try/catch: si uno falla, los otros dos igual corren.
  */
-export function startDiscoveryScheduler(): void {
-  cron.schedule(config.discoveryIntervalCron, () => {
-    void runDiscoveryCycle();
-  });
-
-  console.log(`[discovery] Iniciado (cron: ${config.discoveryIntervalCron}).`);
-
-  // Igual que el scheduler de análisis: primera corrida inmediata al
-  // arrancar, para no depender del próximo tick del cron después de un
-  // redeploy.
-  void runDiscoveryCycle();
-}
-
-async function runDiscoveryCycle(): Promise<void> {
-  if (discoveryIsRunning) {
-    console.warn("[discovery] La corrida anterior todavía está en curso — se salta este tick.");
-    return;
-  }
-  discoveryIsRunning = true;
-  try {
-    const summary = await runSaleDiscovery();
-    if (summary.created > 0 || summary.errors.length > 0) {
-      console.log(`[discovery] Encontradas: ${summary.found}, nuevas: ${summary.created}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`);
-    }
-  } catch (err) {
-    console.error("[discovery] Error en la corrida de descubrimiento:", err);
-  } finally {
-    discoveryIsRunning = false;
-  }
-}
-
-// Mismo criterio de "no superponer ciclos" que los otros dos schedulers.
-let mediaSweepIsRunning = false;
-
-/**
- * Barrido NOCTURNO de Media (2026-08-14, a pedido explícito): "un solo
- * barrido automático al día... aproximadamente a las 3:00 a.m." — cron
- * propio, separado del scheduler de ranking/análisis (cada 5 min, sigue
- * exactamente igual que antes) y del de descubrimiento de ventas nuevas
- * (cada 6h). Ver mediaSweepService.ts para qué hace exactamente y por qué
- * es un mecanismo aparte. "0 3 * * *" = todos los días a las 3:00 (hora del
- * servidor, UTC en Railway).
- */
-export function startMediaSweepScheduler(): void {
+export function startNightlySyncScheduler(): void {
   cron.schedule("0 3 * * *", () => {
-    void runMediaSweepCycle();
+    void runNightlySyncCycle();
   });
-  console.log("[media-sweep] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor).");
+  console.log("[nightly-sync] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor) — descubrimiento + catálogo/precios + Media, un solo horario fijo, sin otra cadencia.");
 }
 
-async function runMediaSweepCycle(): Promise<void> {
-  if (mediaSweepIsRunning) {
-    console.warn("[media-sweep] El barrido anterior todavía está corriendo — se salta este tick.");
+async function runNightlySyncCycle(): Promise<void> {
+  if (nightlySyncIsRunning) {
+    console.warn("[nightly-sync] La corrida anterior todavía está en curso — se salta este tick.");
     return;
   }
-  mediaSweepIsRunning = true;
+  nightlySyncIsRunning = true;
   try {
-    const summary = await runNightlyMediaSweep({ trigger: "scheduled" });
-    console.log(
-      `[media-sweep] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
-    );
-  } catch (err) {
-    console.error("[media-sweep] Error en el barrido nocturno de Media:", err);
+    try {
+      const summary = await runSaleDiscovery();
+      console.log(`[nightly-sync][discovery] Encontradas: ${summary.found}, nuevas: ${summary.created}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`);
+    } catch (err) {
+      console.error("[nightly-sync][discovery] Error en el descubrimiento de ventas nuevas:", err);
+    }
+
+    try {
+      await syncCatalogsForActiveSales();
+      console.log("[nightly-sync][catalog] Sincronización de catálogo/precios completa.");
+    } catch (err) {
+      console.error("[nightly-sync][catalog] Error sincronizando catálogos/precios:", err);
+    }
+
+    try {
+      const summary = await runNightlyMediaSweep({ trigger: "scheduled" });
+      console.log(
+        `[nightly-sync][media] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+      );
+    } catch (err) {
+      console.error("[nightly-sync][media] Error en el barrido de Media:", err);
+    }
   } finally {
-    mediaSweepIsRunning = false;
+    nightlySyncIsRunning = false;
   }
 }
