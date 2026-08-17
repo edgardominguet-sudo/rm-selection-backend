@@ -972,7 +972,7 @@ router.post("/sales/:id/resolve-external-id", async (req, res) => {
 // FULL — MANUAL_CSV no tiene ninguna API contra la que chequear (ver
 // comentario en processSale, rankingService.ts), y PENDING_ID/UNAVAILABLE
 // no tienen ID real todavía.
-async function handleCatalogResync(sale: NonNullable<Awaited<ReturnType<typeof db.sale.findUnique>>>, res: import("express").Response) {
+async function handleCatalogResync(sale: NonNullable<Awaited<ReturnType<typeof db.sale.findUnique>>>, res: import("express").Response, opts: { forcePdfProbe?: boolean } = {}) {
   if (sale.catalogAccess !== "FULL") {
     res.status(400).json({
       error: `Esta venta tiene catalogAccess=${sale.catalogAccess}, no FULL — no hay ninguna API en vivo contra la que forzar un chequeo.`,
@@ -983,7 +983,7 @@ async function handleCatalogResync(sale: NonNullable<Awaited<ReturnType<typeof d
   const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
   const now = new Date();
   try {
-    await syncCatalog(sale);
+    await syncCatalog(sale, opts);
     await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: now } });
     const hipCountAfter = await db.hip.count({ where: { saleId: sale.id } });
     res.json({
@@ -1010,7 +1010,8 @@ router.post("/sales/:saleId/catalog/resync", async (req, res) => {
     res.status(404).json({ error: "Venta no encontrada." });
     return;
   }
-  await handleCatalogResync(sale, res);
+  const forcePdfProbe = req.body?.forcePdfProbe === true || req.query.forcePdfProbe === "true";
+  await handleCatalogResync(sale, res, { forcePdfProbe });
 });
 
 // Variante GET, navegable directo desde un browser (sin body/POST) — mismo
@@ -1030,7 +1031,8 @@ router.get("/sales/resync", async (req, res) => {
     res.status(404).json({ error: "Venta no encontrada." });
     return;
   }
-  await handleCatalogResync(sale, res);
+  const forcePdfProbe = req.query.forcePdfProbe === "true";
+  await handleCatalogResync(sale, res, { forcePdfProbe });
 });
 
 // Mismo forzado de arriba, pero identificando la venta por house +
@@ -1048,7 +1050,8 @@ router.post("/sales/resync", async (req, res) => {
     res.status(404).json({ error: "Venta no encontrada." });
     return;
   }
-  await handleCatalogResync(sale, res);
+  const forcePdfProbe = (req.body as { forcePdfProbe?: boolean })?.forcePdfProbe === true;
+  await handleCatalogResync(sale, res, { forcePdfProbe });
 });
 
 // MARK: - Import manual de catálogo (SaleCatalogAccess.MANUAL_CSV, hoy OBS —
