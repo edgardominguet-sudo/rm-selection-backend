@@ -704,6 +704,16 @@ async function flagInconclusiveIfCloseToSale(sale: Sale, now: Date): Promise<voi
  * cadencia posible. pollingPolicy.ts (shouldCheckNow/pollIntervalMinutes)
  * queda sin usar a propósito — no se borra, sigue siendo código válido por
  * si en el futuro hace falta volver a un chequeo más frecuente.
+ *
+ * ÚNICA EXCEPCIÓN (2026-08-17, mismo día, corrección posterior a pedido
+ * explícito del propietario): el PRECIO de venta (Hip.saleResultJson), y
+ * solo el precio, para la ventana de Decisión, y solo mientras esa venta
+ * concreta esté en curso hoy, sí debe actualizarse en vivo cada 10
+ * minutos — ver syncLivePricesForActiveSessions() más abajo, llamada desde
+ * scheduler.ts/runLivePriceCycle (cron "*/10 * * * *"). Catálogo, media y
+ * calendario de TODAS las ventas (estén o no en curso) siguen sin tocarse
+ * fuera de este job de las 3am — la excepción es única y exclusivamente el
+ * precio de ventas en curso.
  */
 export async function syncCatalogsForActiveSales(): Promise<void> {
   const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: "FULL" } });
@@ -736,6 +746,114 @@ export async function syncCatalogsForActiveSales(): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * Precio en vivo (2026-08-17, a pedido explícito del propietario): "lo
+ * único que debe ser en tiempo real cada 10 minutos es el precio de venta,
+ * en la ventana de Decisiones, mientras dicha venta esté en proceso, única
+ * y exclusivamente allí, para todas las casas de ventas".
+ *
+ * "En proceso" se interpreta con el MISMO criterio de día calendario que ya
+ * usa el resto del archivo para el Ranking del Día (ver
+ * startOfCalendarDay/sessionExpiresAt): hoy es el día calendario de alguna
+ * sessionDate de esta venta, hasta 2h después de terminada esa jornada. No
+ * hay hora exacta de apertura/cierre de subasta en ninguna fuente — mismo
+ * límite ya documentado en pollingPolicy.ts.
+ *
+ * No existe en ninguna casa de ventas un endpoint liviano de "solo
+ * resultados" — la única forma de obtener el precio actualizado es
+ * client.fetchCatalog(), igual que syncCatalog(). La diferencia real está
+ * en qué se ESCRIBE después: acá se descarta todo excepto saleResult — NUNCA
+ * se toca mediaJson, pedigree, Barn, ni ningún otro campo de catálogo, y
+ * tampoco se dispara CATALOG_NOW_AVAILABLE, syncSaleDays, ni el refinado de
+ * Sale.startDate (eso sigue siendo exclusivo del job de las 3am). Solo
+ * aplica a ventas catalogAccess FULL: una venta MANUAL_CSV no tiene ningún
+ * API contra la cual pedir un precio más nuevo que el último CSV importado.
+ */
+export async function syncLivePricesForSale(sale: Sale): Promise<{ hipsUpdated: number }> {
+  const client = clientFor(sale.house);
+  const hipCountBefore = await db.hip.count({ where: { saleId: sale.id } });
+  const hips = await client.fetchCatalog(sale.externalSaleId, {
+    name: sale.name,
+    startDate: sale.startDate,
+    hipCountBeforeSync: hipCountBefore,
+  });
+
+  let hipsUpdated = 0;
+  for (const nh of hips) {
+    if (!nh.saleResult) continue;
+    const existing = await db.hip.findUnique({
+      where: { saleId_hipNumber: { saleId: sale.id, hipNumber: nh.hipNumber } },
+    });
+    // Un Hip que todavía no está en nuestra base (catálogo no sincronizado
+    // para él) no se crea acá — este ciclo NUNCA crea/descarga catálogo,
+    // solo actualiza precio de Hips que el job de las 3am ya trajo.
+    if (!existing) continue;
+
+    const newResultJson = nh.saleResult as unknown as object;
+    const unchanged = JSON.stringify(existing.saleResultJson ?? null) === JSON.stringify(newResultJson);
+    if (unchanged) continue;
+
+    const updatedHip = await db.hip.update({
+      where: { id: existing.id },
+      data: { saleResultJson: newResultJson },
+    });
+    hipsUpdated += 1;
+
+    // Misma base histórica permanente que ya alimenta syncCatalog — un
+    // precio nuevo en vivo también debe quedar reflejado ahí, no solo en
+    // el Hip efímero de la venta activa.
+    try {
+      await recordOfficialSaleResult(updatedHip, sale);
+    } catch (err) {
+      console.error(`[live-price] Error registrando resultado oficial para Hip ${updatedHip.hipNumber}:`, err);
+    }
+  }
+  return { hipsUpdated };
+}
+
+export interface LivePriceSyncSummary {
+  salesInProgress: number;
+  hipsUpdated: number;
+  errors: string[];
+}
+
+/** Encuentra las ventas activas catalogAccess FULL cuya jornada de hoy está en curso, y les actualiza SOLO el precio (ver syncLivePricesForSale). */
+export async function syncLivePricesForActiveSessions(): Promise<LivePriceSyncSummary> {
+  const summary: LivePriceSyncSummary = { salesInProgress: 0, hipsUpdated: 0, errors: [] };
+  const now = new Date();
+  const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: "FULL" } });
+
+  for (const sale of sales) {
+    const sessionDates = await db.hip.findMany({
+      where: { saleId: sale.id, sessionDate: { not: null } },
+      distinct: ["sessionDate"],
+      select: { sessionDate: true },
+    });
+    const inProgress = sessionDates.some(({ sessionDate }) => {
+      if (!sessionDate) return false;
+      return now.getTime() >= startOfCalendarDay(sessionDate).getTime() && now.getTime() < sessionExpiresAt(sessionDate).getTime();
+    });
+    if (!inProgress) continue;
+
+    summary.salesInProgress += 1;
+    try {
+      const { hipsUpdated } = await syncLivePricesForSale(sale);
+      summary.hipsUpdated += hipsUpdated;
+    } catch (err) {
+      // Igual criterio que el resto del archivo: catálogo todavía no
+      // publicado no es un error real, el resto sí.
+      if (err instanceof CatalogNotYetPublishedError) {
+        console.log(`[live-price] ${sale.name}: ${err.message}`);
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[live-price] Error actualizando precio en vivo de "${sale.name}":`, err);
+        summary.errors.push(`${sale.name}: ${message}`);
+      }
+    }
+  }
+  return summary;
 }
 
 /**
