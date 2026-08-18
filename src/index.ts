@@ -13,7 +13,7 @@ import { evaluateFrontalFindings } from "./analysis/rmPriorityRules";
 import { scoreView } from "./analysis/scoringEngine";
 import { ViewLandmarks } from "./analysis/landmarks";
 import { CLASSIFICATION_THRESHOLDS } from "./analysis/conformationScores";
-import { extractFasigTiptonSaleId } from "./saleHouses/fasigTiptonIdAutoResolver";
+
 
 const app = express();
 app.use(cors());
@@ -128,23 +128,6 @@ app.get("/_diag/frontalrepeat/start/:slot", async (req, res) => {
 
 app.get("/_diag/frontalrepeat/result/:slot", (req, res) => {
     res.json(frontalRepeatResults[req.params.slot] ?? { status: "not_started" });
-});
-
-app.post("/_diag/resolve-fasig-id", async (req, res) => {
-    const { url } = req.body as { url?: string };
-    if (!url) {
-          res.status(400).json({ error: "Falta url." });
-          return;
-    }
-    try {
-          const startedAt = Date.now();
-          const saleId = await extractFasigTiptonSaleId(url);
-          res.json({ ok: true, url, saleId, ms: Date.now() - startedAt });
-    } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error("[_diag/resolve-fasig-id] Error:", err);
-          res.status(500).json({ error: message });
-    }
 });
 
 app.use("/api/v1", requireApiKey, router);
