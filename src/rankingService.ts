@@ -710,7 +710,7 @@ async function flagInconclusiveIfCloseToSale(sale: Sale, now: Date): Promise<voi
  * solo el precio, para la ventana de Decisión, y solo mientras esa venta
  * concreta esté en curso hoy, sí debe actualizarse en vivo cada 10
  * minutos — ver syncLivePricesForActiveSessions() más abajo, llamada desde
- * scheduler.ts/runLivePriceCycle (cron "*/10 * * * *"). Catálogo, media y
+ * scheduler.ts/runLivePriceCycle (cron "*\/10 * * * *"). Catálogo, media y
  * calendario de TODAS las ventas (estén o no en curso) siguen sin tocarse
  * fuera de este job de las 3am — la excepción es única y exclusivamente el
  * precio de ventas en curso.
