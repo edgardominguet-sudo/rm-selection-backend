@@ -2,14 +2,15 @@ import cron from "node-cron";
 import { db } from "./db";
 import { config } from "./config";
 import {
-  processSale,
-  syncCatalogsForActiveSales,
-  syncLivePricesForActiveSessions,
-  AnalysisBudget,
-  cleanupExpiredRankingSnapshots,
+    processSale,
+    syncCatalogsForActiveSales,
+    syncLivePricesForActiveSessions,
+    AnalysisBudget,
+    cleanupExpiredRankingSnapshots,
 } from "./rankingService";
 import { runSaleDiscovery } from "./saleDiscoveryService";
 import { runNightlyMediaSweep } from "./mediaSweepService";
+import { autoResolvePendingFasigTiptonSaleIds } from "./saleHouses/fasigTiptonIdAutoResolver";
 
 // Evita que dos ciclos corran superpuestos: si analizar todos los Hips
 // pendientes de un ciclo tarda más que el intervalo del próximo tick (algo
@@ -31,10 +32,10 @@ let isRunning = false;
  * varias jornadas por generar al mismo tiempo.
  */
 export function startScheduler(): void {
-  const cronExpression = "*/5 * * * *";
+    const cronExpression = "*/5 * * * *";
 
   cron.schedule(cronExpression, () => {
-    void runCycle();
+        void runCycle();
   });
 
   console.log(`[scheduler] Iniciado (tick cada 5 min, ventana de generación anticipada: ${config.rankingLeadHours}h antes de cada jornada).`);
@@ -46,59 +47,59 @@ export function startScheduler(): void {
 }
 
 async function runCycle(): Promise<void> {
-  if (isRunning) {
-    console.warn("[scheduler] El ciclo anterior todavía está corriendo — se salta este tick.");
-    return;
-  }
-  isRunning = true;
+    if (isRunning) {
+          console.warn("[scheduler] El ciclo anterior todavía está corriendo — se salta este tick.");
+          return;
+    }
+    isRunning = true;
 
   const run = await db.schedulerRun.create({ data: {} });
-  const budget: AnalysisBudget = { remaining: config.maxAnalysesPerCycle };
-  let salesProcessed = 0;
-  let firstError: string | null = null;
+    const budget: AnalysisBudget = { remaining: config.maxAnalysesPerCycle };
+    let salesProcessed = 0;
+    let firstError: string | null = null;
 
   try {
-    const organizations = await db.organization.findMany({ select: { id: true } });
-    // catalogAccess FULL o MANUAL_CSV — ambas pueden tener Hips cargados
-    // (FULL los trae sola vía API; MANUAL_CSV los recibe por
-    // POST /sales/:saleId/catalog/import) y por lo tanto algo para
-    // analizar/rankear. PENDING_ID (falta ID real) y UNAVAILABLE (sin
-    // ningún camino, ni manual) no tienen nada que sincronizar todavía; se
-    // filtran acá para no contarlas como "procesadas" en SchedulerRun. Ver
-    // también el guard equivalente en rankingService.processSale.
-    const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: { in: ["FULL", "MANUAL_CSV"] } } });
-    for (const sale of sales) {
+        const organizations = await db.organization.findMany({ select: { id: true } });
+        // catalogAccess FULL o MANUAL_CSV — ambas pueden tener Hips cargados
+      // (FULL los trae sola vía API; MANUAL_CSV los recibe por
+      // POST /sales/:saleId/catalog/import) y por lo tanto algo para
+      // analizar/rankear. PENDING_ID (falta ID real) y UNAVAILABLE (sin
+      // ningún camino, ni manual) no tienen nada que sincronizar todavía; se
+      // filtran acá para no contarlas como "procesadas" en SchedulerRun. Ver
+      // también el guard equivalente en rankingService.processSale.
+      const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: { in: ["FULL", "MANUAL_CSV"] } } });
+        for (const sale of sales) {
+                try {
+                          await processSale(sale, organizations, budget);
+                          salesProcessed += 1;
+                } catch (err) {
+                          const message = err instanceof Error ? err.message : String(err);
+                          console.error(`[scheduler] Error procesando venta ${sale.name}:`, err);
+                          firstError = firstError ?? `${sale.name}: ${message}`;
+                }
+        }
+        // Pedido explícito del usuario: 2h después de terminada la jornada,
+      // borrar el Ranking del Día de esa venta. Va en un try/catch propio —
+      // un fallo acá nunca debe impedir que se registre el resto del ciclo.
       try {
-        await processSale(sale, organizations, budget);
-        salesProcessed += 1;
+              const deleted = await cleanupExpiredRankingSnapshots();
+              if (deleted > 0) {
+                        console.log(`[scheduler] Ranking del Día: ${deleted} jornada(s) vencida(s) borradas (2h post-venta).`);
+              }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] Error procesando venta ${sale.name}:`, err);
-        firstError = firstError ?? `${sale.name}: ${message}`;
+              console.error("[scheduler] Error borrando Ranking del Día vencido:", err);
       }
-    }
-    // Pedido explícito del usuario: 2h después de terminada la jornada,
-    // borrar el Ranking del Día de esa venta. Va en un try/catch propio —
-    // un fallo acá nunca debe impedir que se registre el resto del ciclo.
-    try {
-      const deleted = await cleanupExpiredRankingSnapshots();
-      if (deleted > 0) {
-        console.log(`[scheduler] Ranking del Día: ${deleted} jornada(s) vencida(s) borradas (2h post-venta).`);
-      }
-    } catch (err) {
-      console.error("[scheduler] Error borrando Ranking del Día vencido:", err);
-    }
   } finally {
-    await db.schedulerRun.update({
-      where: { id: run.id },
-      data: {
-        finishedAt: new Date(),
-        salesProcessed,
-        analysesRun: config.maxAnalysesPerCycle - budget.remaining,
-        errorMessage: firstError,
-      },
-    });
-    isRunning = false;
+        await db.schedulerRun.update({
+                where: { id: run.id },
+                data: {
+                          finishedAt: new Date(),
+                          salesProcessed,
+                          analysesRun: config.maxAnalysesPerCycle - budget.remaining,
+                          errorMessage: firstError,
+                },
+        });
+        isRunning = false;
   }
 }
 
@@ -116,10 +117,15 @@ let nightlySyncIsRunning = false;
  * este orden fijo:
  *   1) descubrimiento de ventas nuevas (Fasig-Tipton/Keeneland/OBS) —
  *      ver saleDiscoveryService.ts;
- *   2) sincronización de catálogo (incluye precios oficiales de venta y la
+ *   2) auto-resolución del ID real de catálogo para ventas Fasig-Tipton
+ *      PENDING_ID (2026-08-17, a pedido explícito: "cierra el hueco de
+ *      fasig tipton y obs") — ver fasigTiptonIdAutoResolver.ts. Va acá,
+ *      antes del paso 3, para que una venta resuelta esta misma noche ya
+ *      sincronice su catálogo en esta misma corrida;
+ *   3) sincronización de catálogo (incluye precios oficiales de venta y la
  *      media que la propia casa declara) para toda venta activa con
  *      catalogAccess FULL — ver rankingService.syncCatalogsForActiveSales;
- *   3) barrido de Media (fotos/videos publicados por la casa fuera del
+ *   4) barrido de Media (fotos/videos publicados por la casa fuera del
  *      catálogo) — ver mediaSweepService.ts.
  * A propósito NO corre una vez extra al arrancar el servidor (a diferencia
  * del scheduler de análisis de arriba): el pedido explícito fue "no lo
@@ -128,44 +134,55 @@ let nightlySyncIsRunning = false;
  * propio try/catch: si uno falla, los otros dos igual corren.
  */
 export function startNightlySyncScheduler(): void {
-  cron.schedule("0 3 * * *", () => {
-    void runNightlySyncCycle();
-  });
-  console.log("[nightly-sync] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor) — descubrimiento + catálogo/precios + Media, un solo horario fijo, sin otra cadencia.");
+    cron.schedule("0 3 * * *", () => {
+          void runNightlySyncCycle();
+    });
+    console.log("[nightly-sync] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor) — descubrimiento + catálogo/precios + Media, un solo horario fijo, sin otra cadencia.");
 }
 
 async function runNightlySyncCycle(): Promise<void> {
-  if (nightlySyncIsRunning) {
-    console.warn("[nightly-sync] La corrida anterior todavía está en curso — se salta este tick.");
-    return;
-  }
-  nightlySyncIsRunning = true;
-  try {
-    try {
-      const summary = await runSaleDiscovery();
-      console.log(`[nightly-sync][discovery] Encontradas: ${summary.found}, nuevas: ${summary.created}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`);
-    } catch (err) {
-      console.error("[nightly-sync][discovery] Error en el descubrimiento de ventas nuevas:", err);
+    if (nightlySyncIsRunning) {
+          console.warn("[nightly-sync] La corrida anterior todavía está en curso — se salta este tick.");
+          return;
     }
+    nightlySyncIsRunning = true;
+    try {
+          try {
+                  const summary = await runSaleDiscovery();
+                  console.log(`[nightly-sync][discovery] Encontradas: ${summary.found}, nuevas: ${summary.created}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`);
+          } catch (err) {
+                  console.error("[nightly-sync][discovery] Error en el descubrimiento de ventas nuevas:", err);
+          }
 
-    try {
-      await syncCatalogsForActiveSales();
-      console.log("[nightly-sync][catalog] Sincronización de catálogo/precios completa.");
-    } catch (err) {
-      console.error("[nightly-sync][catalog] Error sincronizando catálogos/precios:", err);
-    }
+      try {
+              const summary = await autoResolvePendingFasigTiptonSaleIds();
+              if (summary.checked > 0) {
+                        console.log(
+                                    `[nightly-sync][fasig-id] Ventas Fasig-Tipton PENDING_ID revisadas: ${summary.checked}, resueltas automáticamente: ${summary.resolved}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+                                  );
+              }
+      } catch (err) {
+              console.error("[nightly-sync][fasig-id] Error en la auto-resolución de IDs de Fasig-Tipton:", err);
+      }
 
-    try {
-      const summary = await runNightlyMediaSweep({ trigger: "scheduled" });
-      console.log(
-        `[nightly-sync][media] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
-      );
-    } catch (err) {
-      console.error("[nightly-sync][media] Error en el barrido de Media:", err);
+      try {
+              await syncCatalogsForActiveSales();
+              console.log("[nightly-sync][catalog] Sincronización de catálogo/precios completa.");
+      } catch (err) {
+              console.error("[nightly-sync][catalog] Error sincronizando catálogos/precios:", err);
+      }
+
+      try {
+              const summary = await runNightlyMediaSweep({ trigger: "scheduled" });
+              console.log(
+                        `[nightly-sync][media] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+                      );
+      } catch (err) {
+              console.error("[nightly-sync][media] Error en el barrido de Media:", err);
+      }
+    } finally {
+          nightlySyncIsRunning = false;
     }
-  } finally {
-    nightlySyncIsRunning = false;
-  }
 }
 
 // Mismo criterio de "no superponer ciclos" que los dos schedulers de arriba.
@@ -188,28 +205,28 @@ let livePriceIsRunning = false;
  * mucho, 10 minutos después de cualquier redeploy.
  */
 export function startLivePriceScheduler(): void {
-  cron.schedule("*/10 * * * *", () => {
-    void runLivePriceCycle();
-  });
-  console.log("[live-price] Iniciado (cron cada 10 min: */10 * * * *) — SOLO precio de venta (Hip.saleResultJson) de ventas con jornada en curso hoy, para la ventana de Decisión. No toca catálogo, media ni calendario.");
+    cron.schedule("*/10 * * * *", () => {
+          void runLivePriceCycle();
+    });
+    console.log("[live-price] Iniciado (cron cada 10 min: */10 * * * *) — SOLO precio de venta (Hip.saleResultJson) de ventas con jornada en curso hoy, para la ventana de Decisión. No toca catálogo, media ni calendario.");
 }
 
 async function runLivePriceCycle(): Promise<void> {
-  if (livePriceIsRunning) {
-    console.warn("[live-price] La corrida anterior todavía está en curso — se salta este tick.");
-    return;
-  }
-  livePriceIsRunning = true;
-  try {
-    const summary = await syncLivePricesForActiveSessions();
-    if (summary.salesInProgress > 0) {
-      console.log(
-        `[live-price] Ventas en curso: ${summary.salesInProgress}, Hips con precio actualizado: ${summary.hipsUpdated}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
-      );
+    if (livePriceIsRunning) {
+          console.warn("[live-price] La corrida anterior todavía está en curso — se salta este tick.");
+          return;
     }
-  } catch (err) {
-    console.error("[live-price] Error en el ciclo de precio en vivo:", err);
-  } finally {
-    livePriceIsRunning = false;
-  }
+    livePriceIsRunning = true;
+    try {
+          const summary = await syncLivePricesForActiveSessions();
+          if (summary.salesInProgress > 0) {
+                  console.log(
+                            `[live-price] Ventas en curso: ${summary.salesInProgress}, Hips con precio actualizado: ${summary.hipsUpdated}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+                          );
+          }
+    } catch (err) {
+          console.error("[live-price] Error en el ciclo de precio en vivo:", err);
+    } finally {
+          livePriceIsRunning = false;
+    }
 }
