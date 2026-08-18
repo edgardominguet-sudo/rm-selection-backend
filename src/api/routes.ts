@@ -22,7 +22,7 @@ import {
   deleteObject,
   ObjectStorageNotConfiguredError,
 } from "../storage/r2Client";
-import { extractFasigTiptonSaleId } from "../saleHouses/fasigTiptonIdAutoResolver";
+
 
 export const router = Router();
 
@@ -940,26 +940,6 @@ router.post("/sales", async (req, res) => {
 // catalogAccess a mano en la base.
 // DIAGNÓSTICO TEMPORAL (2026-08-17) — para probar el resolver headless de
 // Fasig-Tipton contra páginas reales sin tocar ninguna venta en la base.
-// No hace ningún UPDATE — solo devuelve lo que encontró (o null). Sacar
-// este endpoint una vez confirmado en producción (mismo criterio que otros
-// endpoints /_diag/* ya usados y luego eliminados en este proyecto).
-router.post("/_diag/resolve-fasig-id", async (req, res) => {
-    const { url } = req.body as { url?: string };
-    if (!url) {
-          res.status(400).json({ error: "Falta url." });
-          return;
-    }
-    try {
-          const startedAt = Date.now();
-          const saleId = await extractFasigTiptonSaleId(url);
-          res.json({ ok: true, url, saleId, ms: Date.now() - startedAt });
-    } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error("[_diag/resolve-fasig-id] Error:", err);
-          res.status(500).json({ error: message });
-    }
-});
-
 router.post("/sales/:id/resolve-external-id", async (req, res) => {
   const { id } = req.params;
   const { externalSaleId } = req.body as { externalSaleId?: string };
