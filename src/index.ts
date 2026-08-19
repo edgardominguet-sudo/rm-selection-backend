@@ -187,10 +187,8 @@ app.get("/_diag/hip-analysis-status", async (req, res) => {
         id: true,
         hipNumber: true,
         horseName: true,
-        house: true,
-        externalSaleId: true,
         saleId: true,
-        sale: { select: { name: true } },
+        sale: { select: { name: true, house: true, externalSaleId: true } },
         currentAnalyses: {
           select: {
             updatedAt: true,
