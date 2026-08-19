@@ -11,15 +11,17 @@
 
 import { LandmarkPoint, Side, ViewLandmarks } from "./landmarks";
 import {
-  angleFromGroundPlane,
+  angleFromGroundPlaneCorrected,
   angleFromVertical,
+  angleFromVerticalCorrected,
   combinedConfidence,
   distance,
   jointAngle,
+  postureSquarenessConfidence,
   signedPerpendicularOffset,
   toVec,
 } from "./geometry";
-import { classifySeverity } from "./severity";
+import { classifySeverity, findingConfidence } from "./severity";
 import { findDefect } from "./conformationKnowledgeBase";
 import { Finding } from "./findings";
 
@@ -84,6 +86,17 @@ export function evaluateFrontalFindings(
   const hoofL = get(lm, "hoofCenterLeft");
   const hoofR = get(lm, "hoofCenterRight");
 
+  // CONTROL DE PERSPECTIVA (2026-08-19, pedido de Ramon, prioridad alta):
+  // Frontal no tiene línea de suelo propia (a diferencia de Lateral), así
+  // que el chequeo geométrico acá es "¿el caballo está parado
+  // razonablemente cuadrado hacia la cámara?", usando shoulderLeft/Right
+  // (deberían estar a la misma altura real). Si no, se reduce la confianza
+  // de TODOS los hallazgos de esta foto — nunca se inventa ni penaliza un
+  // defecto que puede ser solo una pata adelantada o cámara rotada (ver
+  // geometry.postureSquarenessConfidence).
+  const postureConfidence = postureSquarenessConfidence(lm.shoulderLeft, lm.shoulderRight);
+  const finalConf = (landmarkConf: number): number => Math.min(findingConfidence(landmarkConf, viewConfidence), postureConfidence);
+
   // --- base_narrow / base_wide (bilateral, un solo hallazgo para las 2 patas) ---
   //
   // CORRECCIÓN DE ESTABILIDAD, SEGUNDO INTENTO (2026-08-14, pedida por
@@ -118,31 +131,33 @@ export function evaluateFrontalFindings(
   // diferencia entre dos anchos de 2 patas. No se tocó ninguna banda de
   // tolerancia — sigue en las mismas unidades ("ratio" normalizado por
   // longitud de pata) y con los mismos umbrales de conformationKnowledgeBase.ts.
+  // NOTA (2026-08-19, fix doble penalización pedido por Ramon): este bloque
+  // YA NO genera un hallazgo propio — antes competía por fuera del
+  // mecanismo de la pata (ver loop de abajo), así que una misma pata podía
+  // descontar dos veces (una vez acá como base_narrow/wide bilateral, otra
+  // vez como carpus_valgus/toe_in de esa pata). `base_narrow`/`base_wide`
+  // ahora es un candidato MÁS dentro de la competencia por pata (Origen 0,
+  // ver más abajo) — se sigue calculando la versión bilateral acá SOLO para
+  // guardarla en rawMetrics.baseWidthRatio (diagnóstico/compatibilidad, la
+  // usa también /_diag/frontalrepeat) y para referenceMetrics, sin que
+  // pueda penalizar por sí sola.
   if (shoulderL && shoulderR && hoofL && hoofR) {
     const legs: Array<{ side: Side; shoulder: LandmarkPoint; hoof: LandmarkPoint }> = [
       { side: "left", shoulder: shoulderL, hoof: hoofL },
       { side: "right", shoulder: shoulderR, hoof: hoofR },
     ];
     const lateralOffsets: number[] = [];
-    const involvedPoints: LandmarkPoint[] = [];
     for (const leg of legs) {
       const legLength = distance(toVec(leg.shoulder), toVec(leg.hoof));
       if (legLength <= 0) continue;
       const horizontalOffset = leg.hoof.x - leg.shoulder.x;
       const normalized = horizontalOffset / legLength;
-      // lateralSign: para la pata izquierda, "lateral" (hacia afuera,
-      // ensanchando la base) es +x; para la derecha es -x — el inverso de
-      // medialSign (ver esa función más arriba).
       const lateralSign = leg.side === "left" ? 1 : -1;
       lateralOffsets.push(normalized * lateralSign);
-      involvedPoints.push(leg.shoulder, leg.hoof);
     }
     if (lateralOffsets.length > 0) {
-      const ratio = lateralOffsets.reduce((a, b) => a + b, 0) / lateralOffsets.length; // negativo = ambas patas hacia adentro (base-narrow), positivo = hacia afuera (base-wide)
+      const ratio = lateralOffsets.reduce((a, b) => a + b, 0) / lateralOffsets.length;
       rawMetrics.baseWidthRatio = ratio;
-      const conf = combinedConfidence(involvedPoints);
-      const defectId = ratio < 0 ? "base_narrow" : "base_wide";
-      findings.push(buildFinding(defectId, undefined, ratio, Math.abs(ratio), conf, ref("baseWidthRatio")));
     }
   }
 
@@ -159,6 +174,30 @@ export function evaluateFrontalFindings(
     type Candidate = { defectId: string; measured: number; absDev: number; conf: number; metricKey: string };
     const candidates: Candidate[] = [];
 
+    // Origen 0 (NUEVO, 2026-08-19): pecho→casco completo, whole-leg splay
+    // (base_narrow/base_wide) — offset del CASCO respecto a la vertical que
+    // baja del HOMBRO de esa misma pata. Ver nota grande arriba: antes se
+    // calculaba bilateral y por fuera de esta competencia; ahora es un
+    // candidato más, para que no pueda descontar dos veces junto con
+    // carpus_valgus/varus o toe_in/toe_out de la misma pata.
+    const baseOffsetKey = `baseOffset.${side}`;
+    if (shoulder && hoof) {
+      const legLength = distance(toVec(shoulder), toVec(hoof));
+      if (legLength > 0) {
+        const normalized = (hoof.x - shoulder.x) / legLength;
+        const medialComponent = normalized * sign; // positivo = medial (base_narrow), negativo = lateral (base_wide) — mismo criterio de signo que carpus/toe abajo.
+        rawMetrics[baseOffsetKey] = medialComponent;
+        const conf = finalConf(combinedConfidence([shoulder, hoof]));
+        candidates.push({
+          defectId: medialComponent >= 0 ? "base_narrow" : "base_wide",
+          measured: medialComponent,
+          absDev: Math.abs(medialComponent),
+          conf,
+          metricKey: baseOffsetKey,
+        });
+      }
+    }
+
     // Origen 1: pecho→carpo (carpus_valgus/varus) — offset del carpo respecto a la línea hombro→casco de SU PROPIA pata.
     const carpusOffsetKey = `carpusOffset.${side}`;
     if (shoulder && hoof && carpus) {
@@ -168,7 +207,7 @@ export function evaluateFrontalFindings(
         const normalized = rawOffset / legLength;
         const medialComponent = normalized * sign; // positivo = medial, negativo = lateral
         rawMetrics[carpusOffsetKey] = medialComponent;
-        const conf = combinedConfidence([shoulder, hoof, carpus]);
+        const conf = finalConf(combinedConfidence([shoulder, hoof, carpus]));
         candidates.push({
           defectId: medialComponent >= 0 ? "carpus_valgus" : "carpus_varus",
           measured: medialComponent,
@@ -222,7 +261,7 @@ export function evaluateFrontalFindings(
       const angle = rotationSamples.reduce((a, b) => a + b, 0) / rotationSamples.length;
       const medialAngle = angle * sign; // positivo = rotación medial
       rawMetrics[hoofRotationKey] = medialAngle;
-      const conf = combinedConfidence(rotationPoints);
+      const conf = finalConf(combinedConfidence(rotationPoints));
       candidates.push({
         defectId: medialAngle >= 0 ? "toe_in" : "toe_out",
         measured: medialAngle,
@@ -265,7 +304,7 @@ export function evaluateFrontalFindings(
     if (avg > 0) {
       const ratio = Math.abs(widthL - widthR) / avg;
       rawMetrics.hoofAsymmetryRatio = ratio;
-      const conf = combinedConfidence([hoofMedialL, hoofLateralL, hoofMedialR, hoofLateralR]);
+      const conf = finalConf(combinedConfidence([hoofMedialL, hoofLateralL, hoofMedialR, hoofLateralR]));
       findings.push(buildFinding("hoof_asymmetry", undefined, ratio, ratio, conf, ref("hoofAsymmetryRatio")));
     }
   }
@@ -286,6 +325,29 @@ export function evaluateLateralFindings(
   const rawMetrics: ReferenceMetrics = {};
   const ref = (key: string): number | undefined => referenceMetrics?.[key];
 
+  // CONTROL DE PERSPECTIVA (2026-08-19, pedido explícito de Ramon, prioridad
+  // alta): Lateral SÍ tiene línea de suelo propia (groundLeft/groundRight —
+  // ya se extraían en cada foto pero ningún cálculo los usaba, ver
+  // auditoría). Cuando están disponibles, se usan para derivar la
+  // vertical/horizontal REAL de la escena (angleFromVerticalCorrected /
+  // angleFromGroundPlaneCorrected, geometry.ts) en vez de asumir que "abajo
+  // en la imagen" es la vertical real — corrige ángulos falseados por
+  // cámara inclinada sin inventar ni suprimir ningún hallazgo. Si no están
+  // disponibles, ambas funciones caen de vuelta al cálculo anterior sin
+  // cambios (mismo comportamiento que hoy). Si SÍ están disponibles pero su
+  // propia confianza de landmark es baja, la corrección puede ser poco
+  // fiable — por eso también limita la confianza final de los 2 hallazgos
+  // que la usan (pastern angle / verticalidad de la extremidad).
+  const groundL = get(lm, "groundLeft");
+  const groundR = get(lm, "groundRight");
+  const groundVecL = groundL ? toVec(groundL) : undefined;
+  const groundVecR = groundR ? toVec(groundR) : undefined;
+  const groundConfidence = groundL && groundR ? Math.min(groundL.confidence, groundR.confidence) : 1;
+  const finalConf = (landmarkConf: number, useGround = false): number => {
+    const base = findingConfidence(landmarkConf, viewConfidence);
+    return useGround ? Math.min(base, groundConfidence) : base;
+  };
+
   // --- L1: over_at_the_knee / calf_kneed ---
   const elbow = get(lm, "elbow");
   const carpus = get(lm, "carpus");
@@ -296,49 +358,86 @@ export function evaluateLateralFindings(
       const rawOffset = signedPerpendicularOffset(toVec(carpus), toVec(elbow), toVec(fetlockFront));
       const normalized = rawOffset / legLength; // convención: positivo = craneal (adelante), ver nota abajo
       rawMetrics.kneeOffset = normalized;
-      const conf = combinedConfidence([elbow, carpus, fetlockFront]);
+      const conf = finalConf(combinedConfidence([elbow, carpus, fetlockFront]));
       const defectId = normalized >= 0 ? "over_at_the_knee" : "calf_kneed";
       findings.push(buildFinding(defectId, undefined, normalized, Math.abs(normalized), conf, ref("kneeOffset")));
     }
   }
 
-  // --- L2/L3: ángulo cuartilla anterior (upright vs long/sloping) ---
+  // --- L2/L3 vs L2 (catch-all): cuartilla (upright/long-sloping) COMPITE con
+  // verticalidad de toda la extremidad ---
+  //
+  // CORRECCIÓN DE DOBLE PENALIZACIÓN (2026-08-19, punto 3 de Ramon): antes
+  // estos 2 bloques se calculaban y descontaban SIEMPRE los dos, cada uno
+  // por su lado — si el mismo problema estructural (extremidad/cuartilla
+  // excesivamente vertical) se reflejaba en ambas mediciones a la vez, el
+  // caballo perdía puntaje DOS veces por el mismo defecto anatómico. Ahora
+  // se calculan y guardan en rawMetrics/referenceMetrics los DOS, igual que
+  // antes (nada deja de medirse), pero solo se reporta como Finding el de
+  // mayor magnitud relativa a SU PROPIA tolerancia — el mismo mecanismo ya
+  // usado en Frontal (carpus/toe/base) y en L4 acá abajo
+  // (sickle/post-legged/camped). Otras familias de esta vista (L1, L4) NO
+  // se tocan — siguen penalizando de forma completamente independiente
+  // ("anomalías independientes pueden seguir penalizando de forma
+  // independiente", pedido explícito de Ramon).
   const coronetFront = get(lm, "coronetFront");
-  const hoofToeFront = get(lm, "hoofToeFront");
   const hoofHeelFront = get(lm, "hoofHeelFront");
+  const cannonMidFront = get(lm, "cannonMidFront");
+  type UprightCandidate = { defectId: string; measured: number; absDev: number; conf: number; metricKey: string };
+  const uprightCandidates: UprightCandidate[] = [];
+
   if (coronetFront && hoofHeelFront) {
-    // Ángulo de la cuartilla respecto al PLANO DEL SUELO. BUG REAL
-    // corregido acá (2026-08-14, encontrado en la prueba controlada de
-    // reproducibilidad de esa fecha): el cálculo anterior usaba
-    // `90 - Math.abs(angleFromVertical(heel, coronet))`, pero
-    // `angleFromVertical` mide el ángulo respecto a "derecho hacia
-    // ABAJO" — como talón→banda coronaria siempre apunta hacia ARRIBA en
-    // la imagen, ese valor cae SIEMPRE en el rango [90°,180°] para
-    // cualquier cuartilla físicamente posible, y la resta daba SIEMPRE un
-    // número negativo (ej. una cuartilla perfectamente vertical de 90°
-    // reales daba -90, no +90). El resultado: este hallazgo salía
-    // "marcado" al tope (magnitude01=1) en el 100% de las corridas de la
-    // prueba, sin importar la cuartilla real — no era ruido de landmarks,
-    // era la fórmula. `angleFromGroundPlane` (geometry.ts) mide
-    // directamente el ángulo con el suelo sin ese problema de signo.
-    const angleFromGround = angleFromGroundPlane(toVec(hoofHeelFront), toVec(coronetFront));
+    // Ángulo de la cuartilla respecto al PLANO DEL SUELO, corregido por
+    // inclinación real de cámara cuando hay línea de suelo disponible (ver
+    // nota de CONTROL DE PERSPECTIVA arriba). BUG REAL corregido acá el
+    // 2026-08-14 (ver reporte de reproducibilidad de esa fecha):
+    // `angleFromVertical` mide respecto a "derecho hacia ABAJO", y como
+    // talón→banda coronaria siempre apunta hacia ARRIBA en la imagen, el
+    // cálculo anterior (`90 - Math.abs(angleFromVertical(...))`) daba
+    // SIEMPRE un número negativo sin importar la cuartilla real.
+    // `angleFromGroundPlaneCorrected` mide directamente el ángulo con el
+    // suelo, sin ese problema de signo.
+    const angleFromGround = angleFromGroundPlaneCorrected(toVec(hoofHeelFront), toVec(coronetFront), groundVecL, groundVecR);
     // Rango correcto profesional: 45°–50° (ver Kentucky Equine Research,
     // hoof-pastern axis). Centro de referencia: 47.5°.
     const idealCenter = 47.5;
     const deviation = angleFromGround - idealCenter; // positivo = más vertical de lo ideal (upright), negativo = más inclinado (sloping)
     rawMetrics.pasternAngleDeviation = deviation;
-    const conf = combinedConfidence([coronetFront, hoofHeelFront]);
-    const defectId = deviation >= 0 ? "upright_pastern" : "long_sloping_pastern";
-    findings.push(buildFinding(defectId, undefined, deviation, Math.abs(deviation), conf, ref("pasternAngleDeviation")));
+    const conf = finalConf(combinedConfidence([coronetFront, hoofHeelFront]), true);
+    uprightCandidates.push({
+      defectId: deviation >= 0 ? "upright_pastern" : "long_sloping_pastern",
+      measured: deviation,
+      absDev: Math.abs(deviation),
+      conf,
+      metricKey: "pasternAngleDeviation",
+    });
   }
 
-  // --- L2 (catch-all): verticalidad de toda la extremidad ---
-  const cannonMidFront = get(lm, "cannonMidFront");
   if (carpus && cannonMidFront && fetlockFront) {
-    const angle = angleFromVertical(toVec(carpus), toVec(fetlockFront));
+    const angle = angleFromVerticalCorrected(toVec(carpus), toVec(fetlockFront), groundVecL, groundVecR);
     rawMetrics.legVerticality = angle;
-    const conf = combinedConfidence([carpus, cannonMidFront, fetlockFront]);
-    findings.push(buildFinding("excessively_vertical_leg", undefined, angle, Math.abs(angle), conf, ref("legVerticality")));
+    const conf = finalConf(combinedConfidence([carpus, cannonMidFront, fetlockFront]), true);
+    uprightCandidates.push({
+      defectId: "excessively_vertical_leg",
+      measured: angle,
+      absDev: Math.abs(angle),
+      conf,
+      metricKey: "legVerticality",
+    });
+  }
+
+  if (uprightCandidates.length > 0) {
+    let best: { c: UprightCandidate; magnitude01: number } | null = null;
+    for (const c of uprightCandidates) {
+      const defect = findDefect(c.defectId)!;
+      const { magnitude01 } = classifySeverity(c.measured, defect.tolerance);
+      if (!best || magnitude01 > best.magnitude01) best = { c, magnitude01 };
+    }
+    if (best) {
+      findings.push(
+        buildFinding(best.c.defectId, undefined, best.c.measured, best.c.absDev, best.c.conf, ref(best.c.metricKey))
+      );
+    }
   }
 
   // --- L4: familia posterior (sickle-hocked / post-legged / camped-under / camped-out) ---
@@ -356,7 +455,7 @@ export function evaluateLateralFindings(
       // Offset de TODA la pierna (a la altura del corvejón) respecto a la plomada punta-de-nalga→talón.
       const legOffset = signedPerpendicularOffset(toVec(hock), toVec(buttock), toVec(hoofHeelHind)) / legLength;
       rawMetrics.hindLegOffset = legOffset;
-      const legConf = combinedConfidence([buttock, hoofHeelHind, hock]);
+      const legConf = finalConf(combinedConfidence([buttock, hoofHeelHind, hock]));
       candidates.push({
         defectId: legOffset >= 0 ? "camped_under" : "camped_out",
         measured: legOffset,
@@ -372,7 +471,7 @@ export function evaluateLateralFindings(
       const idealAngle = 155; // referencia profesional aproximada de ángulo de corvejón funcional
       const deviation = idealAngle - angle; // positivo = ángulo menor a lo ideal (más doblado = sickle-hocked); negativo = más recto (post-legged)
       rawMetrics.hockAngleDeviation = deviation;
-      const conf = combinedConfidence([hock, stifle, fetlockHind]);
+      const conf = finalConf(combinedConfidence([hock, stifle, fetlockHind]));
       candidates.push({
         defectId: deviation >= 0 ? "sickle_hocked" : "post_legged",
         measured: deviation,
@@ -415,29 +514,140 @@ export function evaluatePosteriorFindings(
   const coxaeR = get(lm, "tuberCoxaeRight");
   const hockL = get(lm, "hockLeft");
   const hockR = get(lm, "hockRight");
+  const fetlockL = get(lm, "fetlockLeft");
+  const fetlockR = get(lm, "fetlockRight");
   const hoofL = get(lm, "hoofCenterLeft");
   const hoofR = get(lm, "hoofCenterRight");
 
+  // CONTROL DE PERSPECTIVA (2026-08-19, pedido explícito de Ramon, prioridad
+  // alta): Posterior no tiene línea de suelo propia (a diferencia de
+  // Lateral) — mismo chequeo que Frontal (geometry.postureSquarenessConfidence),
+  // acá con tuberCoxaeLeft/Right (deberían estar a la misma altura real
+  // cuando el caballo está parado cuadrado hacia la cámara, visto de
+  // espaldas). Reduce la confianza de TODOS los hallazgos de esta vista si
+  // la grupa aparece muy desnivelada en la foto — nunca inventa ni penaliza
+  // un defecto que puede ser solo una pata adelantada o cámara rotada.
+  const postureConfidence = postureSquarenessConfidence(lm.tuberCoxaeLeft, lm.tuberCoxaeRight);
+  const finalConf = (landmarkConf: number): number => Math.min(findingConfidence(landmarkConf, viewConfidence), postureConfidence);
+
+  // --- P1/P2: cow_hocked / bow_hocked (compuesto bilateral, ancho relativo cadera/corvejón/casco) ---
+  //
+  // AMPLIACIÓN (2026-08-19, punto 4 de Ramon, "mejor diferenciación
+  // geométrica de cow-hocked/bow-hocked"): se agrega fetlockWidth como
+  // tercera comparación (antes solo cadera-vs-corvejón y corvejón-vs-casco)
+  // usando fetlockLeft/Right, que ya se extraían en cada foto posterior
+  // pero ningún cálculo los usaba (confirmado en la auditoría). Ninguna
+  // tolerancia ni peso cambia — solo se promedia una tercera comparación
+  // con el mismo criterio que las 2 que ya existían; si fetlock no está
+  // disponible en la foto, sigue funcionando exactamente igual que antes
+  // (2 comparaciones).
   if (coxaeL && coxaeR && hockL && hockR && hoofL && hoofR) {
     const pelvisWidth = distance(toVec(coxaeL), toVec(coxaeR));
     const hockWidth = distance(toVec(hockL), toVec(hockR));
     const hoofWidth = distance(toVec(hoofL), toVec(hoofR));
+    const fetlockWidth = fetlockL && fetlockR ? distance(toVec(fetlockL), toVec(fetlockR)) : null;
+    // Exponer anchos crudos en rawMetrics (punto 4 de Ramon, "separación
+    // relativa de corvejones/cascos") — puramente diagnóstico/de
+    // referencia, no generan penalización por sí solos (eso lo hace el
+    // composite de abajo, que ya estaba y no cambió de criterio).
+    rawMetrics.pelvisWidth = pelvisWidth;
+    rawMetrics.hockWidth = hockWidth;
+    rawMetrics.hoofWidth = hoofWidth;
+    if (fetlockWidth !== null) rawMetrics.fetlockWidth = fetlockWidth;
     if (pelvisWidth > 0) {
       // cow-hocked: corvejones más angostos que cadera Y que cascos.
       // bow-hocked: corvejones más anchos que cadera Y que cascos.
       const hockVsPelvis = (hockWidth - pelvisWidth) / pelvisWidth;
-      const hockVsHoof = pelvisWidth > 0 ? (hockWidth - hoofWidth) / pelvisWidth : 0;
-      // Patrón compuesto: promedio de ambas comparaciones (corvejón
-      // respecto a cadera, y corvejón respecto a casco) — un valor
-      // negativo consistente en ambas es cow-hocked, positivo consistente
-      // es bow-hocked. Si las 2 comparaciones no coinciden en signo, el
-      // patrón es ambiguo y se pondera hacia 0 (menos confianza en el
-      // patrón, no en los landmarks individuales).
-      const composite = (hockVsPelvis + hockVsHoof) / 2;
+      const hockVsHoof = (hockWidth - hoofWidth) / pelvisWidth;
+      const comparisons = [hockVsPelvis, hockVsHoof];
+      if (fetlockWidth !== null) {
+        comparisons.push((hockWidth - fetlockWidth) / pelvisWidth);
+      }
+      const composite = comparisons.reduce((a, b) => a + b, 0) / comparisons.length;
       rawMetrics.hockWidthComposite = composite;
-      const conf = combinedConfidence([coxaeL, coxaeR, hockL, hockR, hoofL, hoofR]);
+      const confPoints = [coxaeL, coxaeR, hockL, hockR, hoofL, hoofR];
+      if (fetlockWidth !== null) confPoints.push(fetlockL!, fetlockR!);
+      const conf = finalConf(combinedConfidence(confPoints));
       const defectId = composite < 0 ? "cow_hocked" : "bow_hocked";
       findings.push(buildFinding(defectId, undefined, composite, Math.abs(composite), conf, ref("hockWidthComposite")));
+    }
+  }
+
+  // --- Por pata (NUEVO, 2026-08-19, punto 4 de Ramon: "aprovechar los
+  // landmarks que YA existen" — alineación cadera→corvejón→menudillo→casco,
+  // desviación de corvejón/menudillo de CADA pata) ---
+  //
+  // Mismo principio geométrico que carpus_valgus/varus en Frontal y
+  // over_at_the_knee en Lateral: offset perpendicular de un punto respecto
+  // a la línea recta que une el origen proximal (tuberCoxae) con el punto
+  // distal (hoofCenter) de ESA MISMA pata, normalizado por la longitud de
+  // esa línea. Es independiente del compuesto bilateral cow_hocked/bow_hocked
+  // de arriba (que compara ANCHOS entre las 2 patas) — mide otra cosa: si
+  // UN punto de una pata se desvía de la línea recta de su propia pata.
+  // hock_deviation_in/out compite con fetlock_deviation_in/out DENTRO de la
+  // misma pata (ver doubleCountingRule en conformationKnowledgeBase.ts) para
+  // no descontar dos veces si ambos puntos se desvían juntos por el mismo
+  // problema físico — mismo mecanismo que en Frontal/L4/L2-L3 de acá arriba.
+  //
+  // NO se implementa todavía orientación del casco posterior (pedido
+  // explícito de Ramon) — requeriría landmarks nuevos (hoofToeHind/
+  // hoofHeelHind no existen hoy en POSTERIOR_LANDMARK_IDS).
+  for (const side of ["left", "right"] as const) {
+    const coxae = side === "left" ? coxaeL : coxaeR;
+    const hock = side === "left" ? hockL : hockR;
+    const fetlock = side === "left" ? fetlockL : fetlockR;
+    const hoof = side === "left" ? hoofL : hoofR;
+    const sign = medialSign(side);
+
+    type Candidate = { defectId: string; measured: number; absDev: number; conf: number; metricKey: string };
+    const candidates: Candidate[] = [];
+
+    if (coxae && hoof) {
+      const legLength = distance(toVec(coxae), toVec(hoof));
+      if (legLength > 0) {
+        if (hock) {
+          const rawOffset = signedPerpendicularOffset(toVec(hock), toVec(coxae), toVec(hoof));
+          const normalized = (rawOffset / legLength) * sign; // positivo = medial (hock_deviation_in), negativo = lateral (hock_deviation_out) — misma convención de signo que carpus_valgus/varus en Frontal.
+          const key = `hockDeviation.${side}`;
+          rawMetrics[key] = normalized;
+          const conf = finalConf(combinedConfidence([coxae, hock, hoof]));
+          candidates.push({
+            defectId: normalized >= 0 ? "hock_deviation_in" : "hock_deviation_out",
+            measured: normalized,
+            absDev: Math.abs(normalized),
+            conf,
+            metricKey: key,
+          });
+        }
+        if (fetlock) {
+          const rawOffset = signedPerpendicularOffset(toVec(fetlock), toVec(coxae), toVec(hoof));
+          const normalized = (rawOffset / legLength) * sign;
+          const key = `fetlockDeviation.${side}`;
+          rawMetrics[key] = normalized;
+          const conf = finalConf(combinedConfidence([coxae, fetlock, hoof]));
+          candidates.push({
+            defectId: normalized >= 0 ? "fetlock_deviation_in" : "fetlock_deviation_out",
+            measured: normalized,
+            absDev: Math.abs(normalized),
+            conf,
+            metricKey: key,
+          });
+        }
+      }
+    }
+
+    if (candidates.length > 0) {
+      let best: { c: Candidate; magnitude01: number } | null = null;
+      for (const c of candidates) {
+        const defect = findDefect(c.defectId)!;
+        const { magnitude01 } = classifySeverity(c.measured, defect.tolerance);
+        if (!best || magnitude01 > best.magnitude01) best = { c, magnitude01 };
+      }
+      if (best) {
+        findings.push(
+          buildFinding(best.c.defectId, side, best.c.measured, best.c.absDev, best.c.conf, ref(best.c.metricKey))
+        );
+      }
     }
   }
 
