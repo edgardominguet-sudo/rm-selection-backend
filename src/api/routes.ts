@@ -5,6 +5,7 @@ import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
+import { listFirstYearlingStallions } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
@@ -22,8 +23,6 @@ import {
   deleteObject,
   ObjectStorageNotConfiguredError,
 } from "../storage/r2Client";
-
-
 export const router = Router();
 
 /**
@@ -292,6 +291,23 @@ router.get("/sales/days", requireUser, async (req, res) => {
 // así la tarjeta "Historial de Ventas" de la app no necesita un paso
 // manual para el caso más común. Consultas siguientes solo leen lo ya
 // resuelto, sin volver a cruzar nada — para eso está POST .../refresh.
+// "Padrillos de primera generación de yearlings" (2026-08-19) — la app
+// consulta esto UNA vez por día (no por navegación, ver comentario en
+// StallionSyncService.swift del lado iOS) y cachea localmente para
+// cruzar contra Pedigree.sire de cada Hip y pintar el nombre en verde en
+// "Buscar padrillo", sin volver a pedir esto en cada pantalla. Global (no
+// depende de ninguna venta puntual), por eso vive fuera de /sales.
+router.get("/stallions/first-yearlings", requireUser, async (req, res) => {
+  const yearParam = req.query.year as string | undefined;
+  const year = yearParam ? Number(yearParam) : undefined;
+  if (yearParam && (Number.isNaN(year) || !Number.isInteger(year))) {
+    res.status(400).json({ error: "Parámetro 'year' inválido." });
+    return;
+  }
+  const stallions = await listFirstYearlingStallions(year);
+  res.json({ stallions });
+});
+
 router.get("/hips/sale-history", requireUser, async (req, res) => {
   const house = req.query.house as string | undefined;
   const externalSaleId = req.query.externalSaleId as string | undefined;
@@ -975,7 +991,11 @@ router.post("/sales/:id/resolve-external-id", async (req, res) => {
 // FULL — MANUAL_CSV no tiene ninguna API contra la que chequear (ver
 // comentario en processSale, rankingService.ts), y PENDING_ID/UNAVAILABLE
 // no tienen ID real todavía.
-async function handleCatalogResync(sale: NonNullable<Awaited<ReturnType<typeof db.sale.findUnique>>>, res: import("express").Response, opts: { forcePdfProbe?: boolean } = {}) {
+async function handleCatalogResync(
+  sale: NonNullable<Awaited<ReturnType<typeof db.sale.findUnique>>>,
+  res: import("express").Response,
+  opts: { forcePdfProbe?: boolean } = {}
+) {
   if (sale.catalogAccess !== "FULL") {
     res.status(400).json({
       error: `Esta venta tiene catalogAccess=${sale.catalogAccess}, no FULL — no hay ninguna API en vivo contra la que forzar un chequeo.`,
