@@ -1,5 +1,33 @@
 import "dotenv/config";
 
+// Diagnóstico 2026-08-19 (R2 recién configurado por Ramon en Railway, pero
+// las subidas de media seguían devolviendo 503 con
+// ObjectStorageNotConfiguredError): la variable que quedó cargada en
+// Railway se llama R2_ENDPOINT, no R2_ACCOUNT_ID — el flujo de creación de
+// un token en Cloudflare muestra un "Endpoint" (URL completa u hostname
+// tipo "<accountId>.r2.cloudflarestorage.com"), y es razonable que se haya
+// guardado con ese nombre. En vez de pedirle a Ramon que vuelva a entrar a
+// Railway a renombrar la variable, el backend ahora acepta cualquiera de
+// los dos nombres y, si lo que encuentra es una URL/hostname, extrae el
+// Account ID (los 32 caracteres hex antes de ".r2.cloudflarestorage.com")
+// — la firma SigV4 de r2Client.ts solo necesita ese Account ID puro para
+// construir el host, no el endpoint completo.
+function deriveR2AccountId(): string {
+  const explicit = process.env.R2_ACCOUNT_ID;
+  if (explicit) return explicit.trim();
+  const raw = (process.env.R2_ENDPOINT ?? "").trim();
+  if (!raw) return "";
+  const withoutProtocol = raw.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  const hexIdMatch = withoutProtocol.match(/^([a-f0-9]{32})(?:\.r2\.cloudflarestorage\.com)?$/i);
+  if (hexIdMatch) return hexIdMatch[1];
+  // Formato inesperado: devolvemos el host sin el sufijo conocido en vez de
+  // "" — así, si Cloudflare cambia el formato, el error que aparece es de
+  // credenciales inválidas en R2 (visible y diagnosticable), no un
+  // ObjectStorageNotConfiguredError silencioso que oculta que SÍ había algo
+  // cargado.
+  return withoutProtocol.replace(/\.r2\.cloudflarestorage\.com$/i, "");
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -52,7 +80,7 @@ export const config = {
   // configurar, /me/media devuelve 503 en vez de romper el resto de la API
   // (mismo criterio que anthropicApiKey arriba) — así el resto del deploy
   // no queda bloqueado esperando que Ramon cree el bucket.
-  r2AccountId: process.env.R2_ACCOUNT_ID ?? "",
+  r2AccountId: deriveR2AccountId(),
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
   r2BucketName: process.env.R2_BUCKET_NAME ?? "",
