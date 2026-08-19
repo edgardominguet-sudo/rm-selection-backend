@@ -83,6 +83,68 @@ export function angleFromGroundPlane(a: Vec2, b: Vec2): number {
 }
 
 /**
+ * Ejes reales de la escena, derivados de una línea de suelo (2 puntos sobre
+ * el piso — ver `groundLeft`/`groundRight` en landmarks.ts, vista Lateral).
+ * `ux` = dirección horizontal real (a lo largo del suelo fotografiado);
+ * `uy` = perpendicular a esa línea, forzada a apuntar "hacia abajo" en la
+ * imagen (mismo criterio que el resto del motor: y creciente = abajo) —
+ * así no importa en qué orden vinieron groundLeft/groundRight.
+ */
+function sceneAxes(groundLeft: Vec2, groundRight: Vec2): { ux: Vec2; uy: Vec2 } | null {
+  const groundVec = sub(groundRight, groundLeft);
+  const len = Math.hypot(groundVec.x, groundVec.y);
+  if (len === 0) return null;
+  const ux = { x: groundVec.x / len, y: groundVec.y / len };
+  let uy = { x: -ux.y, y: ux.x };
+  if (uy.y < 0) uy = { x: ux.y, y: -ux.x };
+  return { ux, uy };
+}
+
+/**
+ * CONTROL DE PERSPECTIVA (2026-08-19, pedido explícito de Ramon, prioridad
+ * alta) — igual que `angleFromVertical`, pero corregido por la inclinación
+ * REAL de la cámara/foto: en vez de asumir que "abajo en la imagen" es la
+ * vertical real de la escena, deriva la vertical a partir de la línea de
+ * suelo (`groundLeft`/`groundRight`, vista Lateral — ya se extraían pero no
+ * se usaban en ningún cálculo, ver auditoría). Si no hay línea de suelo
+ * confiable (puntos no visibles), cae de vuelta a `angleFromVertical` sin
+ * romper nada — mismo comportamiento que hoy.
+ *
+ * Verificado numéricamente antes de integrarse (ver prueba de sandbox
+ * 2026-08-19): con una foto inclinada 15°, un segmento verdaderamente
+ * vertical EN LA ESCENA da 0° acá (antes daba -15°, un falso defecto
+ * producido solo por la inclinación de la cámara, no por el caballo).
+ */
+export function angleFromVerticalCorrected(a: Vec2, b: Vec2, groundLeft?: Vec2, groundRight?: Vec2): number {
+  if (!groundLeft || !groundRight) return angleFromVertical(a, b);
+  const axes = sceneAxes(groundLeft, groundRight);
+  if (!axes) return angleFromVertical(a, b);
+  const v = sub(b, a);
+  const vx = v.x * axes.ux.x + v.y * axes.ux.y;
+  const vy = v.x * axes.uy.x + v.y * axes.uy.y;
+  return (Math.atan2(vx, vy) * 180) / Math.PI;
+}
+
+/**
+ * Misma corrección que `angleFromVerticalCorrected`, para el ángulo
+ * respecto al PLANO DEL SUELO (equivalente corregido de
+ * `angleFromGroundPlane`, usado en el ángulo de cuartilla). Verificado
+ * numéricamente: con una cuartilla real de 47.5° y una foto inclinada 10°,
+ * la versión sin corregir leía 37.5° (10° de error, podía cruzar de banda
+ * "Correct" a "Leve"/"Moderado" solo por la inclinación de la cámara); esta
+ * versión recupera los 47.5° reales.
+ */
+export function angleFromGroundPlaneCorrected(a: Vec2, b: Vec2, groundLeft?: Vec2, groundRight?: Vec2): number {
+  if (!groundLeft || !groundRight) return angleFromGroundPlane(a, b);
+  const axes = sceneAxes(groundLeft, groundRight);
+  if (!axes) return angleFromGroundPlane(a, b);
+  const v = sub(b, a);
+  const vAlongGround = v.x * axes.ux.x + v.y * axes.ux.y;
+  const vAlongVertical = v.x * axes.uy.x + v.y * axes.uy.y;
+  return (Math.atan2(Math.abs(vAlongVertical), Math.abs(vAlongGround)) * 180) / Math.PI;
+}
+
+/**
  * Ángulo interior (en grados, 0–180) en el vértice `at`, formado por los
  * segmentos at→p1 y at→p2. Sirve para medir el ángulo de una articulación
  * (ej. ángulo del corvejón: vértice=hock, p1=stifle, p2=fetlockHind).
@@ -153,6 +215,39 @@ export function normalize(rawValue: number, scaleUnit: number | null): number | 
  */
 export function bilateralDifference(left: number, right: number): number {
   return Math.abs(left - right);
+}
+
+/**
+ * CONTROL DE POSICIÓN/ROTACIÓN (2026-08-19, pedido de Ramon) — para Frontal
+ * y Posterior, que NO tienen línea de suelo propia (a diferencia de
+ * Lateral): un chequeo geométrico de "¿está el caballo parado
+ * razonablemente cuadrado hacia la cámara?", usando un par de landmarks que
+ * deberían estar a la MISMA altura real cuando el caballo está bien parado
+ * (ej. shoulderLeft/shoulderRight en Frontal, tuberCoxaeLeft/Right en
+ * Posterior). Si aparecen a alturas muy distintas en la foto, es señal de
+ * rotación corporal, una mano/pata adelantada, o cámara no nivelada — casos
+ * donde NO conviene medir con la misma confianza que una foto bien
+ * cuadrada.
+ *
+ * Devuelve un multiplicador 0.0–1.0 para aplicar sobre la confianza de los
+ * hallazgos de esa vista (nunca inventa un defecto ni cambia una medición —
+ * solo reduce cuánto puede pesar en el score, mismo principio que
+ * MIN_ACTIONABLE_CONFIDENCE). Diferencia relativa de altura hasta 6% del
+ * ancho entre los 2 puntos: sin penalización. De ahí a 30%: penalización
+ * lineal hasta 0. Por encima de 30%: confianza geométrica nula (la foto no
+ * permite distinguir con seguridad conformación real de artefacto de
+ * postura/perspectiva).
+ */
+export function postureSquarenessConfidence(a: LandmarkPoint | undefined, b: LandmarkPoint | undefined): number {
+  if (!a || !b || !a.visible || !b.visible) return 1; // sin datos suficientes para el chequeo: no se inventa una penalización — se deja que combinedConfidence/MIN_ACTIONABLE_CONFIDENCE hagan su trabajo normal.
+  const width = distance(toVec(a), toVec(b));
+  if (width <= 0) return 1;
+  const heightDiffRatio = Math.abs(a.y - b.y) / width;
+  const SAFE_MAX = 0.06;
+  const ZERO_AT = 0.3;
+  if (heightDiffRatio <= SAFE_MAX) return 1;
+  if (heightDiffRatio >= ZERO_AT) return 0;
+  return 1 - (heightDiffRatio - SAFE_MAX) / (ZERO_AT - SAFE_MAX);
 }
 
 /**
