@@ -219,7 +219,14 @@ export const CONFORMATION_KNOWLEDGE_BASE: ConformationDefect[] = [
     deviationDirection: "El carpo se retrasa (caudal) respecto a esa línea — dirección opuesta a over_at_the_knee.",
     tolerance: { unit: "normalizedOffset", correctoMax: 0.025, leveMax: 0.05, moderadoMax: 0.09 },
     rmWeight: 0.7,
-    rmPriority: false, // no listado como criterio RM explícito, pero el motor debe conocerlo (punto 14/L1)
+    // ACTIVADO (2026-08-19, pedido explícito de Ramon): antes rmPriority:false
+    // — se calculaba pero NO descontaba puntaje (scoreView solo penaliza
+    // defectos con rmPriority:true). Peso sin cambios (0.7, ya estaba
+    // definido y es coherente con el resto de la vista Lateral: por debajo
+    // de over_at_the_knee 0.85, mismo patrón que post_legged 0.8 <
+    // sickle_hocked 0.85 o camped_out 0.7 < camped_under 0.75 — la variante
+    // "opuesta"/no explícitamente RM siempre pesa un poco menos que su par).
+    rmPriority: true,
     relatedDefectIds: ["over_at_the_knee"],
     doubleCountingRule: "Mismo criterio que over_at_the_knee, dirección opuesta.",
   },
@@ -373,12 +380,93 @@ export const CONFORMATION_KNOWLEDGE_BASE: ConformationDefect[] = [
     relatedDefectIds: ["cow_hocked"],
     doubleCountingRule: "Ver cow_hocked — mutuamente excluyentes.",
   },
+
+  // ============================================================
+  // POSTERIOR — AMPLIACIÓN 2026-08-19 (pedido explícito de Ramon, punto 4:
+  // "aprovechar los landmarks que YA existen"). `fetlockLeft`/`fetlockRight`
+  // ya se extraían para toda foto posterior (ver landmarks.ts,
+  // POSTERIOR_LANDMARK_IDS) pero ningún cálculo los usaba — confirmado en la
+  // auditoría anterior. Estos 2 defectos nuevos son una medición POR PATA
+  // (a diferencia de cow_hocked/bow_hocked, que es bilateral: compara
+  // anchos entre las 2 patas) — miden si el corvejón/menudillo de ESA pata
+  // se desvía de la línea recta cadera→casco de esa misma pata, mismo
+  // principio geométrico que ya usa carpus_valgus/varus en Frontal y
+  // over_at_the_knee en Lateral (offset perpendicular a una línea de
+  // referencia anatómica, normalizado por la longitud de esa línea).
+  //
+  // Pesos: PRIMER CALIBRADO (punto 7 de las instrucciones — no son
+  // definitivos, quedan para recalibrarse con datos reales), elegidos por
+  // coherencia con el resto de la biblioteca: por debajo de cow_hocked
+  // (0.85) porque son una medición más fina/secundaria del mismo tipo de
+  // problema que ya captura el compuesto bilateral, seudo-proximal >
+  // distal (hock 0.65 > fetlock 0.6) siguiendo el mismo patrón que
+  // upright_pastern(0.75)/over_at_the_knee(0.85) en Lateral.
+  //
+  // Independientes de cow_hocked/bow_hocked (miden algo geométricamente
+  // distinto: offset de UN punto respecto a una línea de SU PROPIA pata,
+  // no un ancho comparado entre las 2 patas) pero SÍ compiten entre sí en
+  // la misma pata (hock vs. fetlock) para no descontar dos veces si ambos
+  // puntos se desvían juntos por el mismo problema físico — ver
+  // rmPriorityRules.ts.
+  {
+    id: "hock_deviation_in",
+    nameEn: "Hock deviation (inward)",
+    nameEs: "Desviación del corvejón hacia adentro",
+    view: "posterior",
+    landmarks: ["tuberCoxaeLeft", "tuberCoxaeRight", "hockLeft", "hockRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "El corvejón se ubica sobre la línea recta cadera(tuber coxae)→casco de su propia extremidad.",
+    deviationDirection: "El corvejón se desvía hacia la línea media respecto a ese eje.",
+    tolerance: { unit: "normalizedOffset", correctoMax: 0.03, leveMax: 0.06, moderadoMax: 0.1 },
+    rmWeight: 0.65,
+    rmPriority: true,
+    relatedDefectIds: ["cow_hocked", "fetlock_deviation_in"],
+    doubleCountingRule:
+      "Compite por pata contra fetlock_deviation_in/out (offset del menudillo respecto al mismo eje) — se reporta solo el de mayor magnitud relativa de esa pata. Es independiente del compuesto bilateral cow_hocked/bow_hocked (mide otra cosa: desviación de un punto respecto a su propia pata, no ancho comparado entre patas).",
+  },
+  {
+    id: "hock_deviation_out",
+    nameEn: "Hock deviation (outward)",
+    nameEs: "Desviación del corvejón hacia afuera",
+    view: "posterior",
+    landmarks: ["tuberCoxaeLeft", "tuberCoxaeRight", "hockLeft", "hockRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "El corvejón se ubica sobre la línea recta cadera→casco de su propia extremidad.",
+    deviationDirection: "El corvejón se desvía hacia afuera respecto a ese eje — dirección opuesta a hock_deviation_in.",
+    tolerance: { unit: "normalizedOffset", correctoMax: 0.03, leveMax: 0.06, moderadoMax: 0.1 },
+    rmWeight: 0.6,
+    rmPriority: true,
+    relatedDefectIds: ["bow_hocked", "fetlock_deviation_out"],
+    doubleCountingRule: "Mismo criterio que hock_deviation_in, dirección opuesta.",
+  },
+  {
+    id: "fetlock_deviation_in",
+    nameEn: "Hind fetlock deviation (inward)",
+    nameEs: "Desviación del menudillo posterior hacia adentro",
+    view: "posterior",
+    landmarks: ["tuberCoxaeLeft", "tuberCoxaeRight", "fetlockLeft", "fetlockRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "El menudillo se ubica sobre la línea recta cadera→casco de su propia extremidad.",
+    deviationDirection: "El menudillo se desvía hacia la línea media respecto a ese eje.",
+    tolerance: { unit: "normalizedOffset", correctoMax: 0.03, leveMax: 0.06, moderadoMax: 0.1 },
+    rmWeight: 0.6,
+    rmPriority: true,
+    relatedDefectIds: ["cow_hocked", "hock_deviation_in"],
+    doubleCountingRule: "Compite por pata contra hock_deviation_in/out — ver esa entrada.",
+  },
+  {
+    id: "fetlock_deviation_out",
+    nameEn: "Hind fetlock deviation (outward)",
+    nameEs: "Desviación del menudillo posterior hacia afuera",
+    view: "posterior",
+    landmarks: ["tuberCoxaeLeft", "tuberCoxaeRight", "fetlockLeft", "fetlockRight", "hoofCenterLeft", "hoofCenterRight"],
+    expectedAxis: "El menudillo se ubica sobre la línea recta cadera→casco de su propia extremidad.",
+    deviationDirection: "El menudillo se desvía hacia afuera respecto a ese eje — dirección opuesta a fetlock_deviation_in.",
+    tolerance: { unit: "normalizedOffset", correctoMax: 0.03, leveMax: 0.06, moderadoMax: 0.1 },
+    rmWeight: 0.55,
+    rmPriority: true,
+    relatedDefectIds: ["bow_hocked", "hock_deviation_out"],
+    doubleCountingRule: "Mismo criterio que fetlock_deviation_in, dirección opuesta.",
+  },
 ];
 
 export function findDefect(id: string): ConformationDefect | undefined {
   return CONFORMATION_KNOWLEDGE_BASE.find((d) => d.id === id);
-}
-
-export function defectsForView(view: "frontal" | "lateral" | "posterior"): ConformationDefect[] {
-  return CONFORMATION_KNOWLEDGE_BASE.filter((d) => d.view === view);
 }
