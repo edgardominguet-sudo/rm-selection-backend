@@ -3,13 +3,45 @@
 // landmarkExtractionPrompt.ts). Reusa el mismo patrón de reintento con
 // backoff que ya existía para la metodología legado.
 
+import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config";
+import { db } from "../db";
 import { buildLandmarkExtractionPrompt, extractLandmarkResponse, ParsedLandmarkExtraction } from "./landmarkExtractionPrompt";
 import { ViewName } from "./landmarks";
 import { correctLeftRightConsistency } from "./landmarkSideConsistency";
 
 export class LandmarkExtractionError extends Error {}
+
+// CAUSA RAÍZ (2026-08-19, reporte de Ramon: "para la misma foto analizada
+// en 3 oportunidades la IA dio tres resultados diferentes") — investigado
+// y confirmado: el modelo de visión NO admite `temperature` acá (ver
+// sendWithRetry más abajo, la API rechaza esa llamada con 400 para
+// claude-sonnet-5), así que dos llamadas con los MISMOS bytes de imagen
+// pueden devolver coordenadas de landmarks levemente distintas — todo lo
+// que viene después (geometry.ts/rmPriorityRules.ts/scoringEngine.ts) SÍ
+// es 100% determinístico, pero hereda esa variación de entrada.
+//
+// `analyzeHipOnDemand` (rankingService.ts) ya evita volver a llamar a la
+// IA para el camino OFICIAL cuando el conjunto de 3 fotos del Hip no
+// cambió — pero eso no cubre otros caminos reales por los que la MISMA
+// foto puede terminar pidiendo landmarks más de una vez: el respaldo local
+// del dispositivo cuando el backend no está disponible, la recalibración
+// del referente, reintentos manuales, etc. Acá se cierra la puerta de raíz,
+// en el único lugar por donde pasa TODA extracción de landmarks (ver
+// comentario de correctLeftRightConsistency más abajo): antes de llamar a
+// la IA, se busca si esta EXACTA foto (mismo hash de bytes + misma vista
+// esperada + misma versión de prompt) ya se procesó antes — si es así, se
+// reutiliza ese resultado guardado sin volver a preguntarle a la IA, así
+// que la respuesta para una foto puntual queda fija para siempre (no solo
+// "las primeras 20 veces", como pidió Ramon como piso mínimo — acá no hay
+// límite de veces) mientras no cambien las fórmulas de extracción (ver
+// LANDMARK_PROMPT_VERSION).
+const LANDMARK_PROMPT_VERSION = "2026-08-19-landmark-cache-v1";
+
+function photoHashOf(jpeg: Buffer): string {
+  return createHash("sha256").update(jpeg).digest("hex");
+}
 
 type ImageBlock = { type: "image"; source: { type: "base64"; media_type: "image/jpeg"; data: string } };
 type TextBlock = { type: "text"; text: string };
@@ -23,6 +55,27 @@ export async function extractLandmarksFromPhoto(opts: {
   photoLabel: string;
   expectedView?: ViewName;
 }): Promise<ParsedLandmarkExtraction> {
+  const photoHash = photoHashOf(opts.jpeg);
+  const expectedView = opts.expectedView ?? "";
+
+  // Caché por bytes de foto (ver comentario CAUSA RAÍZ arriba) — si esta
+  // EXACTA imagen ya se procesó con esta misma vista esperada y esta misma
+  // versión de prompt, se devuelve el resultado guardado sin llamar a la
+  // IA de nuevo. Esto es lo que garantiza que la misma foto SIEMPRE dé el
+  // mismo resultado, sin importar cuántas veces se analice.
+  const cached = await db.landmarkExtractionCache.findUnique({
+    where: {
+      photoHash_expectedView_promptVersion: {
+        photoHash,
+        expectedView,
+        promptVersion: LANDMARK_PROMPT_VERSION,
+      },
+    },
+  });
+  if (cached) {
+    return cached.landmarksJson as unknown as ParsedLandmarkExtraction;
+  }
+
   if (!config.anthropicApiKey) {
     throw new Error("Falta ANTHROPIC_API_KEY en la configuración del backend.");
   }
@@ -74,6 +127,24 @@ export async function extractLandmarksFromPhoto(opts: {
       );
       parsed.landmarks = correction.landmarks;
     }
+  }
+
+  // Se guarda el resultado ya corregido (post L/R) en el caché — así, en
+  // un acierto de caché, no hace falta reaplicar correctLeftRightConsistency.
+  // Envuelto en try/catch: si el guardado en caché falla (ej. problema
+  // transitorio de DB), NUNCA debe tumbar un análisis que sí se completó
+  // bien — solo se pierde la oportunidad de cachear esta foto puntual.
+  try {
+    await db.landmarkExtractionCache.create({
+      data: {
+        photoHash,
+        expectedView,
+        promptVersion: LANDMARK_PROMPT_VERSION,
+        landmarksJson: parsed as unknown as object,
+      },
+    });
+  } catch (err) {
+    console.warn(`[analysis] No se pudo guardar en caché el resultado de landmarks para "${opts.photoLabel}":`, err);
   }
 
   return parsed;
