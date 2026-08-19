@@ -170,6 +170,33 @@ app.post("/_diag/resolve-fasig-id", async (req, res) => {
   }
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-19) — Ramon reporta "no se están realizando
+// los análisis" en la pantalla Análisis (IA). Solo LECTURA: cuenta
+// MediaAsset kind=AI_ANALYSIS_PHOTO por uploadStatus (para detectar si
+// quedaron fotos varadas en PENDING_UPLOAD, ej. por el corte de R2 ya
+// corregido) y lista el detalle del Hip puntual que reportó el 422. Se
+// borra apenas se confirme la causa real.
+app.get("/_diag/analysis-media-status", async (req, res) => {
+  try {
+    const hipId = typeof req.query.hipId === "string" ? req.query.hipId : undefined;
+    const grouped = await db.mediaAsset.groupBy({
+      by: ["kind", "uploadStatus"],
+      _count: { _all: true },
+    });
+    let hipDetail: unknown = null;
+    if (hipId) {
+      hipDetail = await db.mediaAsset.findMany({
+        where: { hipId, kind: "AI_ANALYSIS_PHOTO" },
+        select: { id: true, uploadStatus: true, deletedAt: true, createdAt: true, storageKey: true, deviceId: true },
+        orderBy: { createdAt: "asc" },
+      });
+    }
+    res.json({ grouped, hipDetail });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
