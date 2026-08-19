@@ -893,19 +893,6 @@ model MediaAsset {
   contentType    String?
   // Tamaño en bytes, informativo (progreso de subida, límites de cuota).
   byteSize       Int?
-  // SOLO para kind == AI_ANALYSIS_PHOTO: "frontal" | "lateral" | "posterior"
-  // — la tarjeta que el usuario tocó en el dispositivo de origen para tomar
-  // ESTA foto puntual (ver MediaItem.conformationView en iOS). Antes esto
-  // vivía SOLO en el SwiftData local de cada dispositivo, nunca viajaba al
-  // servidor — así que una foto de Análisis IA sincronizada a otro
-  // dispositivo llegaba SIN esta metadata, la tarjeta correspondiente
-  // quedaba vacía ahí (no encontraba ninguna foto con esa vista) y el
-  // puntaje/hallazgos de esa vista tampoco se mostraban, aunque el archivo
-  // ya se hubiera descargado — causa raíz real (2026-08-19) de por qué
-  // Análisis IA no se veía entrelazado entre iPad/iPhone. String simple (no
-  // un enum de Prisma) porque el backend no necesita validar ni interpretar
-  // este valor — es opaco para él, solo lo guarda y lo devuelve tal cual.
-  conformationView String?
 
   uploadStatus   MediaUploadStatus  @default(PENDING_UPLOAD)
   vetReport      VetReport?
@@ -1133,51 +1120,4 @@ model Stallion {
   updatedAt          DateTime @updatedAt
 
   @@index([firstYearlingsYear])
-}
-
-/// CAUSA RAÍZ (2026-08-19, reporte de Ramon: "para la misma foto analizada
-/// en 3 oportunidades la IA dio tres resultados diferentes"). El modelo de
-/// visión que ubica los landmarks (extractLandmarksFromPhoto,
-/// landmarkVisionClient.ts) NO admite el parámetro `temperature` (la API
-/// devuelve 400 si se lo mandamos con claude-sonnet-5) — así que cada
-/// llamada nueva a IDÉNTICOS bytes de imagen puede devolver coordenadas de
-/// landmarks levemente distintas, y esa variación se propaga a las
-/// mediciones geométricas (geometry.ts/rmPriorityRules.ts) y de ahí al
-/// puntaje final, aunque esa parte del cálculo sí sea 100% determinística.
-/// `analyzeHipOnDemand` (rankingService.ts) ya evita esto para el camino
-/// OFICIAL (reutiliza el AnalysisResult si el conjunto de 3 fotos no
-/// cambió, sin volver a llamar a la IA) — pero eso no cubre todos los
-/// caminos reales por los que la MISMA foto puede llegar a pedir landmarks
-/// más de una vez (el respaldo local del dispositivo cuando el backend no
-/// está disponible, reintentos, recalibración del referente, etc.).
-///
-/// Esta tabla cierra la puerta de una vez por todas: cachea el resultado
-/// de extracción de landmarks por el hash EXACTO de los bytes de la foto
-/// (más la vista esperada, que forma parte del prompt) — cualquier
-/// llamada futura con esos mismos bytes reutiliza el resultado guardado
-/// en vez de volver a preguntarle a la IA, así que la respuesta para una
-/// foto puntual, una vez calculada, queda fija para siempre (no solo las
-/// primeras 20 veces que se pidió, para SIEMPRE) mientras no cambien las
-/// fórmulas de extracción (ver `promptVersion`, mismo criterio que
-/// `ENGINE_FORMULA_VERSION` en referenceCalibration.ts).
-model LandmarkExtractionCache {
-  id            String   @id @default(cuid())
-  /// sha256 hex de los bytes JPEG exactos enviados a la IA (después de
-  /// downscale/normalización — ver imageDownscale.ts) — no del archivo
-  /// original tal como lo subió el dispositivo.
-  photoHash     String
-  /// Vista que se le indicó al modelo (frontal/lateral/posterior) o "" si
-  /// no se indicó ninguna (foto de Hip, sin pista). Se incluye en la clave
-  /// porque cambia el texto exacto del prompt.
-  expectedView  String   @default("")
-  /// Versión del prompt de extracción — si el prompt cambia de forma que
-  /// podría alterar el resultado, subir este valor invalida el caché
-  /// automáticamente (mismo criterio que ENGINE_FORMULA_VERSION).
-  promptVersion String
-  /// ParsedLandmarkExtraction completo (view/valid/invalidReason/
-  /// overallConfidence/landmarks), tal como lo devuelve extractLandmarksFromPhoto.
-  landmarksJson Json
-  createdAt     DateTime @default(now())
-
-  @@unique([photoHash, expectedView, promptVersion])
 }

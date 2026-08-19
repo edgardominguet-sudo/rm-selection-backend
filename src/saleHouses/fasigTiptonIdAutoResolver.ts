@@ -54,36 +54,36 @@ import { db } from "../db";
  * eso, pero no hay necesidad de correr más de una a la vez.
  */
 export async function autoResolvePendingFasigTiptonSaleIds(): Promise<{
-    checked: number;
-    resolved: number;
-    errors: string[];
+  checked: number;
+  resolved: number;
+  errors: string[];
 }> {
-    const pending = await db.sale.findMany({
-          where: { house: "FASIG_TIPTON", catalogAccess: "PENDING_ID", isActive: true },
-    });
+  const pending = await db.sale.findMany({
+    where: { house: "FASIG_TIPTON", catalogAccess: "PENDING_ID", isActive: true },
+  });
 
   let resolved = 0;
-    const errors: string[] = [];
+  const errors: string[] = [];
 
   for (const sale of pending) {
-        if (!sale.announcementUrl) continue;
-        try {
-                const realId = await extractFasigTiptonSaleId(sale.announcementUrl);
-                if (realId != null) {
-                          await db.sale.update({
-                                      where: { id: sale.id },
-                                      data: { externalSaleId: String(realId), catalogAccess: "FULL", lastCatalogCheckAt: null },
-                          });
-                          resolved += 1;
-                          console.log(
-                                      `[fasig-tipton-id-resolver] Resuelto automáticamente: "${sale.name}" → externalSaleId=${realId} (catalogAccess ahora FULL, se sincroniza en esta misma corrida).`
-                                    );
-                }
-        } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                errors.push(`${sale.name}: ${message}`);
-                console.error(`[fasig-tipton-id-resolver] Error resolviendo "${sale.name}" (${sale.announcementUrl}):`, err);
-        }
+    if (!sale.announcementUrl) continue;
+    try {
+      const realId = await extractFasigTiptonSaleId(sale.announcementUrl);
+      if (realId != null) {
+        await db.sale.update({
+          where: { id: sale.id },
+          data: { externalSaleId: String(realId), catalogAccess: "FULL", lastCatalogCheckAt: null },
+        });
+        resolved += 1;
+        console.log(
+          `[fasig-tipton-id-resolver] Resuelto automáticamente: "${sale.name}" → externalSaleId=${realId} (catalogAccess ahora FULL, se sincroniza en esta misma corrida).`
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${sale.name}: ${message}`);
+      console.error(`[fasig-tipton-id-resolver] Error resolviendo "${sale.name}" (${sale.announcementUrl}):`, err);
+    }
   }
 
   return { checked: pending.length, resolved, errors };
@@ -102,59 +102,59 @@ export async function autoResolvePendingFasigTiptonSaleIds(): Promise<{
  * POST /_diag/resolve-fasig-id en routes.ts.
  */
 export async function extractFasigTiptonSaleId(pageUrl: string): Promise<number | null> {
-    // Tipado laxo (any) a propósito en todo este bloque: puppeteer-core y
+  // Tipado laxo (any) a propósito en todo este bloque: puppeteer-core y
   // @sparticuz/chromium no se pueden instalar/verificar con tsc desde este
   // entorno de desarrollo (registro npm bloqueado acá) — se prioriza que la
   // lógica sea correcta en runtime (API estable de Puppeteer desde hace
   // años) por sobre depender de la forma exacta de sus tipos, que sí se
   // valida en el build real de Railway.
   const chromiumModule: any = await import("@sparticuz/chromium");
-    const chromium = chromiumModule.default ?? chromiumModule;
-    const puppeteer: any = await import("puppeteer-core");
+  const chromium = chromiumModule.default ?? chromiumModule;
+  const puppeteer: any = await import("puppeteer-core");
 
   const browser = await puppeteer.launch({
-        args: chromium.args,
-        executablePath: await chromium.executablePath(),
-        headless: true,
+    args: chromium.args,
+    executablePath: await chromium.executablePath(),
+    headless: true,
   });
 
   try {
-        const page = await browser.newPage();
-        let foundId: number | null = null;
+    const page = await browser.newPage();
+    let foundId: number | null = null;
 
-      page.on("request", (request: any) => {
-              const match = /\/django\/api\/horses\/\?sale=(\d+)/.exec(request.url());
-              if (match) {
-                        foundId = Number(match[1]);
-              }
-      });
-
-      await page.goto(pageUrl, { waitUntil: "networkidle2", timeout: 25000 });
-
-      // Si la pestaña relevante no dispara la request sola al cargar (se
-      // observó que a veces requiere un click, ver investigación
-      // 2026-08-17), se intenta un click best-effort sobre cualquier enlace
-      // visible con ese texto — sin fallar si no existe: eso simplemente
-      // significa que la venta todavía no tiene esa pestaña disponible.
-      if (foundId == null) {
-              const links = await page.$$("a");
-              for (const link of links) {
-                        const text = ((await page.evaluate((el: any) => el.textContent, link)) ?? "").trim();
-                        if (/^(Results|Catalogue|Bid Online)$/i.test(text)) {
-                                    try {
-                                                  await link.click();
-                                                  await page.waitForNetworkIdle({ timeout: 8000, idleTime: 1000 }).catch(() => {});
-                                    } catch {
-                                                  // best-effort — un click que falla (login requerido, elemento
-                                      // no interactuable, etc.) simplemente no resuelve esta vez.
-                                    }
-                                    if (foundId != null) break;
-                        }
-              }
+    page.on("request", (request: any) => {
+      const match = /\/django\/api\/horses\/\?sale=(\d+)/.exec(request.url());
+      if (match) {
+        foundId = Number(match[1]);
       }
+    });
 
-      return foundId;
+    await page.goto(pageUrl, { waitUntil: "networkidle2", timeout: 25000 });
+
+    // Si la pestaña relevante no dispara la request sola al cargar (se
+    // observó que a veces requiere un click, ver investigación
+    // 2026-08-17), se intenta un click best-effort sobre cualquier enlace
+    // visible con ese texto — sin fallar si no existe: eso simplemente
+    // significa que la venta todavía no tiene esa pestaña disponible.
+    if (foundId == null) {
+      const links = await page.$$("a");
+      for (const link of links) {
+        const text = ((await page.evaluate((el: any) => el.textContent, link)) ?? "").trim();
+        if (/^(Results|Catalogue|Bid Online)$/i.test(text)) {
+          try {
+            await link.click();
+            await page.waitForNetworkIdle({ timeout: 8000, idleTime: 1000 }).catch(() => {});
+          } catch {
+            // best-effort — un click que falla (login requerido, elemento
+            // no interactuable, etc.) simplemente no resuelve esta vez.
+          }
+          if (foundId != null) break;
+        }
+      }
+    }
+
+    return foundId;
   } finally {
-        await browser.close();
+    await browser.close();
   }
 }

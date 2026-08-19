@@ -12,26 +12,26 @@ const db = new PrismaClient();
 const DEFAULT_ORGANIZATION_NAME = "RM Selection";
 
 async function main() {
-    const apiKey = process.env.APP_API_KEY;
-    if (!apiKey) {
-          console.warn("APP_API_KEY no está configurada — no se sembró ningún usuario. La API va a quedar abierta sin autenticación hasta que corras el seed con esa variable puesta.");
-          return;
-    }
+  const apiKey = process.env.APP_API_KEY;
+  if (!apiKey) {
+    console.warn("APP_API_KEY no está configurada — no se sembró ningún usuario. La API va a quedar abierta sin autenticación hasta que corras el seed con esa variable puesta.");
+    return;
+  }
 
   // findFirst en vez de un `key` fijo: hoy hay una sola Organization, pero
   // no se modela como singleton forzado (ver comentario en Organization,
   // schema.prisma) para no tener que migrar el día que haga falta una
   // segunda de verdad.
   let organization = await db.organization.findFirst({ where: { name: DEFAULT_ORGANIZATION_NAME } });
-    if (!organization) {
-          organization = await db.organization.create({ data: { name: DEFAULT_ORGANIZATION_NAME } });
-          console.log(`Organization creada: ${organization.id} (${organization.name})`);
-    }
+  if (!organization) {
+    organization = await db.organization.create({ data: { name: DEFAULT_ORGANIZATION_NAME } });
+    console.log(`Organization creada: ${organization.id} (${organization.name})`);
+  }
 
   const user = await db.user.upsert({
-        where: { apiKey },
-        create: { apiKey, displayName: "Ramon", role: "OWNER", organizationId: organization.id },
-        update: { organizationId: organization.id },
+    where: { apiKey },
+    create: { apiKey, displayName: "Ramon", role: "OWNER", organizationId: organization.id },
+    update: { organizationId: organization.id },
   });
 
   console.log(`Usuario dueño listo: ${user.id} (${user.displayName}) — organización ${organization.id}`);
@@ -96,23 +96,23 @@ const FIRST_YEARLING_STALLIONS_2026: Array<{ name: string; source: string }> = [
   { name: "Paddington", source: "Confirmado por Ramon (2026-08-19), lista final de padrillos debutantes 2026" },
   { name: "Simplification", source: "Confirmado por Ramon (2026-08-19), lista final de padrillos debutantes 2026" },
   { name: "Smooth Like Strait", source: "Confirmado por Ramon (2026-08-19), lista final de padrillos debutantes 2026" },
-  ];
+];
 
 async function seedFirstYearlingStallions() {
-    for (const stallion of FIRST_YEARLING_STALLIONS_2026) {
-          const normalized = stallion.name.trim().replace(/\s+/g, " ").toUpperCase();
-          await db.stallion.upsert({
-                  where: { name: normalized },
-                  create: { name: normalized, firstYearlingsYear: 2026, source: stallion.source },
-                  update: { firstYearlingsYear: 2026, source: stallion.source },
-          });
-    }
-    console.log(`Padrillos de primera generación 2026 sembrados: ${FIRST_YEARLING_STALLIONS_2026.length}`);
+  for (const stallion of FIRST_YEARLING_STALLIONS_2026) {
+    const normalized = stallion.name.trim().replace(/\s+/g, " ").toUpperCase();
+    await db.stallion.upsert({
+      where: { name: normalized },
+      create: { name: normalized, firstYearlingsYear: 2026, source: stallion.source },
+      update: { firstYearlingsYear: 2026, source: stallion.source },
+    });
+  }
+  console.log(`Padrillos de primera generación 2026 sembrados: ${FIRST_YEARLING_STALLIONS_2026.length}`);
 }
 
 main()
   .catch((err) => {
-        console.error(err);
-        process.exit(1);
+    console.error(err);
+    process.exit(1);
   })
   .finally(() => db.$disconnect());
