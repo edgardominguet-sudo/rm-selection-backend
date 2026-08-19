@@ -609,13 +609,17 @@ router.delete("/me/observations/:id", requireUser, async (req, res) => {
 // yo subí" o una nueva) y para que reintentar una subida interrumpida sea
 // un upsert idempotente en vez de crear un registro duplicado.
 router.post("/me/media", requireUser, async (req, res) => {
-  const { id: clientId, hipId, kind, contentType, byteSize, deviceId } = req.body as {
+  const { id: clientId, hipId, kind, contentType, byteSize, deviceId, conformationView } = req.body as {
     id?: string;
     hipId?: string;
-    kind?: "PHOTO" | "VIDEO" | "VET_REPORT" | "PEDIGREE_CHART";
+    kind?: "PHOTO" | "VIDEO" | "VET_REPORT" | "PEDIGREE_CHART" | "AI_ANALYSIS_PHOTO";
     contentType?: string;
     byteSize?: number;
     deviceId?: string;
+    // "frontal" | "lateral" | "posterior" — solo relevante cuando
+    // kind === "AI_ANALYSIS_PHOTO" (ver comentario en schema.prisma,
+    // MediaAsset.conformationView). Opaco para el backend, no se valida acá.
+    conformationView?: string;
   };
   if (!hipId || !kind) {
     res.status(400).json({ error: "Faltan campos requeridos: hipId, kind." });
@@ -626,7 +630,7 @@ router.post("/me/media", requireUser, async (req, res) => {
   // corregir la clave.
   const id = clientId ?? randomUUID();
   const storageKey = buildStorageKey({ organizationId: req.user!.organizationId, hipId, kind, mediaAssetId: id, contentType });
-  const data = { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, kind, contentType, byteSize, storageKey };
+  const data = { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, kind, contentType, byteSize, storageKey, conformationView };
   const asset = await db.mediaAsset.upsert({
     where: { id },
     create: { id, ...data },
