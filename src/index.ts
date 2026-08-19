@@ -14,8 +14,6 @@ import { scoreView } from "./analysis/scoringEngine";
 import { ViewLandmarks } from "./analysis/landmarks";
 import { CLASSIFICATION_THRESHOLDS } from "./analysis/conformationScores";
 import { extractFasigTiptonSaleId } from "./saleHouses/fasigTiptonIdAutoResolver";
-import { createUploadUrl, resolveReadUrl, deleteObject } from "./storage/r2Client";
-import { isObjectStorageConfigured } from "./config";
 
 const app = express();
 app.use(cors());
@@ -170,75 +168,6 @@ app.post("/_diag/resolve-fasig-id", async (req, res) => {
     console.error("[_diag/resolve-fasig-id] Error:", err);
     res.status(500).json({ error: message });
   }
-});
-
-// DIAGNÓSTICO TEMPORAL (2026-08-19) — prueba real de conexión con
-// Cloudflare R2 apenas Ramon terminó de cargar las 4 variables en Railway
-// (ver comentario largo en config.ts: quedaron guardadas como R2_ENDPOINT
-// en vez de R2_ACCOUNT_ID, ya corregido ahí). Mismo criterio que
-// /_diag/resolve-fasig-id arriba: montado ANTES de requireApiKey para
-// poder probarlo sin la x-api-key de la app, y se borra apenas se
-// confirme que R2 quedó andando. Hace un ciclo real
-// escribir→leer→confirmar contenido→borrar contra el bucket configurado,
-// usando exactamente las mismas funciones (r2Client.ts) que usa
-// POST/GET/DELETE /me/media — no es una simulación.
-app.get("/_diag/r2-selftest", async (_req, res) => {
-  const bucket = config.r2BucketName || null;
-  if (!isObjectStorageConfigured()) {
-    res.json({
-      connection: "ERROR",
-      reason: "R2 no configurado: falta accountId, accessKeyId, secretAccessKey y/o bucketName.",
-      write: "SKIPPED",
-      read: "SKIPPED",
-      delete: "SKIPPED",
-      bucket,
-    });
-    return;
-  }
-  const storageKey = `_diagnostics/r2-selftest-${Date.now()}.txt`;
-  const testContent = `RM Selection R2 self-test ${new Date().toISOString()}`;
-  let write: "OK" | "ERROR" = "ERROR";
-  let read: "OK" | "ERROR" = "ERROR";
-  let del: "OK" | "ERROR" = "ERROR";
-  let detail = "";
-  try {
-    const uploadUrl = createUploadUrl(storageKey, 120);
-    const putRes = await fetch(uploadUrl, {
-      method: "PUT",
-      body: testContent,
-      headers: { "Content-Type": "text/plain" },
-    });
-    if (!putRes.ok) {
-      detail = `write HTTP ${putRes.status}: ${(await putRes.text().catch(() => "")).slice(0, 300)}`;
-    } else {
-      write = "OK";
-      const readUrl = resolveReadUrl(storageKey, 120);
-      const getRes = await fetch(readUrl);
-      const body = getRes.ok ? await getRes.text() : "";
-      if (getRes.ok && body === testContent) {
-        read = "OK";
-      } else {
-        detail = `read HTTP ${getRes.status}, contenido ${body === testContent ? "coincide" : "NO coincide"}`;
-      }
-    }
-  } catch (err) {
-    detail = err instanceof Error ? err.message : String(err);
-  }
-  try {
-    await deleteObject(storageKey);
-    del = "OK";
-  } catch (err) {
-    detail = detail || (err instanceof Error ? err.message : String(err));
-  }
-  res.json({
-    connection: "OK",
-    write,
-    read,
-    delete: del,
-    bucket,
-    storageKey,
-    detail: detail || undefined,
-  });
 });
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
