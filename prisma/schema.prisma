@@ -1075,3 +1075,49 @@ model ReferenceHorsePhoto {
 
   @@index([organizationId])
 }
+
+// TAREA "Padrillos de primera generación de yearlings 2026" (2026-08-19, a
+// pedido de Ramon): identificación visual (verde) en "Buscar padrillo" para
+// sementales cuya PRIMERA generación de yearlings se vende en el año
+// indicado — NO simplemente "primera vez que aparece en nuestro catálogo".
+//
+// Entidad NUEVA e independiente de Hip/HipRecord a propósito (auditoría
+// previa a implementar, confirmada con Ramon): hoy `sire` es un String
+// suelto tanto acá (Hip.sire) como en el modelo de dominio de iOS
+// (Pedigree.sire) — no existía ninguna tabla de padrillos. Para que este
+// dato sea PERMANENTE y se reconozca en CUALQUIER venta (Keeneland,
+// Fasig-Tipton, OBS, cualquier año futuro) sin volver a identificarlo por
+// catálogo, tiene que vivir acá, cruzado por nombre — no colgado de una
+// venta ni de un Hip puntual.
+//
+// `name` es la clave de cruce: se normaliza (mayúsculas, sin espacios de
+// más) antes de guardar/consultar para no perder coincidencias por
+// diferencias de formato entre casas de venta (ver normalizeStallionName
+// en stallionService.ts). No hay FK hacia Hip — el cruce lo hace la app
+// (iOS) y este mismo backend comparando texto, exactamente igual que ya
+// hace el agrupador "Buscar padrillo" de HipNumberEntryView.
+//
+// `firstYearlingsYear`: año en que esa camada de yearlings sale a la venta
+// por primera vez (no el año en que el semental entró a stud, no el año de
+// nacimiento de los potrillos). Fuente: prensa especializada del sector
+// (TDN, BloodHorse, Fasig-Tipton/Keeneland press releases) que confirma
+// "first-crop"/"first yearlings" — nunca inferido ni asumido. `source`
+// guarda de dónde salió cada registro, para poder auditar o corregir sin
+// tener que volver a investigar desde cero. Lista inicial (2026-08-19,
+// ver seed.ts): compilación cruzada entre 3+ fuentes, documentada como NO
+// exhaustiva — Keeneland reportó 24 padrillos de primera generación solo
+// en su catálogo de September 2026; se cargaron los nombres confirmados
+// por nombre propio en cobertura de prensa, quedando lugar para sumar más
+// a mano a medida que se identifiquen (sin tocar código, solo una fila
+// nueva en esta tabla).
+model Stallion {
+  id                 String   @id @default(cuid())
+  // Normalizado (mayúsculas, trim) — ver normalizeStallionName().
+  name               String   @unique
+  firstYearlingsYear Int?
+  source             String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([firstYearlingsYear])
+}
