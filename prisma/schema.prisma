@@ -893,6 +893,19 @@ model MediaAsset {
   contentType    String?
   // Tamaño en bytes, informativo (progreso de subida, límites de cuota).
   byteSize       Int?
+  // SOLO para kind == AI_ANALYSIS_PHOTO: "frontal" | "lateral" | "posterior"
+  // — la tarjeta que el usuario tocó en el dispositivo de origen para tomar
+  // ESTA foto puntual (ver MediaItem.conformationView en iOS). Antes esto
+  // vivía SOLO en el SwiftData local de cada dispositivo, nunca viajaba al
+  // servidor — así que una foto de Análisis IA sincronizada a otro
+  // dispositivo llegaba SIN esta metadata, la tarjeta correspondiente
+  // quedaba vacía ahí (no encontraba ninguna foto con esa vista) y el
+  // puntaje/hallazgos de esa vista tampoco se mostraban, aunque el archivo
+  // ya se hubiera descargado — causa raíz real (2026-08-19) de por qué
+  // Análisis IA no se veía entrelazado entre iPad/iPhone. String simple (no
+  // un enum de Prisma) porque el backend no necesita validar ni interpretar
+  // este valor — es opaco para él, solo lo guarda y lo devuelve tal cual.
+  conformationView String?
 
   uploadStatus   MediaUploadStatus  @default(PENDING_UPLOAD)
   vetReport      VetReport?
