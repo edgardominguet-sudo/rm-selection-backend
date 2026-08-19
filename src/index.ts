@@ -170,6 +170,43 @@ app.post("/_diag/resolve-fasig-id", async (req, res) => {
   }
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-19, tarde) — Ramon reporta que la
+// puntuación de Análisis IA solo aparece en el dispositivo que tomó la
+// foto, no en el otro, para el Hip número "1" de la venta que tiene
+// abierta. Solo LECTURA: para cada Hip con hipNumber="1" (puede haber uno
+// por venta), muestra su identidad (house/externalSaleId, necesarios para
+// que ambos dispositivos resuelvan el mismo backendHipId) y si existe un
+// AnalysisResult oficial vigente (CurrentHipAnalysis) guardado en el
+// servidor. Se borra apenas se confirme la causa real.
+app.get("/_diag/hip-analysis-status", async (req, res) => {
+  try {
+    const hipNumber = typeof req.query.hipNumber === "string" ? req.query.hipNumber : "1";
+    const hips = await db.hip.findMany({
+      where: { hipNumber },
+      select: {
+        id: true,
+        hipNumber: true,
+        horseName: true,
+        house: true,
+        externalSaleId: true,
+        saleId: true,
+        sale: { select: { name: true } },
+        currentAnalyses: {
+          select: {
+            updatedAt: true,
+            analysisResult: {
+              select: { id: true, version: true, mediaHash: true, overallScore: true, classification: true, analyzedAt: true, methodologyVersion: true },
+            },
+          },
+        },
+      },
+    });
+    res.json({ hipNumber, count: hips.length, hips });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
