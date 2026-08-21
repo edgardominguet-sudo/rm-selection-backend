@@ -170,6 +170,86 @@ app.post("/_diag/resolve-fasig-id", async (req, res) => {
   }
 });
 
+// DIAGNÓSTICO TEMPORAL (2026-08-21) — pedido explícito de Ramon: lista
+// maestra de padrillos (sire) de todos los Hips YA IMPORTADOS de una venta
+// puntual, sin omitir ninguno — base real para la tarea de Stud Fees de
+// Keeneland September 2026 (house=KEENELAND, externalSaleId="12"). Devuelve
+// nombre de padrillo + cantidad de Hips con ese padrillo (ordenado
+// alfabéticamente) y cuántos Hips quedaron sin padrillo registrado (sire
+// null/vacío) para que la lista maestra sea auditable, no una suposición.
+// Solo LECTURA, montado ANTES de requireApiKey (mismo criterio que el resto
+// de /_diag/*). Se borra apenas se entregue la tabla de Stud Fees.
+app.get("/_diag/sires", async (req, res) => {
+  try {
+    const house = typeof req.query.house === "string" ? req.query.house.toUpperCase() : "KEENELAND";
+    const externalSaleId = typeof req.query.externalSaleId === "string" ? req.query.externalSaleId : "12";
+    const hips = await db.hip.findMany({
+      where: { sale: { house: house as any, externalSaleId } },
+      select: { hipNumber: true, sire: true },
+    });
+    const counts: Record<string, number> = {};
+    let missing = 0;
+    for (const hip of hips) {
+      const sire = hip.sire?.trim();
+      if (!sire) {
+        missing += 1;
+        continue;
+      }
+      counts[sire] = (counts[sire] ?? 0) + 1;
+    }
+    const sires = Object.entries(counts)
+      .map(([name, hipCount]) => ({ name, hipCount }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json({
+      house,
+      externalSaleId,
+      totalHips: hips.length,
+      totalSires: sires.length,
+      hipsWithoutSire: missing,
+      sires,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[_diag/sires] Error:", err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// DIAGNÓSTICO TEMPORAL (2026-08-19, tarde) — Ramon reporta que la
+// puntuación de Análisis IA solo aparece en el dispositivo que tomó la
+// foto, no en el otro, para el Hip número "1" de la venta que tiene
+// abierta. Solo LECTURA: para cada Hip con hipNumber="1" (puede haber uno
+// por venta), muestra su identidad (house/externalSaleId, necesarios para
+// que ambos dispositivos resuelvan el mismo backendHipId) y si existe un
+// AnalysisResult oficial vigente (CurrentHipAnalysis) guardado en el
+// servidor. Se borra apenas se confirme la causa real.
+app.get("/_diag/hip-analysis-status", async (req, res) => {
+  try {
+    const hipNumber = typeof req.query.hipNumber === "string" ? req.query.hipNumber : "1";
+    const hips = await db.hip.findMany({
+      where: { hipNumber },
+      select: {
+        id: true,
+        hipNumber: true,
+        horseName: true,
+        saleId: true,
+        sale: { select: { name: true, house: true, externalSaleId: true } },
+        currentAnalyses: {
+          select: {
+            updatedAt: true,
+            analysisResult: {
+              select: { id: true, version: true, mediaHash: true, overallScore: true, classification: true, analyzedAt: true, methodologyVersion: true },
+            },
+          },
+        },
+      },
+    });
+    res.json({ hipNumber, count: hips.length, hips });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 app.use("/api/v1", requireApiKey, router);
