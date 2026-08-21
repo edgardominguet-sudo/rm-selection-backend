@@ -34,7 +34,7 @@ export const ALL_TRAIT_IDS: string[] = [
   ...POSTERIOR_TRAITS.map((t) => `posterior.${t}`),
 ];
 
-export const METHODOLOGY_VERSION = "rm-anatomical-2026-08";
+export const METHODOLOGY_VERSION = "rm-anatomical-2026-08-19";
 
 // Mapa plano id -> puntaje, las 9 claves de ALL_TRAIT_IDS (ver nota de
 // forma de almacenamiento arriba).
