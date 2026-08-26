@@ -14,6 +14,7 @@ import { scoreView } from "./analysis/scoringEngine";
 import { ViewLandmarks } from "./analysis/landmarks";
 import { CLASSIFICATION_THRESHOLDS } from "./analysis/conformationScores";
 import { extractFasigTiptonSaleId } from "./saleHouses/fasigTiptonIdAutoResolver";
+import { diagRouter } from "./api/diagRoutes";
 
 const app = express();
 app.use(cors());
@@ -252,6 +253,8 @@ app.get("/_diag/hip-analysis-status", async (req, res) => {
 
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
+// DIAGNOSTICO TEMPORAL bug de Pedigree (2026-08-26) - ver diagRoutes.ts.
+app.use("/api/v1/diag", requireApiKey, diagRouter);
 app.use("/api/v1", requireApiKey, router);
 
 const server = app.listen(config.port, () => {
