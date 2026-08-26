@@ -47,8 +47,15 @@ diagRouter.post("/pedigree-log", (req, res) => {
   const message = typeof body.message === "string" ? body.message : JSON.stringify(body);
   const clientTs = typeof body.clientTs === "number" ? body.clientTs : null;
 
-  buffer.push({ seq: nextSeq++, serverTs: Date.now(), clientTs, device, message });
+  const entry = { seq: nextSeq++, serverTs: Date.now(), clientTs, device, message };
+  buffer.push(entry);
   while (buffer.length > MAX_ENTRIES) buffer.shift();
+
+  // Ademas del buffer en memoria (GET /pedigree-log), imprime cada linea
+  // en el log de runtime de Railway - asi se puede leer con
+  // mcp__Railway__get-logs (filter: "PEDIGREE-DIAG") sin depender de que
+  // este endpoint GET sea alcanzable desde ninguna red restringida.
+  console.log(`PEDIGREE-DIAG seq=${entry.seq} device=${entry.device} clientTs=${entry.clientTs ?? "-"} :: ${entry.message}`);
 
   res.status(204).end();
 });
