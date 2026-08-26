@@ -119,6 +119,12 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
         // momento en que se detecta el anuncio, incluso antes de que haya
         // catálogo.
         startDate: announcement.startDate,
+        // Igual que startDate: se refina sola con la sessionDate más
+        // tardía apenas el catálogo la resuelva (ver syncCatalog,
+        // rankingService.ts). Si el anuncio no traía un rango (raro),
+        // arranca igual a startDate para que la app nunca reciba un
+        // endDate anterior al startDate.
+        endDate: announcement.endDate ?? announcement.startDate,
         scheduleYear: announcement.scheduleYear,
         scheduleSlug: announcement.scheduleSlug,
         discoveredAt: new Date(),

@@ -236,6 +236,19 @@ model Sale {
   // que el catálogo ya esté disponible. Null solo si todavía no se pudo
   // leer ninguna fecha confiable (no se inventa).
   startDate          DateTime?
+  // Último día calendario de la venta (inclusive) — igual criterio que
+  // startDate: se completa apenas se puede leer un rango confiable del
+  // anuncio público (ver saleHouses/discovery/dateParsing.ts) y se refina
+  // sola con la sessionDate MÁS TARDÍA una vez que el catálogo trae Hips
+  // con fecha de sesión resuelta (mismo mecanismo que ya refina startDate
+  // con la más temprana, ver syncCatalog en rankingService.ts). Null solo
+  // si nunca se pudo leer ningún rango (nunca se inventa) — GET /sales la
+  // devuelve entonces como `startDate` (venta de un solo día conocido)
+  // para que el cliente (app) siempre reciba un rango válido. Agregado
+  // 2026-08-26 para que RM Selection arme el selector de ventas 100% desde
+  // el servidor (Keeneland/Fasig-Tipton/OBS), sin ninguna fecha fija
+  // hardcodeada en el cliente (ver SaleOption.swift del lado de la app).
+  endDate            DateTime?
   // Solo Keeneland: año + slug de la venta en la URL pública del
   // "Schedule of Sale", para poder resolver fecha de sesión por Hip sin
   // que el usuario cargue nada a mano (ver saleHouses/keenelandSchedule.ts).

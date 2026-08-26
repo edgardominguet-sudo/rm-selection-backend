@@ -1,5 +1,5 @@
 import { DiscoveredSaleAnnouncement, SaleDiscoveryClient } from "./types";
-import { findFirstDateRange, stripHtmlTags } from "./dateParsing";
+import { findDateRange, stripHtmlTags } from "./dateParsing";
 
 // OBS (Ocala Breeders' Sales) no tiene ninguna API de catálogo estructurada
 // conocida — a diferencia de Fasig-Tipton y Keeneland, su plataforma de
@@ -71,8 +71,9 @@ export class OBSDiscoveryClient implements SaleDiscoveryClient {
       // publicación del blog como aproximación (podría estar publicado
       // meses antes de la venta, o ser un post posterior sobre resultados).
       const description = extractTag(itemXml, "description") ?? "";
-      const startDate = findFirstDateRange(stripHtmlTags(title)) ?? findFirstDateRange(stripHtmlTags(description));
-      if (!startDate) continue;
+      const range = findDateRange(stripHtmlTags(title)) ?? findDateRange(stripHtmlTags(description));
+      if (!range) continue;
+      const startDate = range.start;
 
       results.push({
         name: title.trim(),
@@ -82,6 +83,7 @@ export class OBSDiscoveryClient implements SaleDiscoveryClient {
         // Sale.id, no por este string).
         externalSaleId: `obs-${slugify(title)}`,
         startDate,
+        endDate: range.end,
         announcementUrl: link.trim(),
         access: "MANUAL_CSV",
       });

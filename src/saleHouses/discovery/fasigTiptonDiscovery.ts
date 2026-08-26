@@ -1,5 +1,5 @@
 import { DiscoveredSaleAnnouncement, SaleDiscoveryClient } from "./types";
-import { findFirstDateRange, stripHtmlTags, titleCaseSlug } from "./dateParsing";
+import { findDateRange, stripHtmlTags, titleCaseSlug } from "./dateParsing";
 
 // Lee la página pública "Catalogues" de Fasig-Tipton por año — a diferencia
 // de Keeneland, esta página lista TODAS las ventas del año (pasadas y
@@ -67,8 +67,9 @@ export class FasigTiptonDiscoveryClient implements SaleDiscoveryClient {
         const windowStart = match.index;
         const windowEnd = Math.min(html.length, windowStart + 1200);
         const windowText = stripHtmlTags(html.slice(windowStart, windowEnd));
-        const startDate = findFirstDateRange(windowText);
-        if (!startDate) continue; // no se pudo leer una fecha confiable — se descarta, no se inventa.
+        const range = findDateRange(windowText);
+        if (!range) continue; // no se pudo leer una fecha confiable — se descarta, no se inventa.
+        const startDate = range.start;
 
         const cleanLinkText = linkText.trim();
         const name = cleanLinkText.length > 0 && cleanLinkText.length < 80 ? cleanLinkText : titleCaseSlug(slug);
@@ -80,6 +81,7 @@ export class FasigTiptonDiscoveryClient implements SaleDiscoveryClient {
           // — ver comentario arriba.
           externalSaleId: `${linkYear}-${slug}`,
           startDate,
+          endDate: range.end,
           announcementUrl: `https://www.fasigtipton.com/${linkYear}/${slug}`,
           access: "PENDING_ID",
         });

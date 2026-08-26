@@ -334,9 +334,17 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   // sessionDate resuelta (catálogo publicado pero sin fechas todavía),
   // no se toca lo que ya había — nunca se borra una fecha buena por una
   // desconocida.
-  const earliestSessionDate = [...sessionDates.values()].sort((a, b) => a.getTime() - b.getTime())[0];
+  const sortedSessionDates = [...sessionDates.values()].sort((a, b) => a.getTime() - b.getTime());
+  const earliestSessionDate = sortedSessionDates[0];
   if (earliestSessionDate && earliestSessionDate.getTime() !== sale.startDate?.getTime()) {
     await db.sale.update({ where: { id: sale.id }, data: { startDate: earliestSessionDate } });
+  }
+  // Simétrico a lo de arriba, para Sale.endDate ("Día X de Y", selector de
+  // ventas de la app) — la sessionDate MÁS TARDÍA resuelta hasta ahora.
+  // Igual criterio de "nunca borrar una fecha buena por una desconocida".
+  const latestSessionDate = sortedSessionDates[sortedSessionDates.length - 1];
+  if (latestSessionDate && latestSessionDate.getTime() !== sale.endDate?.getTime()) {
+    await db.sale.update({ where: { id: sale.id }, data: { endDate: latestSessionDate } });
   }
 }
 

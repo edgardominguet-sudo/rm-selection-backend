@@ -1,5 +1,5 @@
 import { DiscoveredSaleAnnouncement, SaleDiscoveryClient } from "./types";
-import { findFirstDateRange, stripHtmlTags, titleCaseSlug } from "./dateParsing";
+import { findDateRange, stripHtmlTags, titleCaseSlug } from "./dateParsing";
 
 // Lee la página pública "Upcoming Sales" de Keeneland — a diferencia de
 // Fasig-Tipton y OBS, esta página YA lista solo ventas futuras (no hay que
@@ -40,8 +40,9 @@ export class KeenelandDiscoveryClient implements SaleDiscoveryClient {
       if (seen.has(key)) continue;
 
       const plainText = stripHtmlTags(innerHtml).trim();
-      const startDate = findFirstDateRange(plainText);
-      if (!startDate) continue; // el otro <a> (solo imagen) no tiene fecha — se descarta, no es error.
+      const range = findDateRange(plainText);
+      if (!range) continue; // el otro <a> (solo imagen) no tiene fecha — se descarta, no es error.
+      const startDate = range.start;
 
       const nameCandidate = plainText.split("\n").map((l) => l.trim()).find((l) => l.length > 0 && !/^\d/.test(l));
       const name = nameCandidate && nameCandidate.length < 80 ? nameCandidate : titleCaseSlug(slug);
@@ -50,6 +51,7 @@ export class KeenelandDiscoveryClient implements SaleDiscoveryClient {
         name,
         externalSaleId: id,
         startDate,
+        endDate: range.end,
         announcementUrl: `https://www.keeneland.com/sales/${yearStr}/${id}/${slug}/`,
         access: "FULL",
         scheduleYear: parseInt(yearStr, 10),

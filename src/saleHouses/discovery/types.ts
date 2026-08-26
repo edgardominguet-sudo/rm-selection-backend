@@ -17,6 +17,14 @@ export interface DiscoveredSaleAnnouncement {
   externalSaleId: string;
   /** Primer día de la venta — se usa para filtrar anuncios ya pasados. */
   startDate: Date;
+  /**
+   * Último día calendario de la venta, si se pudo leer un rango (ej.
+   * "Sept. 14 - 26, 2026") — ver dateParsing.findDateRange. undefined =
+   * no se pudo leer ningún rango; el llamador (saleDiscoveryService) usa
+   * entonces startDate también como endDate en vez de dejarlo vacío, para
+   * que la app siempre reciba un rango válido.
+   */
+  endDate?: Date;
   announcementUrl: string;
   access: "FULL" | "MANUAL_CSV" | "PENDING_ID" | "UNAVAILABLE";
   /** Solo Keeneland: para resolveSessionDates (Schedule of Sale). */

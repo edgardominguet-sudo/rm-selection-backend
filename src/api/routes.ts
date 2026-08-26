@@ -53,6 +53,11 @@ router.get("/sales", async (_req, res) => {
       name: true,
       externalSaleId: true,
       startDate: true,
+      // Ver comentario en Sale.endDate, schema.prisma — 2026-08-26,
+      // selector de ventas 100% dinámico (ver SaleOption.swift /
+      // SaleDirectory.swift del lado de la app: ya no arma la lista con
+      // fechas fijas en el código, la recibe de acá).
+      endDate: true,
       catalogAccess: true,
       // Visibilidad operativa mínima ("¿hace cuánto se actualizó esto?",
       // "¿ya tiene algún Hip cargado?") sin que la app tenga que inferirlo
@@ -64,7 +69,15 @@ router.get("/sales", async (_req, res) => {
       _count: { select: { hips: true } },
     },
   });
-  const withHipCount = sales.map(({ _count, ...rest }) => ({ ...rest, hipCount: _count.hips }));
+  // endDate coalescea a startDate cuando todavía no se pudo leer ningún
+  // rango real (ver comentario en Sale.endDate) — así el cliente SIEMPRE
+  // recibe un rango válido (nunca null) para calcular "Día X de Y" sin
+  // tener que manejar ese caso especial del lado de la app.
+  const withHipCount = sales.map(({ _count, endDate, ...rest }) => ({
+    ...rest,
+    endDate: endDate ?? rest.startDate,
+    hipCount: _count.hips,
+  }));
   withHipCount.sort((a, b) => {
     if (a.startDate && b.startDate) return a.startDate.getTime() - b.startDate.getTime();
     if (a.startDate) return -1;
@@ -919,7 +932,7 @@ router.get("/alerts", async (req, res) => {
 // crea una fila NUEVA en vez de "arreglar" la vieja — conviene desactivar
 // la vieja (isActive=false) a mano una vez confirmado el ID correcto.
 router.post("/sales", async (req, res) => {
-  const { house, name, externalSaleId, scheduleYear, scheduleSlug, startDate } = req.body as {
+  const { house, name, externalSaleId, scheduleYear, scheduleSlug, startDate, endDate } = req.body as {
     house: "FASIG_TIPTON" | "KEENELAND" | "OBS";
     name: string;
     externalSaleId: string;
@@ -930,16 +943,29 @@ router.post("/sales", async (req, res) => {
     // GET /sales. Si no se manda, queda null hasta que syncCatalog la
     // resuelva sola a partir de los Hips (ver rankingService.ts).
     startDate?: string;
+    // Opcional: último día calendario de la venta (mismo formato que
+    // startDate) — ver comentario en Sale.endDate, schema.prisma. Si no se
+    // manda, GET /sales la sirve igual a startDate hasta que se resuelva
+    // sola.
+    endDate?: string;
   };
   if (!house || !name || !externalSaleId) {
     res.status(400).json({ error: "Faltan campos requeridos: house, name, externalSaleId." });
     return;
   }
   const parsedStartDate = startDate ? new Date(startDate) : undefined;
+  const parsedEndDate = endDate ? new Date(endDate) : undefined;
   const sale = await db.sale.upsert({
     where: { house_externalSaleId: { house, externalSaleId } },
-    create: { house, name, externalSaleId, scheduleYear, scheduleSlug, startDate: parsedStartDate },
-    update: { name, scheduleYear, scheduleSlug, isActive: true, ...(parsedStartDate ? { startDate: parsedStartDate } : {}) },
+    create: { house, name, externalSaleId, scheduleYear, scheduleSlug, startDate: parsedStartDate, endDate: parsedEndDate },
+    update: {
+      name,
+      scheduleYear,
+      scheduleSlug,
+      isActive: true,
+      ...(parsedStartDate ? { startDate: parsedStartDate } : {}),
+      ...(parsedEndDate ? { endDate: parsedEndDate } : {}),
+    },
   });
   res.json(sale);
 });

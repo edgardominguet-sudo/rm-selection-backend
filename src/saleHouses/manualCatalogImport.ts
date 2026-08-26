@@ -256,7 +256,7 @@ export async function importManualCatalog(
   csvText: string,
   meta: { fileName?: string; importedByUserId?: string }
 ): Promise<ManualCatalogImportOutcome> {
-  const sale = await db.sale.findUnique({ where: { id: saleId }, select: { startDate: true, catalogAccess: true } });
+  const sale = await db.sale.findUnique({ where: { id: saleId }, select: { startDate: true, endDate: true, catalogAccess: true } });
   if (!sale) throw new SaleNotFoundError(saleId);
 
   const { hips, sessionDates, warnings } = parseManualCatalogCsv(csvText);
@@ -264,9 +264,16 @@ export async function importManualCatalog(
   const summary = await upsertNormalizedHips(saleId, hips, sessionDates);
 
   if (sessionDates.size > 0) {
-    const earliestSessionDate = [...sessionDates.values()].sort((a, b) => a.getTime() - b.getTime())[0];
+    const sortedSessionDates = [...sessionDates.values()].sort((a, b) => a.getTime() - b.getTime());
+    const earliestSessionDate = sortedSessionDates[0];
     if (earliestSessionDate && earliestSessionDate.getTime() !== sale.startDate?.getTime()) {
       await db.sale.update({ where: { id: saleId }, data: { startDate: earliestSessionDate } });
+    }
+    // Simétrico para endDate — ver comentario equivalente en syncCatalog
+    // (rankingService.ts).
+    const latestSessionDate = sortedSessionDates[sortedSessionDates.length - 1];
+    if (latestSessionDate && latestSessionDate.getTime() !== sale.endDate?.getTime()) {
+      await db.sale.update({ where: { id: saleId }, data: { endDate: latestSessionDate } });
     }
   }
 
