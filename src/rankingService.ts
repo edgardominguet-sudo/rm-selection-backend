@@ -4,8 +4,10 @@ import { config } from "./config";
 import { clientFor } from "./saleHouses/registry";
 import { pollIntervalMinutes, shouldCheckNow } from "./saleHouses/pollingPolicy";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
-import { analyzeHip, MissingReferenceHorseError, NoPhotosError } from "./analysis/anthropicClient";
-import { overallScore, classify } from "./analysis/conformationScores";
+import { analyzeHip, MissingReferenceHorseError, NoPhotosError, ViewAnalysisDetail } from "./analysis/anthropicClient";
+import { ViewName } from "./analysis/landmarks";
+import { PhotoClassification } from "./analysis/prompt";
+import { overallScore, classify, emptyScores, setScore, LATERAL_TRAITS, FRONTAL_TRAITS, POSTERIOR_TRAITS, METHODOLOGY_VERSION, ConformationScores } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
 import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip, SaleHouseClient } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
@@ -27,7 +29,38 @@ async function resolveAIAnalysisMedia(hipId: string, organizationId: string): Pr
     where: { hipId, organizationId, kind: "AI_ANALYSIS_PHOTO", uploadStatus: "PROCESSED", deletedAt: null },
     orderBy: { createdAt: "asc" },
   });
-  return assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey) }));
+  // `id`/`conformationView` viajan desde 2026-09-01 (independencia de
+  // vistas, ver CatalogMediaItem en types.ts) — no afectan mediaFingerprint
+  // (solo mira kind+url, ver mediaFingerprint.ts) ni ningún otro llamador
+  // existente, y le permiten a analyzeHipOnDemand saber, foto por foto,
+  // cuál pertenece a cuál tarjeta (frontal/lateral/posterior) sin depender
+  // de la posición dentro del array.
+  return assets.map((a) => ({ kind: "photo" as const, url: resolveReadUrl(a.storageKey), id: a.id, conformationView: a.conformationView }));
+}
+
+/**
+ * Agrupa la media de Análisis IA vigente de un Hip por vista
+ * (frontal/lateral/posterior), usando el tag que el dispositivo de origen
+ * grabó en cada foto (`conformationView`, ver MediaAsset en schema.prisma)
+ * — NO la clasificación de la IA (esa es la que valida/invalida, no la
+ * que decide a qué tarjeta pertenece cada archivo, ver comentario en
+ * HipDetailViewModel.swift sobre "la tarjeta es definitiva"). Fotos sin
+ * `conformationView` reconocible (legado, o un valor inesperado) quedan
+ * afuera de los 3 baldes — se tratan como "vista sin identificar", ver
+ * `analyzeHipOnDemand` más abajo.
+ */
+function groupAIAnalysisMediaByView(media: CatalogMediaItem[]): Partial<Record<ViewName, CatalogMediaItem>> {
+  const result: Partial<Record<ViewName, CatalogMediaItem>> = {};
+  for (const item of media) {
+    if (item.conformationView === "frontal" || item.conformationView === "lateral" || item.conformationView === "posterior") {
+      // Si por algún motivo hay más de una foto activa con el mismo tag
+      // (no debería pasar en uso normal — cada tarjeta reemplaza la suya
+      // al tomar una nueva), gana la más reciente (orden `createdAt asc`
+      // de resolveAIAnalysisMedia, así que la última pisa a la anterior).
+      result[item.conformationView] = item;
+    }
+  }
+  return result;
 }
 
 function startOfCalendarDay(date: Date): Date {
@@ -523,6 +556,23 @@ export async function analyzeAndRankSession(saleId: string, organizationId: stri
  * vez de volver a llamarle a la IA — nunca se generan dos análisis
  * distintos para el mismo Hip+organización al mismo tiempo.
  */
+function summarizeMergedView(view: ViewName, detail: ViewAnalysisDetail): string {
+  const label = view === "frontal" ? "Frontal" : view === "lateral" ? "Lateral" : "Posterior";
+  if (!detail.available) return `${label}: sin foto válida, no evaluado.`;
+  const score = detail.score?.score ?? 0;
+  if (detail.displayFindings.length === 0) return `${label}: correcto (${score.toFixed(1)}).`;
+  const names = detail.displayFindings.map((f) => `${f.labelEs} (${f.severity})`).join(", ");
+  return `${label}: ${names} — ${score.toFixed(1)}.`;
+}
+
+const TRAITS_BY_VIEW: Record<ViewName, readonly string[]> = {
+  lateral: LATERAL_TRAITS,
+  frontal: FRONTAL_TRAITS,
+  posterior: POSTERIOR_TRAITS,
+};
+
+const UNAVAILABLE_DETAIL: ViewAnalysisDetail = { available: false, landmarks: null, findings: [], score: null, displayFindings: [] };
+
 export async function analyzeHipOnDemand(
   hip: { id: string; hipNumber: string; horseName: string | null },
   organizationId: string,
@@ -532,16 +582,6 @@ export async function analyzeHipOnDemand(
   // pantalla Análisis (IA) de este Hip — nunca el catálogo (hip.mediaJson)
   // ni Media general. Ver resolveAIAnalysisMedia.
   const media = await resolveAIAnalysisMedia(hip.id, organizationId);
-  // CORRECCIÓN 2026-08-15 (bug real reportado: "las tres fotos no se
-  // reconocen ni se guardan"): antes exigía las 3 fotos ANTES de llamar a
-  // la IA — con eso, la primera y segunda foto tomadas no recibían ninguna
-  // validación (ni verde ni rojo), quedaban invisibles hasta la 3ra. El
-  // prompt (buildPrompt) ya soporta clasificar/validar cualquier cantidad
-  // de fotos por separado — el puntaje final (PASO 2) sigue en 0.0 para
-  // toda vista sin foto válida, así que nada cambia ahí. El único cambio
-  // real es que ahora se llama a la IA con 1 o 2 fotos también, para poder
-  // mostrarle al usuario el resultado (válida/inválida) de CADA foto apenas
-  // la toma, en vez de recién al completar las 3.
   if (media.length === 0) {
     throw new NoPhotosError(
       "Todavía no hay ninguna foto tomada desde Análisis (IA) para este Hip."
@@ -569,15 +609,109 @@ export async function analyzeHipOnDemand(
         return { analysis: pointer.analysisResult, reused: true };
       }
 
-      const reference = await getReferenceHorse(organizationId);
-      const outcome = await analyzeHip({
-        hipNumber: hip.hipNumber,
-        horseName: hip.horseName ?? undefined,
-        organizationId,
-        media,
-        reference,
-      });
-      const score = overallScore(outcome.scores);
+      // INDEPENDENCIA DE VISTAS (2026-09-01, a pedido explícito de Ramon:
+      // "una acción realizada sobre una foto NO debe afectar las otras...
+      // prohibir reanálisis automático en cascada"). A partir de acá, algo
+      // en la media cambió (el hash de arriba no coincidió) — pero eso NO
+      // significa que las 3 vistas necesiten un análisis nuevo: se
+      // determina, vista por vista, si la foto que la ocupa hoy es
+      // EXACTAMENTE la misma (mismo MediaAsset.id) que la que produjo el
+      // resultado guardado la última vez. Solo esas vistas "sucias" vuelven
+      // a pasar por el motor — las demás se copian tal cual, sin volver a
+      // llamar a la IA ni recalcular nada.
+      const previous = pointer?.analysisResult ?? null;
+      const previousSourceIds = (previous?.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null) ?? null;
+      const currentByView = groupAIAnalysisMediaByView(media);
+      const viewNames: ViewName[] = ["frontal", "lateral", "posterior"];
+
+      // Sin procedencia guardada (fila anterior a este campo, o primer
+      // análisis de este Hip): ninguna vista cuenta como estable — se
+      // recalculan las 3 una sola vez, igual que un análisis nuevo de
+      // siempre. Con procedencia guardada, una vista es estable si y solo
+      // si el id de su foto actual coincide con el id que la produjo la
+      // última vez (ambos ausentes — "seguía sin foto" — también cuenta
+      // como estable, ver test 1 de la especificación: borrar UNA vista no
+      // debe tocar las otras dos).
+      const dirtyViews = previousSourceIds
+        ? viewNames.filter((view) => (currentByView[view]?.id ?? null) !== (previousSourceIds[view] ?? null))
+        : [...viewNames];
+
+      // Fotos con un conformationView no reconocible (legado, o valor
+      // inesperado) nunca tienen procedencia por vista posible — siempre
+      // se mandan a analizar junto con lo que esté sucio.
+      const untaggedMedia = media.filter(
+        (m) => m.conformationView !== "frontal" && m.conformationView !== "lateral" && m.conformationView !== "posterior"
+      );
+      const dirtyMedia: CatalogMediaItem[] = [
+        ...dirtyViews.map((v) => currentByView[v]).filter((m): m is CatalogMediaItem => !!m),
+        ...untaggedMedia,
+      ];
+
+      // Si lo único "sucio" es una vista a la que le borraron la foto (sin
+      // reemplazo todavía), no hay ninguna foto nueva que mandarle a la
+      // IA — ni falta, ni corresponde exigir el caballo referente para
+      // simplemente vaciar esa vista.
+      const fresh = dirtyMedia.length > 0
+        ? await analyzeHip({
+            hipNumber: hip.hipNumber,
+            horseName: hip.horseName ?? undefined,
+            organizationId,
+            media: dirtyMedia,
+            reference: await getReferenceHorse(organizationId),
+          })
+        : null;
+
+      const previousDetail = (previous?.landmarksJson as unknown as Record<ViewName, ViewAnalysisDetail> | null) ?? null;
+      const previousClassifications = (previous?.photoClassificationsJson as unknown as PhotoClassification[] | null) ?? [];
+      const previousScores = (previous?.conformationScoresJson as unknown as ConformationScores | null) ?? null;
+
+      const mergedDetail = {} as Record<ViewName, ViewAnalysisDetail>;
+      const mergedScores = emptyScores();
+      const mergedSourceIds: Partial<Record<ViewName, string>> = {};
+      const summaryLines: string[] = [];
+
+      for (const view of viewNames) {
+        const isDirty = dirtyViews.includes(view);
+        const freshDetailForView = fresh?.detail[view];
+        if (isDirty && freshDetailForView?.available) {
+          // Vista sucia con foto nueva que dio válida: resultado fresco.
+          mergedDetail[view] = freshDetailForView;
+          for (const key of TRAITS_BY_VIEW[view]) setScore(mergedScores, `${view}.${key}`, fresh!.scores[`${view}.${key}`] ?? 0);
+          if (fresh!.viewSourceAssetIds[view]) mergedSourceIds[view] = fresh!.viewSourceAssetIds[view];
+        } else if (isDirty) {
+          // Vista sucia sin resultado disponible (la foto se borró, o la
+          // foto nueva no dio válida para esta vista) — queda "sin foto".
+          // Nunca hereda el resultado viejo: ese pertenecía a OTRA foto.
+          mergedDetail[view] = UNAVAILABLE_DETAIL;
+          if (currentByView[view]?.id) mergedSourceIds[view] = currentByView[view]!.id!;
+        } else if (previousDetail?.[view]) {
+          // Vista estable: se copia bit a bit de la fila anterior — nunca
+          // se le vuelve a pedir nada a la IA.
+          mergedDetail[view] = previousDetail[view];
+          if (previousScores) {
+            for (const key of TRAITS_BY_VIEW[view]) setScore(mergedScores, `${view}.${key}`, previousScores[`${view}.${key}`] ?? 0);
+          }
+          if (previousSourceIds?.[view]) mergedSourceIds[view] = previousSourceIds[view]!;
+        } else {
+          mergedDetail[view] = UNAVAILABLE_DETAIL;
+        }
+        summaryLines.push(summarizeMergedView(view, mergedDetail[view]));
+      }
+
+      // photoClassifications final: las clasificaciones frescas (de cada
+      // foto que se acaba de mandar a analizar) + las clasificaciones
+      // previas cuya FOTO (por assetId, no por `.view` — una foto inválida
+      // puede tener `.view === "unclear"` y aun así pertenecer a una
+      // vista estable, ej. una tarjeta que quedó en rojo y nadie tocó)
+      // sigue siendo la misma de una vista estable.
+      const stableViews = viewNames.filter((v) => !dirtyViews.includes(v));
+      const stableAssetIds = new Set(stableViews.map((v) => previousSourceIds?.[v]).filter((id): id is string => !!id));
+      const mergedClassifications: PhotoClassification[] = [
+        ...(fresh?.photoClassifications ?? []),
+        ...previousClassifications.filter((c) => c.assetId && stableAssetIds.has(c.assetId)),
+      ];
+
+      const score = overallScore(mergedScores);
       const classification = classify(score);
       const previousVersionCount = await tx.analysisResult.count({ where: { hipId: hip.id, organizationId } });
 
@@ -588,18 +722,19 @@ export async function analyzeHipOnDemand(
           version: previousVersionCount + 1,
           triggerReason: pointer ? "media_changed" : "initial",
           mediaHash: currentHash,
-          conformationScoresJson: outcome.scores as unknown as object,
+          conformationScoresJson: mergedScores as unknown as object,
           overallScore: score,
           classification,
-          methodologyVersion: outcome.methodologyVersion,
-          photoClassificationsJson: outcome.photoClassifications as unknown as object,
-          landmarksJson: outcome.detail as unknown as object,
+          methodologyVersion: fresh?.methodologyVersion ?? previous?.methodologyVersion ?? METHODOLOGY_VERSION,
+          photoClassificationsJson: mergedClassifications as unknown as object,
+          landmarksJson: mergedDetail as unknown as object,
           findingsJson: Object.fromEntries(
-            Object.entries(outcome.detail).map(([view, d]) => [view, d.displayFindings])
+            Object.entries(mergedDetail).map(([view, d]) => [view, d.displayFindings])
           ) as unknown as object,
-          summary: outcome.summary,
+          summary: summaryLines.join(" "),
           model: config.anthropicModel,
           deviceId,
+          viewSourceAssetIdsJson: mergedSourceIds as unknown as object,
         },
       });
       await tx.currentHipAnalysis.upsert({

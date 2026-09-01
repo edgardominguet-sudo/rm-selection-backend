@@ -17,6 +17,13 @@ export interface PhotoClassification {
   view: "lateral" | "frontal" | "posterior" | "unclear";
   valid: boolean;
   invalidReason: string | null;
+  // Independencia de vistas (2026-09-01) — id estable de la foto que
+  // produjo ESTA clasificación (MediaAsset.id, ver CatalogMediaItem.id en
+  // types.ts). undefined en filas legado (analizadas antes de este
+  // campo) o si el análisis vino del fallback on-device (nunca tuvo
+  // acceso al id del servidor) — el cliente cae a la correlación por
+  // posición en esos casos, ver PhotoClassification.swift.
+  assetId?: string;
 }
 
 export function buildPrompt(opts: { hipNumber: string; horseName?: string; photoCount: number }): string {

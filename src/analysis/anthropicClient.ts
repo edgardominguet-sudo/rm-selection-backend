@@ -43,6 +43,16 @@ export interface AnalysisOutcome {
   methodologyVersion: string;
   /** Detalle completo del motor nuevo, por vista — landmarks crudos, hallazgos, y qué se decidió mostrar. Se persiste tal cual en AnalysisResult.landmarksJson/findingsJson (ver rankingService.ts) para poder auditar CUALQUIER resultado pasado sin volver a llamar a la IA. */
   detail: Record<ViewName, ViewAnalysisDetail>;
+  /**
+   * Independencia de vistas (2026-09-01) — qué MediaAsset.id ganó cada
+   * vista en ESTE análisis puntual (solo vistas con foto válida quedan
+   * acá). `analyzeHipOnDemand` (rankingService.ts) guarda esto en
+   * AnalysisResult.viewSourceAssetIdsJson y lo compara en el próximo
+   * pedido: si el id de una vista no cambió, esa vista NUNCA vuelve a
+   * pasar por este motor — se reusa el resultado anterior tal cual, sin
+   * volver a llamar a la IA ni recalcular nada.
+   */
+  viewSourceAssetIds: Partial<Record<ViewName, string>>;
 }
 
 const VIEW_SUBKEYS: Record<ViewName, readonly string[]> = {
@@ -90,14 +100,14 @@ export async function analyzeHip(opts: {
   // Paso 2 — extraer landmarks de cada foto del Hip (clasificación de
   // vista incluida, igual que el prompt legado hacía en su Paso 1).
   const photoClassifications: PhotoClassification[] = [];
-  type PhotoResult = { index: number; view: ViewName | "unclear"; valid: boolean; landmarks: ViewLandmarks; overallConfidence: number };
+  type PhotoResult = { index: number; view: ViewName | "unclear"; valid: boolean; landmarks: ViewLandmarks; overallConfidence: number; assetId?: string };
   const results: PhotoResult[] = [];
 
   for (let i = 0; i < photoItems.length; i++) {
     const item = photoItems[i];
     const jpeg = await fetchAndDownscale(item.url);
     if (!jpeg) {
-      photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "No se pudo descargar la foto." });
+      photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "No se pudo descargar la foto.", assetId: item.id });
       continue;
     }
     try {
@@ -107,6 +117,7 @@ export async function analyzeHip(opts: {
         view: extraction.view,
         valid: extraction.valid,
         invalidReason: extraction.invalidReason,
+        assetId: item.id,
       });
       if (extraction.valid && extraction.view !== "unclear") {
         results.push({
@@ -115,11 +126,12 @@ export async function analyzeHip(opts: {
           valid: true,
           landmarks: extraction.landmarks as ViewLandmarks,
           overallConfidence: extraction.overallConfidence,
+          assetId: item.id,
         });
       }
     } catch (err) {
       console.error(`[analysis] Error extrayendo landmarks de la foto #${i + 1} del Hip ${opts.hipNumber}:`, err);
-      photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "Error al procesar la foto." });
+      photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "Error al procesar la foto.", assetId: item.id });
     }
   }
 
@@ -139,6 +151,7 @@ export async function analyzeHip(opts: {
   // Paso 4 — mediciones + hallazgos + score, vista por vista.
   const scores = emptyScores();
   const detail = {} as Record<ViewName, ViewAnalysisDetail>;
+  const viewSourceAssetIds: Partial<Record<ViewName, string>> = {};
   const summaryLines: string[] = [];
 
   for (const view of ["frontal", "lateral", "posterior"] as const) {
@@ -166,6 +179,7 @@ export async function analyzeHip(opts: {
     const displayFindings = prioritizeFindings(findings, 2);
 
     detail[view] = { available: true, landmarks: best.landmarks, findings, score: viewScore, displayFindings };
+    if (best.assetId) viewSourceAssetIds[view] = best.assetId;
     for (const key of VIEW_SUBKEYS[view]) setScore(scores, `${view}.${key}`, viewScore.score);
 
     summaryLines.push(summarizeView(view, viewScore.score, displayFindings));
@@ -177,6 +191,7 @@ export async function analyzeHip(opts: {
     summary: summaryLines.join(" "),
     methodologyVersion: METHODOLOGY_VERSION,
     detail,
+    viewSourceAssetIds,
   };
 }
 

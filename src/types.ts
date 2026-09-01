@@ -2,6 +2,26 @@ export interface CatalogMediaItem {
     kind: "photo" | "video";
     url: string;
     caption?: string;
+    // Identidad estable de este archivo — SOLO se completa para media de
+    // Análisis IA (ver rankingService.resolveAIAnalysisMedia): coincide
+    // EXACTAMENTE con MediaAsset.id, que a su vez es EL MISMO id que el
+    // dispositivo generó para su MediaItem local al tomar la foto (ver
+    // POST /me/media, routes.ts: `const id = clientId ?? randomUUID()`).
+    // Independencia de vistas (2026-09-01, a pedido explícito de Ramon:
+    // "cada fotografía debe tener un identificador propio... antes de
+    // mandar una foto al análisis verificar imageID actual") — sin esto,
+    // la única forma de correlacionar una foto con su resultado era la
+    // POSICIÓN dentro del array (ver photoClassifications más abajo), que
+    // se corrompía apenas se borraba o agregaba cualquier otra foto del
+    // mismo Hip. Con `id` estable, cada vista se seguí puede identificar
+    // sin importar qué le pase a las otras dos. undefined para media de
+    // catálogo (nunca se necesitó ahí).
+    id?: string;
+    // "frontal" | "lateral" | "posterior" — SOLO para media de Análisis IA
+    // (ver MediaAsset.conformationView). Viaja junto con `id` para poder
+    // agrupar la media actual por vista sin depender de que la IA la
+    // vuelva a clasificar desde cero.
+    conformationView?: string | null;
 }
 
 // Resultado de venta tal como lo va publicando la casa de ventas en vivo

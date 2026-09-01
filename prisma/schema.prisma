@@ -708,6 +708,18 @@ model AnalysisResult {
   // para mostrar (ver findingsPrioritizer.ts) — subconjunto liviano de
   // landmarksJson pensado para leer rápido sin recorrer todo el detalle.
   findingsJson  Json?
+  // INDEPENDENCIA DE VISTAS (2026-09-01, a pedido explícito de Ramon: "una
+  // acción realizada sobre una foto NO debe afectar las otras"). Qué
+  // MediaAsset.id produjo el resultado GUARDADO de cada vista en ESTA
+  // fila — Partial<Record<"frontal"|"lateral"|"posterior", string>>. El
+  // próximo pedido de análisis (analyzeHipOnDemand, rankingService.ts)
+  // compara esto contra la foto ACTUAL de cada vista: si coincide, esa
+  // vista se copia tal cual de la fila anterior — nunca se le vuelve a
+  // pedir nada a la IA ni se recalcula nada para una vista cuya foto no
+  // cambió, sin importar qué le haya pasado a las otras dos. null en
+  // filas anteriores a este campo (se tratan como "todo por confirmar",
+  // fuerza una repasada completa una sola vez).
+  viewSourceAssetIdsJson Json?
 
   // Diagnóstico técnico (opcional, para depurar calidad del análisis):
   // cuántos fotogramas de marcha se pudieron usar y de qué duración.
