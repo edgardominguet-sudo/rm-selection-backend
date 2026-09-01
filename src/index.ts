@@ -15,6 +15,7 @@ import { ViewLandmarks } from "./analysis/landmarks";
 import { CLASSIFICATION_THRESHOLDS } from "./analysis/conformationScores";
 import { extractFasigTiptonSaleId } from "./saleHouses/fasigTiptonIdAutoResolver";
 import { diagRouter } from "./api/diagRoutes";
+import { attachRealtime } from "./realtime";
 
 const app = express();
 app.use(cors());
@@ -263,6 +264,12 @@ const server = app.listen(config.port, () => {
   startNightlySyncScheduler();
   startLivePriceScheduler();
 });
+
+// Sincronización en tiempo real entre dispositivos (2026-09-01) — ver
+// src/realtime.ts para el diseño completo. Se monta sobre el mismo
+// `server` HTTP que ya levantó Express arriba, así que comparte puerto sin
+// configuración adicional en Railway.
+attachRealtime(server);
 
 // Railway manda SIGTERM antes de matar el contenedor en cada redeploy —
 // sin esto, un análisis a mitad de camino o una conexión a Postgres

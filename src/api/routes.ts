@@ -9,6 +9,7 @@ import { listFirstYearlingStallions } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
+import { broadcastChange } from "../realtime";
 import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
 import {
   importManualCatalog,
@@ -446,6 +447,7 @@ router.post("/hips/:hipId/analysis", requireUser, async (req, res) => {
 
   try {
     const result = await analyzeHipOnDemand(hip, organizationId, deviceId);
+    broadcastChange("analysis", deviceId);
     res.json(result);
   } catch (err) {
     if (err instanceof MissingReferenceHorseError) {
@@ -507,6 +509,7 @@ router.put("/me/decisions/:hipId", requireUser, async (req, res) => {
     create: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, finalCall, notes, deviceId, decidedAt: new Date() },
     update: { finalCall, notes, deviceId, decidedAt: new Date(), deletedAt: null },
   });
+  broadcastChange("decision", deviceId);
   res.json(decision);
 });
 
@@ -516,8 +519,48 @@ router.delete("/me/decisions/:hipId", requireUser, async (req, res) => {
     where: { userId: req.user!.id, hipId },
     data: { deletedAt: new Date() },
   });
+  broadcastChange("decision");
   res.json({ ok: true });
 });
+
+// Tira de "Hips recientes" (HipNumberEntryView, 2026-08-31) — mismo patrón
+// exacto que /me/decisions: una fila por (userId, hipId), upsert,
+// tombstone para borrados. A diferencia de /me/decisions, PUT no exige
+// ningún campo en el body más que (opcionalmente) deviceId — "visitar" un
+// Hip no tiene más contenido que "ocurrió ahora" (visitedAt se pisa en
+// cada llamada, es lo que define el orden entre dispositivos).
+router.get("/me/recent-hips", requireUser, async (req, res) => {
+  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const rows = await db.recentHipVisit.findMany({
+    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
+    orderBy: { updatedAt: "asc" },
+    include: { hip: hipIdentitySelect },
+  });
+  res.json(rows.map(withHipIdentity));
+});
+
+router.put("/me/recent-hips/:hipId", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  const { deviceId } = req.body as { deviceId?: string };
+  const visit = await db.recentHipVisit.upsert({
+    where: { userId_hipId: { userId: req.user!.id, hipId } },
+    create: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, visitedAt: new Date() },
+    update: { deviceId, visitedAt: new Date(), deletedAt: null },
+  });
+  broadcastChange("recentHip", deviceId);
+  res.json(visit);
+});
+
+router.delete("/me/recent-hips/:hipId", requireUser, async (req, res) => {
+  const { hipId } = req.params;
+  await db.recentHipVisit.updateMany({
+    where: { userId: req.user!.id, hipId },
+    data: { deletedAt: new Date() },
+  });
+  broadcastChange("recentHip");
+  res.json({ ok: true });
+});
+
 
 // Anotaciones a mano alzada sobre el Pedigree (lápiz vino tinto + borrador,
 // 2026-08-13 — sistema simplificado). Mismo patrón exacto que /me/decisions:
@@ -542,6 +585,7 @@ router.put("/me/pedigree-annotations/:hipId", requireUser, async (req, res) => {
     create: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, drawingData, deviceId },
     update: { drawingData, deviceId, deletedAt: null },
   });
+  broadcastChange("pedigreeAnnotation", deviceId);
   res.json(annotation);
 });
 
@@ -551,6 +595,7 @@ router.delete("/me/pedigree-annotations/:hipId", requireUser, async (req, res) =
     where: { userId: req.user!.id, hipId },
     data: { deletedAt: new Date(), drawingData: null },
   });
+  broadcastChange("pedigreeAnnotation");
   res.json({ ok: true });
 });
 
@@ -593,6 +638,7 @@ router.post("/me/observations", requireUser, async (req, res) => {
         update: { ...data },
       })
     : await db.hipObservation.create({ data });
+  broadcastChange("observation", deviceId);
   res.json(observation);
 });
 
@@ -602,6 +648,7 @@ router.delete("/me/observations/:id", requireUser, async (req, res) => {
     where: { id, userId: req.user!.id },
     data: { deletedAt: new Date() },
   });
+  broadcastChange("observation");
   res.json({ ok: true });
 });
 
@@ -674,6 +721,7 @@ router.put("/me/media/:id/confirm", requireUser, async (req, res) => {
     return;
   }
   const updated = await db.mediaAsset.update({ where: { id }, data: { uploadStatus: "PROCESSED" } });
+  broadcastChange("media", asset.deviceId);
   res.json(updated);
 });
 
@@ -720,6 +768,7 @@ router.delete("/me/media/:id", requireUser, async (req, res) => {
     return;
   }
   await db.mediaAsset.update({ where: { id }, data: { deletedAt: new Date() } });
+  broadcastChange("media", asset.deviceId);
   // Best-effort: si el borrado físico en R2 falla (bucket no configurado
   // en este momento, etc.), el tombstone ya quedó guardado — no se pierde
   // la sincronización del borrado por un problema del lado del storage.
@@ -754,6 +803,7 @@ router.post("/me/vet-reports", requireUser, async (req, res) => {
   const report = await db.vetReport.create({
     data: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, mediaAssetId, notes, deviceId },
   });
+  broadcastChange("vetReport", deviceId);
   res.json(report);
 });
 
@@ -766,12 +816,14 @@ router.put("/me/vet-reports/:id", requireUser, async (req, res) => {
     return;
   }
   const updated = await db.vetReport.update({ where: { id }, data: { mediaAssetId, notes, deletedAt: null } });
+  broadcastChange("vetReport");
   res.json(updated);
 });
 
 router.delete("/me/vet-reports/:id", requireUser, async (req, res) => {
   const { id } = req.params;
   await db.vetReport.updateMany({ where: { id, userId: req.user!.id }, data: { deletedAt: new Date() } });
+  broadcastChange("vetReport");
   res.json({ ok: true });
 });
 
@@ -827,6 +879,7 @@ router.put("/me/hips/:hipId/manual-score", requireUser, async (req, res) => {
     });
     return result;
   });
+  broadcastChange("analysis", deviceId);
   res.json(created);
 });
 
