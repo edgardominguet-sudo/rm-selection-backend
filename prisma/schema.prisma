@@ -102,7 +102,6 @@ model Organization {
   vetReports              VetReport[]
   mediaAssets             MediaAsset[]
   pedigreeAnnotations     PedigreeAnnotation[]
-  recentHipVisits         RecentHipVisit[]
 }
 
 // Un usuario de RM Selection. Hoy hay uno solo (vos), pero se modela desde
@@ -133,7 +132,6 @@ model User {
   vetReports    VetReport[]
   mediaAssets   MediaAsset[]
   pedigreeAnnotations PedigreeAnnotation[]
-  recentHipVisits RecentHipVisit[]
 }
 
 // Un dispositivo (iPhone/iPad) desde el que un usuario usa la app. Deja
@@ -160,7 +158,6 @@ model Device {
   vetReports    VetReport[]
   mediaAssets   MediaAsset[]
   pedigreeAnnotations PedigreeAnnotation[]
-  recentHipVisits RecentHipVisit[]
 }
 
 // Qué tan utilizable es el catálogo estructurado de una venta:
@@ -461,7 +458,6 @@ model Hip {
   vetReports        VetReport[]
   mediaAssets       MediaAsset[]
   pedigreeAnnotations PedigreeAnnotation[]
-  recentHipVisits   RecentHipVisit[]
 
   // Historial de Ventas (ver HorseSaleHistory más abajo): apariciones
   // anteriores de este mismo caballo que se muestran cuando se abre ESTE
@@ -814,47 +810,6 @@ model PedigreeAnnotation {
   @@unique([userId, hipId])
 }
 
-// Tira de "Hips recientes" (HipNumberEntryView, 2026-08-31) — mismo patrón
-// exacto que UserDecision/PedigreeAnnotation: una fila por (userId, hipId),
-// servidor como fuente de verdad, tombstone (deletedAt) para que un
-// dispositivo offline se entere de un borrado. A diferencia de esos dos,
-// `visitedAt` se pisa en cada visita (no solo se crea una vez) — es lo que
-// define el orden "más reciente primero" que ve el usuario, y tiene que
-// viajar entre dispositivos para que ese orden sea el mismo en ambos (si
-// solo se sincronizara "existe/no existe", dos dispositivos podrían
-// mostrar el mismo conjunto de Hips en un orden distinto).
-//
-// Causa raíz real (2026-08-31, "cuando borro uno y abro otro, vuelven a
-// aparecer" + "tampoco estan sincronizados ambos dispositivos"): esta
-// función vivía ANTES solo en UserDefaults del dispositivo (ver
-// RecentHipsStore, RMSelection/Views/HipNumberEntryView.swift) — cero
-// sincronización. Un borrado en un dispositivo nunca llegaba al otro (por
-// eso "no sincronizados"), y lo que Ramon interpretó como "vuelven a
-// aparecer" era, en el fondo, la misma causa: el otro dispositivo (o el
-// mismo, tras un tiempo) seguía mostrando su copia local vieja, nunca
-// enterada del borrado. Esta tabla + las rutas /me/recent-hips de abajo
-// resuelven ambos síntomas de una sola vez, con el mecanismo ya probado de
-// decisiones/anotaciones.
-model RecentHipVisit {
-  id             String       @id @default(cuid())
-  userId         String
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organizationId String
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  hipId      String
-  hip        Hip       @relation(fields: [hipId], references: [id], onDelete: Cascade)
-  deviceId   String?
-  device     Device?   @relation(fields: [deviceId], references: [id])
-
-  visitedAt  DateTime  @default(now())
-
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  deletedAt  DateTime?
-
-  @@unique([userId, hipId])
-}
-
 // Observación de texto libre del usuario sobre un Hip — mismo criterio de
 // sincronización que UserDecision (servidor como fuente de verdad,
 // tombstone para borrados). Las observaciones generadas por IA siguen
@@ -1187,8 +1142,31 @@ model Stallion {
   name               String   @unique
   firstYearlingsYear Int?
   source             String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  // Stud Fee 2024/2026 (2026-08-25, a pedido explícito de Ramon: mostrar
+  // el fee junto al padrillo en "Buscar padrillo/madre" — ver captura de
+  // referencia). TEXTO libre, NUNCA numérico forzado: los valores reales
+  // incluyen condiciones especiales que no son un número ("Private",
+  // "Pensionado", "N/A — falleció [fecha]", "$8,500 LF", "€125,000", etc.)
+  // — inventar un formato numérico rígido hubiera obligado a mentir en los
+  // casos sin cifra pública. `null` = no se encontró ningún dato (fuente
+  // agotada, no "cero" ni "desconocido asumido como privado"). Investigado
+  // en 8 tandas (190 padrillos de Keeneland September 2026, fuente
+  // priorizada: sitio oficial de la granja > BloodHorse Stallion Register
+  // > TDN Stallion Register > Paulick Report solo si reproduce un
+  // comunicado oficial) — ver seed.ts para la carga y
+  // keeneland_sept_2026_stud_fees.md (entregado a Ramon) para el detalle
+  // completo con fuente por dato y segunda verificación (fallecidos,
+  // pensionados, reubicados, discrepancias).
+  studFee2024        String?
+  studFee2026         String?
+  // Fuente de cada dato (auditable, nunca valores reales de credenciales
+  // acá — son URLs/nombres de publicaciones, dato público de por sí).
+  studFeeSource2024   String?
+  studFeeSource2026   String?
+  // Granja/stud actual (2026) — puede diferir de donde estuvo en 2024 (ver
+  // comentario arriba: varios padrillos investigados cambiaron de granja o
+  // de país entre 2024 y 2026).
+  currentFarm         String?
 
   @@index([firstYearlingsYear])
 }

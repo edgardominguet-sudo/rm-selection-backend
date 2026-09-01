@@ -5,7 +5,7 @@ import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
-import { listFirstYearlingStallions } from "../stallionService";
+import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
@@ -322,6 +322,17 @@ router.get("/stallions/first-yearlings", requireUser, async (req, res) => {
   res.json({ stallions });
 });
 
+// "Stud Fee 2024/2026" (2026-08-25, a pedido explícito de Ramon) — mismo
+// criterio que /stallions/first-yearlings: la app pide esto UNA vez por
+// visita a esta pantalla (no por navegación) y cruza localmente contra
+// Pedigree.sire de cada Hip. Devuelve solo los padrillos con al menos un
+// dato de fee cargado (ver listStudFees) — nunca inventa un valor para el
+// resto.
+router.get("/stallions/stud-fees", requireUser, async (req, res) => {
+  const stallions = await listStudFees();
+  res.json({ stallions });
+});
+
 router.get("/hips/sale-history", requireUser, async (req, res) => {
   const house = req.query.house as string | undefined;
   const externalSaleId = req.query.externalSaleId as string | undefined;
@@ -523,44 +534,13 @@ router.delete("/me/decisions/:hipId", requireUser, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Tira de "Hips recientes" (HipNumberEntryView, 2026-08-31) — mismo patrón
-// exacto que /me/decisions: una fila por (userId, hipId), upsert,
-// tombstone para borrados. A diferencia de /me/decisions, PUT no exige
-// ningún campo en el body más que (opcionalmente) deviceId — "visitar" un
-// Hip no tiene más contenido que "ocurrió ahora" (visitedAt se pisa en
-// cada llamada, es lo que define el orden entre dispositivos).
-router.get("/me/recent-hips", requireUser, async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
-  const rows = await db.recentHipVisit.findMany({
-    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
-    orderBy: { updatedAt: "asc" },
-    include: { hip: hipIdentitySelect },
-  });
-  res.json(rows.map(withHipIdentity));
-});
-
-router.put("/me/recent-hips/:hipId", requireUser, async (req, res) => {
-  const { hipId } = req.params;
-  const { deviceId } = req.body as { deviceId?: string };
-  const visit = await db.recentHipVisit.upsert({
-    where: { userId_hipId: { userId: req.user!.id, hipId } },
-    create: { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, visitedAt: new Date() },
-    update: { deviceId, visitedAt: new Date(), deletedAt: null },
-  });
-  broadcastChange("recentHip", deviceId);
-  res.json(visit);
-});
-
-router.delete("/me/recent-hips/:hipId", requireUser, async (req, res) => {
-  const { hipId } = req.params;
-  await db.recentHipVisit.updateMany({
-    where: { userId: req.user!.id, hipId },
-    data: { deletedAt: new Date() },
-  });
-  broadcastChange("recentHip");
-  res.json({ ok: true });
-});
-
+// NOTA (2026-09-01): hubo acá 3 rutas /me/recent-hips (GET/PUT/DELETE)
+// para sincronizar la tira "Hips recientes" de HipNumberEntryView
+// (agregada 2026-08-31). Ramon pidió eliminar esa función por completo —
+// se sacaron estas rutas junto con el modelo `RecentHipVisit` (ver
+// schema.prisma) y todo su manejo en la app iOS. El resto de la
+// sincronización (decisiones, observaciones, pedigree, media, reportes
+// veterinarios, análisis) no se tocó.
 
 // Anotaciones a mano alzada sobre el Pedigree (lápiz vino tinto + borrador,
 // 2026-08-13 — sistema simplificado). Mismo patrón exacto que /me/decisions:
