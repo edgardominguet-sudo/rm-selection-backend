@@ -669,16 +669,38 @@ router.post("/me/media", requireUser, async (req, res) => {
   // la misma escritura — evita una segunda ronda a la base solo para
   // corregir la clave.
   const id = clientId ?? randomUUID();
+  // CORRECCIÓN DE RAÍZ (2026-09-02, bug real confirmado en HIP 2: una foto
+  // FRONTAL borrada hace ~2 días reapareció sola al borrar LATERAL hoy).
+  // Causa: esta ruta hacía upsert incondicional con `deletedAt: null` — si
+  // por CUALQUIER motivo (una entrada de la cola de subida del cliente que
+  // quedó pendiente/reintentando, ej. por espera de catálogo o un error de
+  // red) un POST con el MISMO `id` volvía a llegar DESPUÉS de que ese mismo
+  // asset ya hubiera sido borrado (`DELETE /me/media/:id`, ver más abajo),
+  // este endpoint lo revivía solo, sin que el usuario lo hubiera pedido.
+  // Regla ahora: el borrado tiene PRECEDENCIA ABSOLUTA sobre cualquier
+  // intento posterior de recrear el MISMO id — un asset tombstonado se
+  // queda tombstonado para siempre. Una foto nueva de verdad SIEMPRE trae
+  // un id nuevo (MediaItem.id se genera de cero en el cliente al tomarla),
+  // así que nunca hay un caso legítimo de "revivir" un id ya borrado.
+  const existing = clientId ? await db.mediaAsset.findFirst({ where: { id, userId: req.user!.id } }) : null;
+  if (existing?.deletedAt) {
+    console.log(`AIPHOTO-SERVER-REJECT-RESURRECTION mediaId=${id} hipId=${hipId} view=${conformationView ?? "-"} deletedAt=${existing.deletedAt.toISOString()} ts=${new Date().toISOString()}`);
+    res.status(409).json({ error: "MediaAsset ya fue eliminado; no se puede recrear con el mismo id.", deletedAt: existing.deletedAt });
+    return;
+  }
   const storageKey = buildStorageKey({ organizationId: req.user!.organizationId, hipId, kind, mediaAssetId: id, contentType });
   const data = { userId: req.user!.id, organizationId: req.user!.organizationId, hipId, deviceId, kind, contentType, byteSize, storageKey, conformationView };
   const asset = await db.mediaAsset.upsert({
     where: { id },
     create: { id, ...data },
-    // Reintento de una subida que no llegó a confirmarse: vuelve a
+    // Reintento de una subida que no llegó a confirmarse todavía (el
+    // asset existe, PENDING_UPLOAD, `deletedAt` sigue en null porque el
+    // chequeo de arriba ya lo garantiza en este punto) — vuelve a
     // PENDING_UPLOAD (no toca uploadStatus directamente porque el default
-    // de creación ya lo deja ahí, y un update explícito lo dejaría igual)
-    // y limpia un tombstone viejo si lo hubiera.
-    update: { ...data, deletedAt: null },
+    // de creación ya lo deja ahí, y un update explícito lo dejaría igual).
+    // Ya NO se limpia `deletedAt` acá: si estuviera tombstonado, el
+    // chequeo de arriba ya cortó la ejecución antes de llegar a este upsert.
+    update: data,
   });
   try {
     const uploadUrl = createUploadUrl(storageKey);
