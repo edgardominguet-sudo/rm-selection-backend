@@ -18,6 +18,28 @@ import { diagRouter } from "./api/diagRoutes";
 import { attachRealtime } from "./realtime";
 
 const app = express();
+// CORRECCIÓN DE RAÍZ (2026-09-02, "SINCRONIZACIÓN REAL iPHONE ↔️ iPAD" —
+// bug real reportado por Ramon: favoritos/notas/fotos tomados en un
+// dispositivo no aparecían en el otro). Causa raíz encontrada con
+// evidencia real de los logs de Railway: Express genera por defecto un
+// ETag débil para cada respuesta JSON, y GET /api/v1/me/decisions,
+// /me/observations y /me/pedigree-annotations se piden con la MISMA url
+// exacta (mismo query "since") en cada ciclo de sondeo (cada 6-30s,
+// SyncEngine.pullDecisions/pullObservations/pullPedigreeAnnotations)
+// mientras no aparece nada nuevo. El caché HTTP nativo de iOS
+// (URLCache/CFNetwork, activo por defecto en URLSession.shared) queda
+// habilitado para revalidar esa url contra ese ETag — y en los logs de
+// Railway se ve tráfico real 304 en exactamente esas tres rutas. Un 304
+// nunca debería poder salir de un endpoint de sondeo que decide
+// "novedades desde since": la app tiene que recibir SIEMPRE una
+// respuesta fresca del servidor, nunca una servida desde caché local del
+// dispositivo. Se desactiva ETag globalmente (no hay ninguna ruta en esta
+// API pensada para cachearse) y se fuerza Cache-Control: no-store en
+// TODA la API autenticada — ver el middleware agregado más abajo, justo
+// antes de montar `router`/`diagRouter`. Puramente aditivo: ninguna ruta
+// ni lógica de negocio cambia, solo se le prohíbe a cualquier capa
+// intermedia (caché de iOS, proxy) guardar o reutilizar una respuesta.
+app.set("etag", false);
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
@@ -255,8 +277,19 @@ app.get("/_diag/hip-analysis-status", async (req, res) => {
 // Versionado desde el día uno (barato ahora, evita romper un cliente de
 // iOS viejo el día que haga falta un /api/v2 — ver ARCHITECTURE.md §5).
 // DIAGNOSTICO TEMPORAL bug de Pedigree (2026-08-26) - ver diagRoutes.ts.
-app.use("/api/v1/diag", requireApiKey, diagRouter);
-app.use("/api/v1", requireApiKey, router);
+// Ver comentario de "app.set(\"etag\", false)" más arriba — mismo fix,
+// segunda mitad: sin este header, un dispositivo con conexión lenta o
+// cualquier proxy intermedio igual podría decidir por heurística propia
+// que una respuesta sin Cache-Control es cacheable un rato. `no-store`
+// es la instrucción HTTP más fuerte que existe para decir "nunca guardes
+// ni reutilices esto, en ningún lado" — correcta para el 100% de esta
+// API (nada acá está pensado para servirse desde caché).
+const noStoreMiddleware: express.RequestHandler = (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  next();
+};
+app.use("/api/v1/diag", requireApiKey, noStoreMiddleware, diagRouter);
+app.use("/api/v1", requireApiKey, noStoreMiddleware, router);
 
 const server = app.listen(config.port, () => {
   console.log(`[server] RM Selection backend escuchando en el puerto ${config.port}`);
