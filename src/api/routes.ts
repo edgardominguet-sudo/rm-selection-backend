@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
@@ -1235,7 +1235,7 @@ router.get("/sales/:saleId/catalog/imports", requireUser, async (req, res) => {
 // que el tiempo de respuesta es razonable y el llamador necesita ver el
 // resultado real (Hips revisados, fotos/videos encontrados) en la misma
 // respuesta, no adivinar consultando logs después.
-router.post("/sales/:saleId/media-sweep", requireUser, async (req, res) => {
+async function handleManualMediaSweep(req: Request, res: Response): Promise<void> {
   const { saleId } = req.params;
   const sale = await db.sale.findUnique({ where: { id: saleId } });
   if (!sale) {
@@ -1250,7 +1250,17 @@ router.post("/sales/:saleId/media-sweep", requireUser, async (req, res) => {
     console.error(`[media-sweep] Error en corrida manual para "${sale.name}":`, err);
     res.status(500).json({ error: `Error corriendo el barrido de Media para "${sale.name}": ${message}` });
   }
-});
+}
+
+router.post("/sales/:saleId/media-sweep", requireUser, handleManualMediaSweep);
+
+// Alias GET (2026-09-03, a pedido explícito de Ramon: "ejecuta manualmente
+// el mismo barrido que correrá a las 3:00 a. m." desde un entorno que no
+// puede mandar POST con headers custom) — misma auth (?apiKey=... por
+// query, igual que el resto de las rutas GET de diagnóstico de esta API),
+// mismo handler exacto, nunca un camino aparte. Puramente aditivo: la ruta
+// POST original sigue igual para el uso normal desde Postman/curl/la app.
+router.get("/sales/:saleId/media-sweep", requireUser, handleManualMediaSweep);
 
 // Historial de corridas del barrido de Media (automáticas Y manuales) —
 // para poder confirmar "¿corrió anoche a las 3am? ¿qué encontró?" sin
