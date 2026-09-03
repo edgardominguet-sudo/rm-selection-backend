@@ -39,3 +39,33 @@ export async function listFirstYearlingStallions(year?: number) {
   });
   return rows;
 }
+
+/**
+ * "Stud Fee 2024/2026" (2026-08-25, a pedido explícito de Ramon: mostrar
+ * el fee junto al padrillo seleccionado en "Buscar padrillo/madre" de
+ * HipNumberEntryView — ver captura de referencia que envió). Devuelve
+ * TODOS los padrillos que tengan al menos un dato de fee cargado (2024 o
+ * 2026) — no solo los debutantes. La app cruza por nombre normalizado
+ * exactamente igual que ya hace con `listFirstYearlingStallions`.
+ *
+ * Los valores viajan como TEXTO libre (nunca forzados a número): pueden
+ * ser una cifra ("$8,500 LF"), una condición especial ("Private",
+ * "Pensionado") o venir en `null` si genuinamente no se encontró ningún
+ * dato tras la investigación — la app debe tratar `null` como "sin dato",
+ * nunca como cero ni inventar un valor.
+ */
+export async function listStudFees() {
+  const rows = await db.stallion.findMany({
+    where: {
+      OR: [{ studFee2024: { not: null } }, { studFee2026: { not: null } }],
+    },
+    select: {
+      name: true,
+      studFee2024: true,
+      studFee2026: true,
+      currentFarm: true,
+    },
+    orderBy: { name: "asc" },
+  });
+  return rows;
+}
