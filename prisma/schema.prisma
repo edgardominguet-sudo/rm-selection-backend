@@ -1154,6 +1154,18 @@ model Stallion {
   name               String   @unique
   firstYearlingsYear Int?
   source             String?
+  // Agregados 2026-09-03: la migracion original (20260819120000_stallion)
+  // ya creo estas dos columnas en la base real (createdAt con default,
+  // updatedAt SIN default) pero el modelo de este archivo nunca las
+  // declaro — drift puramente del lado del schema/cliente Prisma, nunca
+  // de la base. Resultado: CUALQUIER escritura a Stallion (el seed de
+  // debutantes de 2026-08-19 y el de Stud Fees de 2026-08-25) fallaba
+  // siempre con "Null constraint violation on the fields: (`updatedAt`)"
+  // porque el cliente generado no sabia que tenia que mandar un valor.
+  // No hace falta migracion nueva — las columnas ya existen en la base
+  // tal cual layout de abajo, esto solo le informa al cliente Prisma.
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
   // Stud Fee 2024/2026 (2026-08-25, a pedido explícito de Ramon: mostrar
   // el fee junto al padrillo en "Buscar padrillo/madre" — ver captura de
   // referencia). TEXTO libre, NUNCA numérico forzado: los valores reales
