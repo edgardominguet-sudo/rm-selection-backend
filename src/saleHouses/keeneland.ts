@@ -3,10 +3,51 @@ import { resolveKeenelandHipDates } from "./keenelandSchedule";
 import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
 import { resolveKeenelandSaleDays } from "./keenelandHipGrouping";
 
-// Forma cruda de la API interna de Keeneland
-// (GET https://www.keeneland.com/json/sale_api/get/catalog/{saleID}) —
-// devuelve un diccionario keyed por ID interno, no un array. Puerto de
-// RMSelection/Models/KeenelandHipCatalogEntry.swift.
+// CORRECCION DE RAIZ (2026-09-03, a pedido explicito de Ramon: "HIP 3 y
+// HIP 17 YA tienen foto y Walking Video disponibles, ¿por que ustedes no lo
+// detectan?"): la API vieja de abajo (GET .../json/sale_api/get/catalog/12)
+// esta MUERTA — nunca devolvio nada real para "September Yearling Sale"
+// desde que se cablearo (confirmado: 22 corridas nocturnas seguidas del
+// barrido de Media, TODAS con 0 Hips revisados; y confirmado de nuevo hoy
+// consultando la URL en vivo, sigue vacia). Keeneland migro su catalogo en
+// vivo a un sistema nuevo: la propia pagina de catalogo de
+// keeneland.com ("Online Catalog", https://www.keeneland.com/sales/{año}/
+// {id}/{slug}/catalog-table/) hoy consume
+// https://catalog-backend.keeneland.com/sites/default/files/json_hde/sale_data_{ID}.json
+// — un JSON ESTATICO PUBLICO (sin autenticacion, confirmado con un fetch()
+// real desde esa misma pagina) con la MISMA forma de RawEntry de siempre
+// (mismos field_* de abajo, mismo "diccionario keyed por ID interno, no un
+// array") pero bajo un ID NUMERICO DISTINTO al que ya usamos como
+// externalSaleId estable (identificado en pantalla/URL del sitio, ej. "12"
+// para September Yearling Sale) — probablemente el node id interno real de
+// Drupal vs. el alias/slug id que sí quedo estable en la URL publica. Para
+// September Yearling Sale 2026: externalSaleId "12" (el de siempre, el que
+// ya usan cliente+backend+DB — NO SE TOCA) corresponde a
+// CATALOG_BACKEND_SALE_ID "132" (confirmado real: mismo total de Hips —
+// 4642 — y mismos datos de Hip 3 -Barn 19, Paramount Sales Agent LXXVIII,
+// Gun Runner-Ready Lady- que ya teniamos importados). Verificado con datos
+// REALES no vacios de otros 2 Hips de esta misma venta (1325 y 2938, los
+// unicos con Media publicada hoy): field_main_image trae una URL de foto
+// absoluta lista para usar, field_other_videos trae la URL del reproductor
+// de Vimeo completa (".../video/{id}?share=copy") — vimeoEmbedURL() de mas
+// abajo ya extrae el ID numerico de CUALQUIER string que se le pase via
+// regex, asi que sigue funcionando sin cambios contra este formato nuevo.
+// UNICO dato que cambio de forma: field_hip_number viene con CEROS A LA
+// IZQUIERDA ("0003" en vez de "3") — normalize() de abajo ya lo despoja.
+// DISEÑO: el mapeo es opt-in por externalSaleId (CATALOG_BACKEND_SALE_ID) —
+// si una venta de Keeneland no esta en el mapa, sigue exactamente igual que
+// antes (API vieja) hasta confirmar a mano su ID real en este sistema
+// nuevo, mismo criterio ya usado en SaleOption.swift para cada externalSaleId
+// (nunca autodetectado, siempre confirmado y hardcodeado a mano por venta).
+const CATALOG_BACKEND_SALE_ID: Record<string, string> = {
+    "12": "132", // September Yearling Sale 2026 — ver comentario arriba.
+};
+
+// Forma cruda de la API interna de Keeneland — misma forma para la API
+// vieja (GET https://www.keeneland.com/json/sale_api/get/catalog/{saleID})
+// y para el JSON estatico nuevo de catalog-backend.keeneland.com (ver
+// comentario arriba). Devuelve un diccionario keyed por ID interno, no un
+// array. Puerto de RMSelection/Models/KeenelandHipCatalogEntry.swift.
 interface RawEntry {
     field_hip_number: string;
     title?: string | null;
@@ -42,6 +83,22 @@ function vimeoEmbedURL(raw: unknown): string | null {
     return `https://player.vimeo.com/video/${idMatch[0]}`;
 }
 
+function normalizeHipNumber(raw: string): string {
+    // El JSON nuevo de catalog-backend.keeneland.com rellena con ceros a
+    // la izquierda ("0003") — el resto de RM Selection (DB, cliente,
+    // comparaciones por hipNumber) siempre trabajo con el numero sin
+    // relleno ("3"), asi que se normaliza en un solo lugar, ni bien se lee
+    // el dato crudo. parseInt ignora ceros a la izquierda solo; si por
+    // algun motivo el Hip tiene una letra (ej. "17A"), se conserva tal cual
+    // (Number() daria NaN y no se debe perder el sufijo).
+    const trimmed = raw.trim();
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && String(numeric) !== "NaN" && /^\d+$/.test(trimmed)) {
+        return String(numeric);
+    }
+    return trimmed.replace(/^0+(?=\d)/, "");
+}
+
 function normalize(entry: RawEntry): NormalizedHip {
     const media: CatalogMediaItem[] = [];
     if (entry.field_main_image) {
@@ -56,7 +113,7 @@ function normalize(entry: RawEntry): NormalizedHip {
   const hasSaleResult = entry.field_sale_price != null || entry.field_buyer_name != null || entry.field_out != null;
 
   return {
-        hipNumber: entry.field_hip_number,
+        hipNumber: normalizeHipNumber(entry.field_hip_number),
         horseName: entry.title || undefined,
         sex: entry.field_sex ?? undefined,
         consignor: entry.field_consignor ?? undefined,
@@ -86,7 +143,14 @@ export class KeenelandClient implements SaleHouseClient {
         const cached = this.cache.get(externalSaleId);
         if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached.entries;
 
-      const url = `https://www.keeneland.com/json/sale_api/get/catalog/${externalSaleId}`;
+      // Ver comentario grande arriba de RawEntry: preferimos el catalogo
+      // en vivo NUEVO cuando ya confirmamos a mano el ID real de esta
+      // venta en ese sistema; si no esta en el mapa, mismo camino de
+      // siempre (API vieja) para no romper ninguna venta ya funcionando.
+      const catalogBackendId = CATALOG_BACKEND_SALE_ID[externalSaleId];
+      const url = catalogBackendId
+                ? `https://catalog-backend.keeneland.com/sites/default/files/json_hde/sale_data_${catalogBackendId}.json`
+                : `https://www.keeneland.com/json/sale_api/get/catalog/${externalSaleId}`;
         const response = await fetch(url, { headers: { Accept: "application/json" } });
         const rawBody = await response.text();
         if (!response.ok) {
