@@ -7,6 +7,7 @@ import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
+import { ViewName } from "../analysis/landmarks";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
@@ -447,7 +448,21 @@ router.get("/hips/:hipId/analysis", requireUser, async (req, res) => {
 // mismo tiempo nunca generan dos análisis distintos.
 router.post("/hips/:hipId/analysis", requireUser, async (req, res) => {
   const { hipId } = req.params;
-  const { deviceId } = req.body as { deviceId?: string };
+  // INDEPENDENCIA REAL DE VISTAS (2026-09-04, a pedido explícito de Ramon:
+  // "cada fotografía debe analizarse de forma independiente... presionar
+  // Analizar en UNA tarjeta no debe disparar ningún proceso sobre las
+  // otras dos"). `view`, cuando el cliente lo manda (ver
+  // HipAnalysisSyncService.triggerAnalysis, disparado desde
+  // HipDetailViewModel.revealOrAnalyze(view:) — el botón "Analizar" de
+  // ESA tarjeta puntual), le dice a `analyzeHipOnDemand` que analice
+  // ÚNICAMENTE esa vista, aunque las otras dos también tengan fotos sin
+  // analizar todavía. Valor no reconocido (versión vieja del cliente, o
+  // dato corrupto) se ignora tal cual `undefined` — mismo comportamiento
+  // de siempre (analizar todas las vistas pendientes), nunca un error 400
+  // por esto.
+  const { deviceId, view: rawView } = req.body as { deviceId?: string; view?: string };
+  const view: ViewName | undefined =
+    rawView === "frontal" || rawView === "lateral" || rawView === "posterior" ? rawView : undefined;
   const organizationId = req.user!.organizationId;
 
   const hip = await db.hip.findUnique({ where: { id: hipId } });
@@ -457,7 +472,7 @@ router.post("/hips/:hipId/analysis", requireUser, async (req, res) => {
   }
 
   try {
-    const result = await analyzeHipOnDemand(hip, organizationId, deviceId);
+    const result = await analyzeHipOnDemand(hip, organizationId, deviceId, view);
     broadcastChange("analysis", deviceId);
     res.json(result);
   } catch (err) {
