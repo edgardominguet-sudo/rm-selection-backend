@@ -576,7 +576,31 @@ const UNAVAILABLE_DETAIL: ViewAnalysisDetail = { available: false, landmarks: nu
 export async function analyzeHipOnDemand(
   hip: { id: string; hipNumber: string; horseName: string | null },
   organizationId: string,
-  deviceId?: string
+  deviceId?: string,
+  // INDEPENDENCIA REAL DE VISTAS (2026-09-04, corrección a pedido explícito
+  // de Ramon: "cada fotografía debe analizarse de forma independiente...
+  // presionar Analizar en UNA tarjeta no debe disparar ningún proceso sobre
+  // las otras dos"). Antes de esto, `analyzeHipOnDemand` no sabía qué
+  // tarjeta tocó el usuario — si las 3 fotos ya estaban cargadas y NINGUNA
+  // tenía análisis previo (el caso normal: se cargan las 3 fotos y recién
+  // después se analiza), las 3 vistas quedaban "sucias" (`dirtyViews` más
+  // abajo) y se mandaban JUNTAS a la IA con solo tocar el botón de
+  // Frontal — la UI ocultaba el resultado de Lateral/Posterior hasta que
+  // el usuario tocara sus propios botones, pero el análisis REAL (la
+  // llamada a la IA que cuesta cuota y procesa la foto) ya había corrido
+  // para las 3, sin que el usuario lo pidiera. `requestedView`, cuando
+  // viene informado (ver POST /hips/:hipId/analysis y
+  // HipDetailViewModel.revealOrAnalyze(view:)), restringe qué vistas
+  // "sucias" se mandan a analizar EN ESTA LLAMADA: únicamente esa. Las
+  // demás vistas sucias (con foto nueva pero todavía no pedida por el
+  // usuario) quedan tal cual — sin resultado, sin tocar su procedencia
+  // guardada — hasta que su propio botón "Analizar" dispare, en otra
+  // llamada aparte, su propio `requestedView`. `undefined` (ausente)
+  // preserva el comportamiento de siempre: analizar TODAS las vistas
+  // sucias de una — es el camino que sigue usando
+  // `analyzeAndRevealAll()` (pantalla de API key manual / reintentar sin
+  // referente), donde no hay ninguna tarjeta puntual que aislar.
+  requestedView?: ViewName
 ): Promise<{ analysis: Record<string, unknown>; reused: boolean }> {
   // Análisis IA (2026-08-13): SOLO las fotos que el usuario tomó desde la
   // pantalla Análisis (IA) de este Hip — nunca el catálogo (hip.mediaJson)
@@ -602,11 +626,24 @@ export async function analyzeHipOnDemand(
         include: { analysisResult: true },
       });
       if (pointer && pointer.analysisResult.mediaHash === currentHash) {
-        // Ya hay un análisis vigente para EXACTAMENTE esta misma media —
-        // no se vuelve a llamar a la IA (evita resultados distintos entre
-        // ejecuciones para el mismo Hip, y evita gastar cuota de la API
-        // sin necesidad).
-        return { analysis: pointer.analysisResult, reused: true };
+        // INDEPENDENCIA REAL DE VISTAS (2026-09-04): la huella de media es
+        // sobre las 3 fotos juntas (ver mediaFingerprint) — no cambia solo
+        // porque ESTA vista puntual todavía no se analizó. Antes, este
+        // chequeo devolvía el análisis vigente tal cual con solo que la
+        // media no hubiera cambiado, sin importar si la vista pedida
+        // ahora tenía o no un resultado real — si Frontal ya se había
+        // analizado y el usuario recién ahora tocaba "Analizar" en
+        // Lateral (misma media, nada nuevo subido), esto cortaba acá
+        // mismo y Lateral se quedaba sin analizar jamás. Ahora, con una
+        // vista puntual pedida, el atajo solo aplica si ESA vista ya
+        // tiene un resultado disponible — si no, sigue de largo (aunque
+        // el resto de la media sea idéntica) para analizarla de verdad.
+        const requestedAlreadyAvailable =
+          !requestedView ||
+          !!(pointer.analysisResult.landmarksJson as Record<ViewName, ViewAnalysisDetail> | null)?.[requestedView]?.available;
+        if (requestedAlreadyAvailable) {
+          return { analysis: pointer.analysisResult, reused: true };
+        }
       }
 
       // INDEPENDENCIA DE VISTAS (2026-09-01, a pedido explícito de Ramon:
@@ -636,6 +673,16 @@ export async function analyzeHipOnDemand(
         ? viewNames.filter((view) => (currentByView[view]?.id ?? null) !== (previousSourceIds[view] ?? null))
         : [...viewNames];
 
+      // INDEPENDENCIA REAL DE VISTAS (2026-09-04): de las vistas "sucias"
+      // (con foto nueva/distinta a la del último análisis), solo se manda
+      // a la IA ahora la que el usuario efectivamente pidió — nunca las
+      // otras, aunque también estén sucias (ej. las 3 fotos se cargaron
+      // juntas y ninguna se analizó todavía). `requestedView` ausente
+      // (analyzeAndRevealAll, sin tarjeta puntual que aislar) preserva el
+      // comportamiento de siempre: todas las sucias de una.
+      const viewsToAnalyzeNow = requestedView ? dirtyViews.filter((v) => v === requestedView) : dirtyViews;
+      const sentViews = new Set<ViewName>(viewsToAnalyzeNow);
+
       // Fotos con un conformationView no reconocible (legado, o valor
       // inesperado) nunca tienen procedencia por vista posible — siempre
       // se mandan a analizar junto con lo que esté sucio.
@@ -643,7 +690,7 @@ export async function analyzeHipOnDemand(
         (m) => m.conformationView !== "frontal" && m.conformationView !== "lateral" && m.conformationView !== "posterior"
       );
       const dirtyMedia: CatalogMediaItem[] = [
-        ...dirtyViews.map((v) => currentByView[v]).filter((m): m is CatalogMediaItem => !!m),
+        ...viewsToAnalyzeNow.map((v) => currentByView[v]).filter((m): m is CatalogMediaItem => !!m),
         ...untaggedMedia,
       ];
 
@@ -672,19 +719,22 @@ export async function analyzeHipOnDemand(
 
       for (const view of viewNames) {
         const isDirty = dirtyViews.includes(view);
+        const wasSentToAI = sentViews.has(view);
         const freshDetailForView = fresh?.detail[view];
-        if (isDirty && freshDetailForView?.available) {
-          // Vista sucia con foto nueva que dio válida: resultado fresco.
+        if (wasSentToAI && freshDetailForView?.available) {
+          // Vista pedida por el usuario en ESTA llamada, con foto nueva
+          // que dio válida: resultado fresco.
           mergedDetail[view] = freshDetailForView;
           for (const key of TRAITS_BY_VIEW[view]) setScore(mergedScores, `${view}.${key}`, fresh!.scores[`${view}.${key}`] ?? 0);
           if (fresh!.viewSourceAssetIds[view]) mergedSourceIds[view] = fresh!.viewSourceAssetIds[view];
-        } else if (isDirty) {
-          // Vista sucia sin resultado disponible (la foto se borró, o la
-          // foto nueva no dio válida para esta vista) — queda "sin foto".
-          // Nunca hereda el resultado viejo: ese pertenecía a OTRA foto.
+        } else if (wasSentToAI) {
+          // Vista pedida por el usuario en ESTA llamada, sin resultado
+          // disponible (la foto se borró, o la foto nueva no dio válida
+          // para esta vista) — queda "sin foto". Nunca hereda el resultado
+          // viejo: ese pertenecía a OTRA foto.
           mergedDetail[view] = UNAVAILABLE_DETAIL;
           if (currentByView[view]?.id) mergedSourceIds[view] = currentByView[view]!.id!;
-        } else if (previousDetail?.[view]) {
+        } else if (!isDirty && previousDetail?.[view]) {
           // Vista estable: se copia bit a bit de la fila anterior — nunca
           // se le vuelve a pedir nada a la IA.
           mergedDetail[view] = previousDetail[view];
@@ -692,6 +742,19 @@ export async function analyzeHipOnDemand(
             for (const key of TRAITS_BY_VIEW[view]) setScore(mergedScores, `${view}.${key}`, previousScores[`${view}.${key}`] ?? 0);
           }
           if (previousSourceIds?.[view]) mergedSourceIds[view] = previousSourceIds[view]!;
+        } else if (isDirty) {
+          // INDEPENDENCIA REAL DE VISTAS (2026-09-04): esta vista tiene una
+          // foto nueva/distinta (por eso `isDirty`), pero el usuario
+          // todavía no tocó SU botón "Analizar" — no está en `sentViews`,
+          // así que no se le pidió nada a la IA para ella en esta pasada.
+          // Se deja "sin foto todavía evaluada" a propósito, SIN registrar
+          // `mergedSourceIds[view]`: así, la próxima vez que se recalcule
+          // este Hip (para cualquier otra vista), esta sigue viendo su
+          // propio id de foto actual como distinto del guardado
+          // (`undefined`) y sigue contando como "sucia" — el día que el
+          // usuario finalmente toque su propio botón, recién ahí se
+          // analiza de verdad, nunca antes ni de arrastre.
+          mergedDetail[view] = UNAVAILABLE_DETAIL;
         } else {
           mergedDetail[view] = UNAVAILABLE_DETAIL;
         }
