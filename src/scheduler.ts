@@ -127,17 +127,79 @@ let nightlySyncIsRunning = false;
  *      catalogAccess FULL — ver rankingService.syncCatalogsForActiveSales;
  *   4) barrido de Media (fotos/videos publicados por la casa fuera del
  *      catálogo) — ver mediaSweepService.ts.
- * A propósito NO corre una vez extra al arrancar el servidor (a diferencia
- * del scheduler de análisis de arriba): el pedido explícito fue "no lo
- * quiero en otro horario ni en segundo plano" — un redeploy a cualquier
- * hora del día no debe disparar esto fuera de las 3am. Cada paso va en su
- * propio try/catch: si uno falla, los otros dos igual corren.
+ * NO corre una vez extra en CADA arranque del servidor (a diferencia del
+ * scheduler de análisis de arriba): el pedido explícito fue "no lo quiero
+ * en otro horario ni en segundo plano" — un redeploy normal, a cualquier
+ * hora del día, no debe disparar esto fuera de las 3am. La ÚNICA
+ * excepción (2026-09-05, ver `catchUpMissedNightlySyncIfNeeded` más
+ * abajo) es cuando la corrida de HOY realmente nunca llegó a dispararse
+ * (el servidor estuvo caído justo a las 3am) — ahí sí corre una vez al
+ * arrancar, para no perder el día entero de fotos/videos/catálogo nuevo
+ * solo porque el proceso no estaba vivo en ese instante puntual. Cada
+ * paso va en su propio try/catch: si uno falla, los otros dos igual
+ * corren.
  */
 export function startNightlySyncScheduler(): void {
   cron.schedule("0 3 * * *", () => {
     void runNightlySyncCycle();
   });
   console.log("[nightly-sync] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor) — descubrimiento + catálogo/precios + Media, un solo horario fijo, sin otra cadencia.");
+
+  // CORRECCIÓN 2026-09-05 (bug real reportado por Ramon: "no se
+  // descargaron todos los nuevos videos y fotos a las 3:00 am").
+  // CAUSA RAÍZ REAL (confirmada con logs de Railway, no adivinada): el
+  // trial de Railway había expirado la noche del 4-sept — el contenedor
+  // de este servicio quedó totalmente apagado (deployment REMOVED) desde
+  // las 20:05 UTC del 4-sept hasta las 05:49 UTC del 5-sept, un rango que
+  // tapa por completo la ventana de las 3:00 UTC de ese día. `node-cron`
+  // sólo dispara el tick si el proceso está corriendo justo en ese
+  // instante — no tiene forma de "recuperar" un tick perdido mientras el
+  // servicio estuvo caído, así que el 5-sept se quedó sin descubrimiento
+  // de ventas nuevas, sin sincronizar catálogo/precios y sin barrido de
+  // Media, sin que hiciera falta ningún bug de lógica nuevo: cualquier
+  // caída (de Railway o de cualquier otra causa) que incluya las 3am UTC
+  // vuelve a producir exactamente este mismo síntoma.
+  //
+  // FIX DEFINITIVO (para que esto no vuelva a pasar solo, sin depender de
+  // que alguien note la caída a tiempo): al arrancar el servidor se
+  // chequea cuándo fue la última corrida realmente disparada por este
+  // cron (usa `MediaSweepRun.trigger === "scheduled"` — ya es el único
+  // registro persistido de "el barrido de las 3am corrió de verdad", ver
+  // el comentario de ese modelo en schema.prisma). Si pasaron más de
+  // `NIGHTLY_SYNC_CATCH_UP_THRESHOLD_HOURS` horas (o nunca corrió
+  // ninguna), se asume que la ventana de hoy se perdió de verdad y se
+  // corre una única vez de recuperación, ya mismo. El umbral de 20h es a
+  // propósito angosto: dentro del mismo día, un redeploy normal (pueden
+  // ser varios durante desarrollo activo) NO dispara nada extra porque el
+  // run de esa madrugada ya quedó registrado hace menos de 20h — se
+  // preserva intacto el pedido explícito de 2026-08-17 ("no lo quiero en
+  // otro horario ni en segundo plano") para el caso normal; esto solo
+  // actúa cuando de verdad hizo falta.
+  void catchUpMissedNightlySyncIfNeeded();
+}
+
+const NIGHTLY_SYNC_CATCH_UP_THRESHOLD_HOURS = 20;
+
+async function catchUpMissedNightlySyncIfNeeded(): Promise<void> {
+  try {
+    const lastScheduledRun = await db.mediaSweepRun.findFirst({
+      where: { trigger: "scheduled" },
+      orderBy: { startedAt: "desc" },
+      select: { startedAt: true },
+    });
+    const hoursSinceLastRun = lastScheduledRun
+      ? (Date.now() - lastScheduledRun.startedAt.getTime()) / (1000 * 60 * 60)
+      : Infinity;
+    if (hoursSinceLastRun < NIGHTLY_SYNC_CATCH_UP_THRESHOLD_HOURS) {
+      return;
+    }
+    console.warn(
+      `[nightly-sync] Recuperación al arrancar: la última corrida programada fue ${lastScheduledRun ? `hace ${hoursSinceLastRun.toFixed(1)}h` : "nunca"} — se perdió la ventana de las 3am (probable caída del servidor en ese momento). Corriendo el ciclo completo una vez, ahora mismo.`
+    );
+    await runNightlySyncCycle();
+  } catch (err) {
+    console.error("[nightly-sync] Error chequeando si hace falta recuperar la corrida perdida de las 3am:", err);
+  }
 }
 
 async function runNightlySyncCycle(): Promise<void> {

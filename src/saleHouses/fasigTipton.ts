@@ -1,5 +1,6 @@
 import { NormalizedHip, ResolvedSaleDay, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
 import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
+import { parseFoalingDate } from "./dateParsing";
 
 // Forma cruda de la API interna de Fasig-Tipton
 // (GET https://www.fasigtipton.com/django/api/horses/?sale={saleID}).
@@ -29,6 +30,12 @@ interface RawEntry {
   price?: string | null;
   purchaser?: string | null;
   sold_as_code?: string | null;
+  // Fecha de nacimiento completa — PESE AL NOMBRE, el campo real de fecha
+  // no es "foaled" (ese trae el ESTADO de nacimiento, ej. "NY") sino este,
+  // "year_of_birth", con la fecha completa "MM/DD/YYYY" (ej. "03/27/2025")
+  // — confirmado con datos reales de una venta en vivo (2026-09-07, ver
+  // dateParsing.ts).
+  year_of_birth?: string | null;
 }
 
 function buildMedia(entry: RawEntry): CatalogMediaItem[] {
@@ -61,6 +68,7 @@ function normalize(entry: RawEntry): NormalizedHip {
     sire: entry.sire ?? undefined,
     dam: entry.dam ?? undefined,
     damSire: entry.sire_of_dam ?? undefined,
+    foalingDate: parseFoalingDate(entry.year_of_birth),
     media: buildMedia(entry),
     saleResult: hasSaleResult
       ? {

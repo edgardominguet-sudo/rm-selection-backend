@@ -2,6 +2,7 @@ import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishe
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
 import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
 import { resolveKeenelandSaleDays } from "./keenelandHipGrouping";
+import { parseFoalingDate } from "./dateParsing";
 
 // CORRECCION DE RAIZ (2026-09-03, a pedido explicito de Ramon: "HIP 3 y
 // HIP 17 YA tienen foto y Walking Video disponibles, ¿por que ustedes no lo
@@ -123,6 +124,10 @@ function normalize(entry: RawEntry): NormalizedHip {
         damSire: entry.field_broodmare_sire ?? undefined,
         color: entry.field_color ?? undefined,
         foalYear: extractFoalYear(entry.field_foaling_date),
+        // Confirmado con datos reales de September Yearling Sale 2026:
+        // "field_foaling_date" viene como "MM/DD/YYYY" (ej. "02/15/2025")
+        // — ver dateParsing.ts.
+        foalingDate: parseFoalingDate(entry.field_foaling_date),
         media,
         saleResult: hasSaleResult
           ? {

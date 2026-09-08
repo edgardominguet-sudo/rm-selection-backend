@@ -239,6 +239,7 @@ router.get("/sales/hips", requireUser, async (req, res) => {
       damSire: true,
       breeder: true,
       foalYear: true,
+      foalingDate: true,
       color: true,
       sessionDate: true,
       mediaJson: true,

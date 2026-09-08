@@ -418,6 +418,17 @@ model Hip {
   // identificación del caballo entre ventas.
   breeder           String?
   foalYear          Int?
+  // Fecha de nacimiento COMPLETA ("foaling date") — agregada 2026-09-07 a
+  // pedido explícito de Ramon para mostrarla en el PDF de Compartir Hip
+  // ("Foaled: May 16, 2025", ver HipShareContentBuilder.swift en la app).
+  // A diferencia de foalYear (solo el año, usado para el cruce de
+  // Historial de Ventas — no se toca), este campo nunca se completa a
+  // mano: cada casa la arma con `parseFoalingDate` (saleHouses/dateParsing.ts)
+  // a partir de su propio campo crudo real (Keeneland: field_foaling_date;
+  // Fasig-Tipton: year_of_birth, pese al nombre trae la fecha completa) y
+  // el próximo resync automático la completa sola en los Hips ya
+  // guardados, igual que barn (ver migración hip_barn).
+  foalingDate       DateTime?
   color             String?
 
   // Fecha (día calendario) de la jornada en la que está programado

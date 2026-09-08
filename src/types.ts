@@ -69,6 +69,14 @@ export interface NormalizedHip {
   breeder?: string;
     foalYear?: number;
     color?: string;
+    // Fecha de nacimiento COMPLETA ("foaling date") — a diferencia de
+    // foalYear (solo el año, usado para el cruce de Historial de Ventas),
+    // este campo es para mostrarla tal cual en el PDF de Compartir Hip de
+    // la app ("Foaled: May 16, 2025", ver HipShareContentBuilder.swift).
+    // Agregado 2026-09-07 a pedido explícito de Ramon. Cada casa la arma
+    // con `parseFoalingDate` (ver saleHouses/dateParsing.ts) a partir de su
+    // propio campo crudo — nunca inventada ni copiada de foalYear.
+    foalingDate?: Date;
 }
 
 // Contexto opcional de la venta que algún cliente puede necesitar además

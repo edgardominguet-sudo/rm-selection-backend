@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { CatalogImport } from "@prisma/client";
 import { CatalogMediaItem, NormalizedHip, SaleResultData } from "../types";
+import { parseFoalingDate } from "./dateParsing";
 import { upsertNormalizedHips, UpsertSummary } from "../rankingService";
 
 // Camino de catálogo para ventas SaleCatalogAccess.MANUAL_CSV — hoy, OBS (ver
@@ -55,6 +56,7 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   barn: ["barn", "barn number", "barn #", "stall"],
   breeder: ["breeder", "bred by"],
   foalYear: ["foal year", "foaling year", "year foaled", "yob"],
+  foalingDate: ["foaling date", "foaled date", "date of birth", "dob", "birth date"],
   color: ["color", "colour"],
   sessionDate: ["session date", "sale date", "session", "day"],
   price: ["sale price", "price", "hip price"],
@@ -179,6 +181,13 @@ export function parseManualCatalogCsv(csvText: string): ManualCatalogParseResult
       else warnings.push(`Fila ${rowNumber} (Hip ${hipNumber}): "Foal Year" = "${foalYearRaw}" no es un año válido — se ignora.`);
     }
 
+    let foalingDate: Date | undefined;
+    const foalingDateRaw = get("foalingDate");
+    if (foalingDateRaw) {
+      foalingDate = parseFoalingDate(foalingDateRaw);
+      if (!foalingDate) warnings.push(`Fila ${rowNumber} (Hip ${hipNumber}): "Foaling Date" = "${foalingDateRaw}" no se pudo interpretar como fecha — se ignora.`);
+    }
+
     const sessionDateRaw = get("sessionDate");
     if (sessionDateRaw) {
       const parsed = new Date(`${sessionDateRaw}T12:00:00Z`);
@@ -203,6 +212,7 @@ export function parseManualCatalogCsv(csvText: string): ManualCatalogParseResult
       damSire: get("damSire"),
       breeder: get("breeder"),
       foalYear,
+      foalingDate,
       color: get("color"),
       media,
       saleResult,
