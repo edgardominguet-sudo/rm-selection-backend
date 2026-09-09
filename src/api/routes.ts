@@ -8,6 +8,7 @@ import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { ViewName } from "../analysis/landmarks";
+import { resolveVimeoProgressiveUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
@@ -419,6 +420,46 @@ router.get("/hips/resolve", requireUser, async (req, res) => {
   }
 
   res.json({ hipId: hip.id });
+});
+
+// MARK: - Resolución de video de catálogo (2026-09-09). Reutiliza el MISMO
+// resolutor de Vimeo, probado en producción, que ya usa el análisis de
+// Marcha por IA (resolveVimeoProgressiveUrl en frameExtraction.ts) — con el
+// Referer correcto ("https://player.vimeo.com/") para que funcione con
+// videos de CUALQUIER casa de venta (Keeneland, Fasig-Tipton, OBS), no solo
+// los de un dominio fijo. El cliente iOS (CatalogVideoCacheService) llama a
+// este endpoint en vez de resolver Vimeo del lado del dispositivo, que
+// fallaba con 403 para videos ajenos al dominio hardcodeado.
+router.get("/media/resolve-video", requireUser, async (req, res) => {
+  const rawUrl = req.query.url as string | undefined;
+
+  if (!rawUrl) {
+    res.status(400).json({ error: "Falta parámetro: url." });
+    return;
+  }
+
+  if (!rawUrl.includes("vimeo.com")) {
+    // No es Vimeo: se asume que ya es un archivo directo (.mp4/.mov) y se
+    // devuelve tal cual para que el cliente lo descargue directamente.
+    res.json({ url: rawUrl });
+    return;
+  }
+
+  const videoId = vimeoIdFromUrl(rawUrl);
+  if (!videoId) {
+    res.status(422).json({ error: "No se pudo extraer el ID de Vimeo de esa URL." });
+    return;
+  }
+
+  const resolved = await resolveVimeoProgressiveUrl(videoId);
+  if (!resolved) {
+    res.status(404).json({
+      error: "Vimeo no entregó un archivo progresivo público para este video (posiblemente privado o solo HLS).",
+    });
+    return;
+  }
+
+  res.json({ url: resolved });
 });
 
 // MARK: - Análisis RM oficial de un Hip — Tarea 1 (reproducibilidad,
