@@ -44,18 +44,42 @@ export const diagRouter = Router();
 diagRouter.post("/pedigree-log", (req, res) => {
   const body = req.body ?? {};
   const device = typeof body.device === "string" ? body.device : "unknown";
-  const message = typeof body.message === "string" ? body.message : JSON.stringify(body);
-  const clientTs = typeof body.clientTs === "number" ? body.clientTs : null;
 
-  const entry = { seq: nextSeq++, serverTs: Date.now(), clientTs, device, message };
-  buffer.push(entry);
+  // CORRECCION DE RAIZ (2026-09-09, ver DiagLogUploader del lado iOS):
+  // antes este endpoint solo aceptaba UNA linea por request -- la app
+  // mandaba un request HTTP independiente por cada perfMark, y durante
+  // navegacion intensa (varios HIPNAV- por swipe) eso competia por el
+  // mismo pool de conexiones/mismo backend que las llamadas reales
+  // (subida de fotos, analisis de IA, sync), demorandolas. Ahora tambien
+  // acepta un LOTE ("entries": [{message, clientTs}, ...]) para que
+  // varias lineas lleguen en un solo request -- se sigue guardando y
+  // logueando cada linea por separado, exactamente igual que antes, asi
+  // que ninguna consulta existente (GET /pedigree-log, filtros por
+  // Hip/device) cambia de comportamiento. El formato viejo (una sola
+  // "message" suelta) se sigue aceptando para no romper ningun cliente
+  // que todavia no se actualizo.
+  type RawEntry = { message?: unknown; clientTs?: unknown };
+  const rawEntries: RawEntry[] = Array.isArray(body.entries) && body.entries.length > 0
+    ? body.entries
+    : [{ message: body.message, clientTs: body.clientTs }];
+
+  const applied: DiagLogEntry[] = [];
+  for (const raw of rawEntries) {
+    const message = typeof raw.message === "string" ? raw.message : JSON.stringify(raw);
+    const clientTs = typeof raw.clientTs === "number" ? raw.clientTs : null;
+    const entry = { seq: nextSeq++, serverTs: Date.now(), clientTs, device, message };
+    buffer.push(entry);
+    applied.push(entry);
+  }
   while (buffer.length > MAX_ENTRIES) buffer.shift();
 
   // Ademas del buffer en memoria (GET /pedigree-log), imprime cada linea
   // en el log de runtime de Railway - asi se puede leer con
   // mcp__Railway__get-logs (filter: "PEDIGREE-DIAG") sin depender de que
   // este endpoint GET sea alcanzable desde ninguna red restringida.
-  console.log(`PEDIGREE-DIAG seq=${entry.seq} device=${entry.device} clientTs=${entry.clientTs ?? "-"} :: ${entry.message}`);
+  for (const entry of applied) {
+    console.log(`PEDIGREE-DIAG seq=${entry.seq} device=${entry.device} clientTs=${entry.clientTs ?? "-"} :: ${entry.message}`);
+  }
 
   res.status(204).end();
 });
