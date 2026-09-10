@@ -475,6 +475,30 @@ model Hip {
   // nada que guardar acá todavía.
   autoVideoFrameSourceUrl String?
 
+  // ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE FOTOS DE CATÁLOGO (2026-09-10, a
+  // pedido explícito de Ramon: "detección automática de nuevas fotos en
+  // Media → clasificación para identificar cuál es la foto LATERAL →
+  // envío automático al Análisis IA Lateral → análisis → guardado
+  // permanente del resultado en el HIP correspondiente"). Guarda la URL
+  // (normalizada, ver analysis/mediaFingerprint.normalizeMediaUrl) de la
+  // última foto de catálogo que ya se copió como la tarjeta LATERAL
+  // automática de Análisis IA — ver analysis/autoPhotoAnalysis.ts. Es la
+  // ÚNICA fuente de verdad de "¿ya procesé esta foto?": si la foto
+  // vigente sigue estando entre las publicadas hoy, no se vuelve a
+  // procesar (evita reanálisis repetidos en cada barrido, mismo criterio
+  // que autoVideoFrameSourceUrl); si la casa de ventas la reemplaza por
+  // otra, esto queda desactualizado y el próximo barrido la detecta y
+  // reprocesa sola. `null` = todavía no se generó ninguna tarjeta LATERAL
+  // automática para este Hip a partir de una foto (sin fotos publicadas
+  // todavía, ninguna foto clasificó como LATERAL con confianza
+  // suficiente, o el Hip ya tiene una foto LATERAL puesta a mano por el
+  // usuario — ver autoPhotoAnalysis.ts, regla "nunca pisar una foto
+  // manual"). Completamente independiente de autoVideoFrameSourceUrl:
+  // ambos mecanismos corren por separado y ninguno pisa el trabajo del
+  // otro (la tarjeta LATERAL manual siempre tiene prioridad sobre los
+  // dos).
+  autoLateralPhotoSourceUrl String?
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

@@ -1,0 +1,14 @@
+-- Análisis automático y silencioso de FOTOS de catálogo (2026-09-10, a
+-- pedido explícito de Ramon: "detección automática de nuevas fotos en
+-- Media → clasificación para identificar cuál es la foto LATERAL → envío
+-- automático al Análisis IA Lateral → análisis → guardado permanente del
+-- resultado"). Guarda qué foto de catálogo (URL normalizada, ver
+-- analysis/mediaFingerprint.normalizeMediaUrl) ya se copió como la
+-- tarjeta LATERAL automática de Análisis IA, para no reprocesar la misma
+-- foto una y otra vez en cada barrido de Media — ver
+-- analysis/autoPhotoAnalysis.ts. Mismo patrón exacto que
+-- autoVideoFrameSourceUrl (migración hip_auto_video_frame), pero
+-- completamente independiente: una foto nunca cuenta como "ya procesada"
+-- para el video, ni viceversa. Columna nullable: ninguna fila existente
+-- se ve afectada.
+ALTER TABLE "Hip" ADD COLUMN "autoLateralPhotoSourceUrl" TEXT;

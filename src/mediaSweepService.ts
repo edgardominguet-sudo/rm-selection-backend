@@ -3,6 +3,7 @@ import { clientFor } from "./saleHouses/registry";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 import { autoAnalyzeNewCatalogVideoIfNeeded } from "./analysis/autoVideoAnalysis";
+import { autoAnalyzeNewCatalogPhotoIfNeeded } from "./analysis/autoPhotoAnalysis";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -142,7 +143,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
 
         const existing = await db.hip.findMany({
           where: { saleId: sale.id },
-          select: { id: true, hipNumber: true, horseName: true, mediaJson: true, autoVideoFrameSourceUrl: true },
+          select: { id: true, hipNumber: true, horseName: true, mediaJson: true, autoVideoFrameSourceUrl: true, autoLateralPhotoSourceUrl: true },
         });
         const existingByNumber = new Map(existing.map((h) => [h.hipNumber, h]));
 
@@ -215,6 +216,38 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
               );
             } catch (err) {
               console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de video:`, err);
+            }
+          }
+
+          // ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE FOTOS (2026-09-10, a
+          // pedido explícito de Ramon: "detección automática de nuevas
+          // fotos en Media → clasificación para identificar cuál es la
+          // foto LATERAL → envío automático al Análisis IA Lateral →
+          // análisis → guardado permanente del resultado en el HIP
+          // correspondiente"). Mecanismo COMPLETAMENTE INDEPENDIENTE del
+          // de video de arriba — pedido explícito: "no quiero usar el
+          // mecanismo de video para esta función" — ninguno de los dos
+          // reutiliza ni pisa el trabajo del otro, y este bloque nunca
+          // analiza video ni extrae fotogramas (ver
+          // analysis/autoPhotoAnalysis.ts). Mismo criterio que el bloque
+          // de video: se evalúa en CADA barrido, no solo cuando
+          // `mediaJson` cambió esta corrida — `autoAnalyzeNewCatalogPhotoIfNeeded`
+          // ya es idempotente por su cuenta (compara
+          // `autoLateralPhotoSourceUrl` contra las fotos publicadas hoy),
+          // así que llamarla de más es segura y barata; y es necesario
+          // para no dejar un Hip atascado si la primera pasada todavía
+          // no encontró ninguna foto clasificable como LATERAL. Contenido
+          // en su propio try/catch: un problema acá nunca debe impedir
+          // que el resto del barrido de Media (video, otros Hips, otras
+          // ventas) siga su curso normal.
+          if (freshMedia.some((m) => m.kind === "photo" && !!m.url)) {
+            try {
+              await autoAnalyzeNewCatalogPhotoIfNeeded(
+                { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoLateralPhotoSourceUrl: row.autoLateralPhotoSourceUrl },
+                freshMedia
+              );
+            } catch (err) {
+              console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de foto:`, err);
             }
           }
         }
