@@ -1,4 +1,5 @@
 import ffmpegPath from "ffmpeg-static";
+import { path as ffprobePath } from "ffprobe-static";
 import ffmpeg from "fluent-ffmpeg";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -6,6 +7,23 @@ import path from "node:path";
 
 if (ffmpegPath) {
   ffmpeg.setFfmpegPath(ffmpegPath);
+}
+// BUG REAL ENCONTRADO Y CORREGIDO (2026-09-10, en la prueba de punta a
+// punta del análisis automático de video en producción real contra
+// Keeneland): faltaba esta línea. `ffmpeg-static` SOLO trae el binario
+// `ffmpeg` — el binario `ffprobe` (que usa `probeDuration` de más abajo,
+// vía `ffmpeg.ffprobe(...)`) es un paquete aparte (`ffprobe-static`) que
+// nunca se había instalado ni configurado. Sin esto, TODA llamada a
+// `ffmpeg.ffprobe(...)` fallaba (spawn ENOENT: no existe ningún binario
+// llamado `ffprobe` en el PATH del contenedor de Railway) — nunca por un
+// video puntual roto o todavía transcodificando, sino SIEMPRE, para
+// cualquier video, desde el día uno de esta función. Confirmado en la
+// prueba real: cientos de Hips de Keeneland con video YA PUBLICADO Y
+// ESTABLE (no solo los recién publicados) fallaban por igual — la
+// consistencia total del fallo (no un porcentaje) fue la pista de que no
+// era un problema de contenido sino de binario faltante.
+if (ffprobePath) {
+  ffmpeg.setFfprobePath(ffprobePath);
 }
 
 export interface FrameExtractionResult {
