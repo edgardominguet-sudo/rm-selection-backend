@@ -3,7 +3,7 @@ import { clientFor } from "./saleHouses/registry";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 import { autoAnalyzeNewCatalogVideoIfNeeded } from "./analysis/autoVideoAnalysis";
-import { autoAnalyzeNewCatalogPhotoIfNeeded } from "./analysis/autoPhotoAnalysis";
+import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisBudget, DEFAULT_AUTO_PHOTO_ANALYSIS_BUDGET } from "./analysis/autoPhotoAnalysis";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -118,6 +118,15 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
         ? { id: opts.saleId }
         : { isActive: true, catalogAccess: "FULL" },
     });
+
+    // Presupuesto de clasificaciones automáticas de FOTO, COMPARTIDO entre
+    // todas las ventas de esta corrida (mismo criterio que AnalysisBudget
+    // en rankingService.ts) — ver el comentario completo en
+    // analysis/autoPhotoAnalysis.ts. Sin esto, la primera corrida contra
+    // una venta grande nunca antes procesada (ej. Keeneland September,
+    // miles de Hips, prácticamente todos con foto) intentaría clasificar
+    // con IA todas sus fotos de una sola vez.
+    const autoPhotoBudget: AutoPhotoAnalysisBudget = { remaining: DEFAULT_AUTO_PHOTO_ANALYSIS_BUDGET };
 
     for (const sale of sales) {
       // Si se pidió una venta puntual que no es FULL (ej. MANUAL_CSV, sin
@@ -244,7 +253,8 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             try {
               await autoAnalyzeNewCatalogPhotoIfNeeded(
                 { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoLateralPhotoSourceUrl: row.autoLateralPhotoSourceUrl },
-                freshMedia
+                freshMedia,
+                autoPhotoBudget
               );
             } catch (err) {
               console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de foto:`, err);

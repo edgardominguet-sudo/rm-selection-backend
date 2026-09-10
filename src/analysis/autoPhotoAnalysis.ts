@@ -90,6 +90,35 @@ const MIN_AUTO_CLASSIFICATION_CONFIDENCE = 0.65;
 /** Mismo tope que usa el motor de análisis normal para fotos por Hip (ver anthropicClient.ts, `photoItems.slice(0, 6)`) — nunca clasifica más de 6 fotos publicadas buscando la LATERAL. */
 const MAX_AUTO_PHOTO_CLASSIFICATIONS_PER_HIP_CALL = 6;
 
+/**
+ * Presupuesto compartido de clasificaciones automáticas DENTRO DE UNA
+ * SOLA corrida del barrido de Media (mismo espíritu que `AnalysisBudget`
+ * en rankingService.ts) — protección de costo/estabilidad real, no
+ * teórica: a diferencia del video (raro, solo algunos Hips tienen video
+ * pendiente en un momento dado), PRÁCTICAMENTE TODOS los Hips de una
+ * venta ya tienen una foto de catálogo (Keeneland: `field_main_image`
+ * siempre presente) — sin este tope, la primera corrida contra una venta
+ * grande (ej. Keeneland September, ~4600 Hips) intentaría clasificar con
+ * IA miles de fotos EN UNA SOLA llamada al endpoint de barrido (manual o
+ * del cron 3am), lo que la dejaría corriendo horas, arriesgaría el
+ * timeout del proxy/HTTP de Railway en la corrida manual, y gastaría de
+ * golpe una cantidad enorme e impredecible de la API de Anthropic. Con
+ * este tope, cada corrida del barrido clasifica como máximo esta
+ * cantidad de Hips NUEVOS (nunca antes procesados) y deja el resto para
+ * la próxima corrida — nada se pierde, la carga inicial de un catálogo
+ * grande simplemente se reparte en varias corridas (manuales o del cron
+ * nocturno) en vez de una sola. Los Hips ya procesados (idempotencia vía
+ * `autoLateralPhotoSourceUrl`) o sin ninguna organización elegible NUNCA
+ * consumen presupuesto — solo lo gastan los Hips donde de verdad hace
+ * falta llamar a la IA.
+ */
+export interface AutoPhotoAnalysisBudget {
+  remaining: number;
+}
+
+/** Tope por defecto de Hips nuevos clasificados por corrida de barrido — ver `AutoPhotoAnalysisBudget` arriba. Deliberadamente conservador: a ~5-15s por clasificación, 25 Hips mantiene una corrida manual dentro de un tiempo de respuesta razonable (unos pocos minutos) incluso contra una venta grande nunca antes procesada. */
+export const DEFAULT_AUTO_PHOTO_ANALYSIS_BUDGET = 25;
+
 function catalogPhotoUrls(media: CatalogMediaItem[]): string[] {
   return media.filter((m) => m.kind === "photo" && !!m.url).map((m) => m.url);
 }
@@ -111,7 +140,7 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
   hipNumber: string;
   horseName: string | null;
   autoLateralPhotoSourceUrl: string | null;
-}, freshMedia: CatalogMediaItem[]): Promise<void> {
+}, freshMedia: CatalogMediaItem[], budget: AutoPhotoAnalysisBudget): Promise<void> {
   try {
     const photoUrls = catalogPhotoUrls(freshMedia);
     if (photoUrls.length === 0) return;
@@ -150,6 +179,18 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
       });
     }
     if (eligible.length === 0) return;
+
+    // Presupuesto de la corrida (ver AutoPhotoAnalysisBudget arriba):
+    // recién ACÁ hay trabajo real que hacer (idempotencia y elegibilidad
+    // ya pasaron), así que es el punto correcto para gastar una unidad
+    // de presupuesto. Si ya no queda, se deja este Hip para la próxima
+    // corrida del barrido — sin tocar `autoLateralPhotoSourceUrl`, así
+    // que no se pierde ni se marca como "ya intentado".
+    if (budget.remaining <= 0) {
+      console.log(`[auto-photo-analysis] Hip ${hip.hipNumber}: presupuesto de clasificaciones de esta corrida agotado — se reintenta en la próxima.`);
+      return;
+    }
+    budget.remaining -= 1;
 
     // Clasifica cada foto publicada, en orden, hasta encontrar la
     // primera que el motor identifique como LATERAL con confianza
