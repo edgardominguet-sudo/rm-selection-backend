@@ -65,7 +65,7 @@ function probeDuration(videoUrl: string): Promise<number | null> {
  * espaciados de punta a punta según la duración real — mismo criterio que
  * VideoFrameExtractor.swift. Devuelve frames vacíos si la URL no es un
  * video que ffmpeg pueda leer (ej. una página HTML de Vimeo en vez de un
- * archivo — para eso ver resolveVimeoProgressiveUrl más abajo).
+ * archivo — para eso ver resolveVimeoPlayableUrl más abajo).
  */
 export async function extractFramesFromUrl(videoUrl: string): Promise<FrameExtractionResult> {
   const durationSeconds = await probeDuration(videoUrl);
@@ -110,37 +110,72 @@ export async function extractFramesFromUrl(videoUrl: string): Promise<FrameExtra
   }
 }
 
+export interface ResolvedVimeoVideo {
+  url: string;
+  isHls: boolean;
+}
+
 /**
- * Resuelve la URL progresiva (mp4 directo) de un video de Vimeo público a
- * partir de su ID, usando el endpoint de configuración del reproductor
- * (no requiere token ni permisos de OAuth — es el mismo JSON que consulta
- * el reproductor embebido público, por eso funciona para videos de
- * catálogo que no son propiedad del dueño del token). Esta es una mejora
- * respecto al enfoque de iOS (que tenía que abrir el reproductor en un
- * WKWebView oculto y sacarle capturas de pantalla porque la API oficial
- * de Vimeo devuelve 403 para videos ajenos) — server-side alcanza con
- * este endpoint público.
+ * Resuelve una URL reproducible de un video de Vimeo público a partir de
+ * su ID, usando el endpoint de configuración del reproductor (no requiere
+ * token ni permisos de OAuth — es el mismo JSON que consulta el
+ * reproductor embebido público, por eso funciona para videos de catálogo
+ * que no son propiedad del dueño del token). Esta es una mejora respecto
+ * al enfoque de iOS (que tenía que abrir el reproductor en un WKWebView
+ * oculto y sacarle capturas de pantalla porque la API oficial de Vimeo
+ * devuelve 403 para videos ajenos) — server-side alcanza con este
+ * endpoint público.
  *
- * Puede devolver null si el video no es embebible públicamente (privacidad
- * restringida por el dueño) — en ese caso, igual que en iOS, el análisis
- * simplemente sigue sin fotogramas de marcha (gait.* queda en 0).
+ * BUG REAL ENCONTRADO Y CORREGIDO (2026-09-10, misma prueba de punta a
+ * punta en producción, inmediatamente después de corregir el binario de
+ * `ffprobe`): con ese binario ya arreglado, TODOS los videos de Keeneland
+ * seguían sin producir ningún fotograma. Se confirmó en vivo, contra este
+ * mismo endpoint, que Vimeo YA NO entrega archivos "progressive" (MP4
+ * directo descargable) para estos videos — `request.files` únicamente
+ * trae `dash` y `hls` (streaming adaptativo). El video en sí es público y
+ * se reproduce sin problema (confirmado abriendo el reproductor real);
+ * Vimeo simplemente dejó de exponer el MP4 directo que este código
+ * esperaba. Antes esta función devolvía null apenas no había
+ * "progressive" — ahora, si falta, cae a la URL del manifiesto HLS
+ * maestro como respaldo: ffmpeg lee HLS de forma nativa (ninguna
+ * dependencia nueva), así que no se pierde ningún video real por esto,
+ * solo cambia el contenedor de origen.
+ *
+ * Puede devolver null si el video no es embebible públicamente en
+ * absoluto (privacidad restringida por el dueño) — en ese caso, igual
+ * que antes, el análisis simplemente sigue sin fotograma para ese video.
  */
-export async function resolveVimeoProgressiveUrl(vimeoVideoId: string): Promise<string | null> {
+export async function resolveVimeoPlayableUrl(vimeoVideoId: string): Promise<ResolvedVimeoVideo | null> {
   try {
     const response = await fetch(`https://player.vimeo.com/video/${vimeoVideoId}/config`, {
       headers: { Referer: "https://player.vimeo.com/" },
     });
     if (!response.ok) return null;
     const json = (await response.json()) as {
-      request?: { files?: { progressive?: { url: string; height: number }[] } };
+      request?: {
+        files?: {
+          progressive?: { url: string; height: number }[];
+          hls?: { default_cdn?: string; cdns?: Record<string, { avc_url?: string; url?: string }> };
+        };
+      };
     };
     const progressive = json.request?.files?.progressive ?? [];
-    if (progressive.length === 0) return null;
-    // La de mayor calidad disponible, pero sin pasarnos: 720p alcanza de
-    // sobra para lo que se necesita (fotogramas se reescalan a 1024px
-    // igual antes de mandarse a la IA).
-    const sorted = [...progressive].sort((a, b) => b.height - a.height);
-    return sorted.find((f) => f.height <= 720)?.url ?? sorted[sorted.length - 1].url;
+    if (progressive.length > 0) {
+      // La de mayor calidad disponible, pero sin pasarnos: 720p alcanza de
+      // sobra para lo que se necesita (fotogramas se reescalan a 1024px
+      // igual antes de mandarse a la IA).
+      const sorted = [...progressive].sort((a, b) => b.height - a.height);
+      const url = sorted.find((f) => f.height <= 720)?.url ?? sorted[sorted.length - 1].url;
+      return { url, isHls: false };
+    }
+    const hls = json.request?.files?.hls;
+    const cdnKey = hls?.default_cdn;
+    const cdn = cdnKey ? hls?.cdns?.[cdnKey] : undefined;
+    // `avc_url` fuerza H.264 (compatibilidad máxima con ffmpeg); `url` es
+    // el respaldo genérico si esa variante puntual no viniera.
+    const hlsUrl = cdn?.avc_url ?? cdn?.url;
+    if (hlsUrl) return { url: hlsUrl, isHls: true };
+    return null;
   } catch {
     return null;
   }
@@ -162,9 +197,9 @@ export async function extractGaitFrames(videoUrl: string): Promise<FrameExtracti
   if (videoUrl.includes("vimeo.com")) {
     const id = vimeoIdFromUrl(videoUrl);
     if (!id) return EMPTY_RESULT;
-    const progressiveUrl = await resolveVimeoProgressiveUrl(id);
-    if (!progressiveUrl) return EMPTY_RESULT;
-    return extractFramesFromUrl(progressiveUrl);
+    const resolved = await resolveVimeoPlayableUrl(id);
+    if (!resolved) return EMPTY_RESULT;
+    return extractFramesFromUrl(resolved.url);
   }
   // URL directa (mp4 propio del catálogo, ej. under_tack_show_video).
   return extractFramesFromUrl(videoUrl);
@@ -230,10 +265,14 @@ export async function extractRepresentativeVideoFrame(videoUrl: string): Promise
   if (videoUrl.includes("vimeo.com")) {
     const id = vimeoIdFromUrl(videoUrl);
     if (!id) return null;
-    const progressiveUrl = await resolveVimeoProgressiveUrl(id);
-    if (!progressiveUrl) return null;
-    return extractSingleFrame(progressiveUrl);
+    const resolved = await resolveVimeoPlayableUrl(id);
+    if (!resolved) return null;
+    return extractSingleFrame(resolved.url);
   }
-  if (videoUrl.toLowerCase().includes("m3u8")) return null;
+  // URL directa (mp4 propio del catálogo, o un manifiesto HLS/.m3u8 que
+  // la propia casa de ventas sirva de forma directa): ffmpeg lee ambos
+  // formatos de forma nativa, así que ya no se descarta a propósito como
+  // antes (esa restricción impedía justamente el respaldo HLS agregado
+  // arriba en resolveVimeoPlayableUrl).
   return extractSingleFrame(videoUrl);
 }

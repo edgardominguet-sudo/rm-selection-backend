@@ -8,7 +8,7 @@ import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { ViewName } from "../analysis/landmarks";
-import { resolveVimeoProgressiveUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
+import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
@@ -424,12 +424,18 @@ router.get("/hips/resolve", requireUser, async (req, res) => {
 
 // MARK: - Resolución de video de catálogo (2026-09-09). Reutiliza el MISMO
 // resolutor de Vimeo, probado en producción, que ya usa el análisis de
-// Marcha por IA (resolveVimeoProgressiveUrl en frameExtraction.ts) — con el
+// Marcha por IA (resolveVimeoPlayableUrl en frameExtraction.ts) — con el
 // Referer correcto ("https://player.vimeo.com/") para que funcione con
 // videos de CUALQUIER casa de venta (Keeneland, Fasig-Tipton, OBS), no solo
 // los de un dominio fijo. El cliente iOS (CatalogVideoCacheService) llama a
 // este endpoint en vez de resolver Vimeo del lado del dispositivo, que
 // fallaba con 403 para videos ajenos al dominio hardcodeado.
+//
+// 2026-09-10: `resolveVimeoPlayableUrl` ahora también resuelve HLS como
+// respaldo cuando Vimeo no ofrece "progressive" (ver el comentario grande
+// en frameExtraction.ts) — este endpoint sigue devolviendo un único `url`
+// de string, así que el cliente iOS no necesita ningún cambio: reproduce
+// esa URL igual, sea MP4 directo o manifiesto HLS.
 router.get("/media/resolve-video", requireUser, async (req, res) => {
   const rawUrl = req.query.url as string | undefined;
 
@@ -451,15 +457,15 @@ router.get("/media/resolve-video", requireUser, async (req, res) => {
     return;
   }
 
-  const resolved = await resolveVimeoProgressiveUrl(videoId);
+  const resolved = await resolveVimeoPlayableUrl(videoId);
   if (!resolved) {
     res.status(404).json({
-      error: "Vimeo no entregó un archivo progresivo público para este video (posiblemente privado o solo HLS).",
+      error: "Vimeo no entregó ningún archivo reproducible (ni progresivo ni HLS) para este video (posiblemente privado).",
     });
     return;
   }
 
-  res.json({ url: resolved });
+  res.json({ url: resolved.url });
 });
 
 // MARK: - Análisis RM oficial de un Hip — Tarea 1 (reproducibilidad,
