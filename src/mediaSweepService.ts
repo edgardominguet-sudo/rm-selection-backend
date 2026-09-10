@@ -165,30 +165,49 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           if (freshMedia.length === 0) hipsWithoutMediaYet += 1;
 
           const storedMedia = (Array.isArray(row.mediaJson) ? row.mediaJson : []) as unknown as CatalogMediaItem[];
-          if (mediaFingerprint(freshMedia) === mediaFingerprint(storedMedia)) continue;
+          const mediaChanged = mediaFingerprint(freshMedia) !== mediaFingerprint(storedMedia);
 
-          const { photos, videos } = countNewResources(freshMedia, storedMedia);
-          photosFound += photos;
-          videosFound += videos;
+          if (mediaChanged) {
+            const { photos, videos } = countNewResources(freshMedia, storedMedia);
+            photosFound += photos;
+            videosFound += videos;
 
-          await db.hip.update({
-            where: { id: row.id },
-            data: { mediaJson: freshMedia as unknown as object },
-          });
-          hipsWithNewMedia += 1;
+            await db.hip.update({
+              where: { id: row.id },
+              data: { mediaJson: freshMedia as unknown as object },
+            });
+            hipsWithNewMedia += 1;
+          }
 
           // ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE VIDEO (2026-09-10, a
           // pedido explícito de Ramon) — ESTE es el punto exacto en el
           // que "RM Selection detecta que la casa de venta publicó/cargó
-          // un nuevo video": `freshMedia` ya se confirmó distinto de lo
-          // guardado y ya se persistió arriba. Contenido en su propio
-          // try/catch (ver también el try/catch interno de la función):
-          // un problema acá NUNCA debe impedir que el resto del barrido
-          // de Media (fotos, otros Hips, otras ventas) siga su curso
-          // normal — el barrido de Media es la responsabilidad principal
-          // de este archivo, el análisis de video es un beneficio
-          // adicional, nunca al revés.
-          if (videos > 0) {
+          // un nuevo video". IMPORTANTE (bug real encontrado en la prueba
+          // de punta a punta del mismo 2026-09-10, contra Keeneland
+          // September Yearling Sale en producción, Hips 3181/3740/3892/
+          // 3896/3912/3917/3958): este chequeo NO puede quedar adentro
+          // del `if (mediaChanged)` de arriba. Motivo real observado: la
+          // casa de venta publica un video, `mediaChanged` es true UNA
+          // sola vez y `mediaJson` se guarda ya en esa misma corrida —
+          // pero si en ESE momento el video todavía no se puede leer con
+          // ffmpeg (Vimeo recién publicado, todavía transcodificando —
+          // pasó con los 7 Hips de la prueba), el mensaje de log decía
+          // "se reintenta en el próximo barrido" pero eso era falso: como
+          // `mediaJson` ya quedó igual al catálogo fresco, el PRÓXIMO
+          // barrido ya no ve ningún cambio (`mediaChanged` da false) y el
+          // Hip queda atascado para siempre sin analizar, aunque el video
+          // ya esté disponible más tarde. Fix: evaluar el video pendiente
+          // en CADA barrido, no solo cuando el catálogo cambió esta
+          // corrida — `autoAnalyzeNewCatalogVideoIfNeeded` ya es
+          // idempotente por su cuenta (compara `autoVideoFrameSourceUrl`
+          // contra los videos publicados hoy), así que llamarla de más es
+          // segura y barata: para un Hip ya procesado y sin cambios,
+          // vuelve casi al instante sin tocar la base de datos ni ffmpeg.
+          // Contenido en su propio try/catch: un problema acá NUNCA debe
+          // impedir que el resto del barrido de Media (fotos, otros Hips,
+          // otras ventas) siga su curso normal.
+          const hasPendingVideo = freshMedia.some((m) => m.kind === "video" && !!m.url);
+          if (hasPendingVideo) {
             try {
               await autoAnalyzeNewCatalogVideoIfNeeded(
                 { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoVideoFrameSourceUrl: row.autoVideoFrameSourceUrl },
