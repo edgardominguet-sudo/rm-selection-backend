@@ -452,6 +452,29 @@ model Hip {
   saleResultJson    Json?
 
   lastCatalogSyncAt DateTime?
+
+  // ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE VIDEO (2026-09-10, a pedido
+  // explícito de Ramon: "cuando la casa de venta publique/cargue un nuevo
+  // video... el sistema debe enviar automáticamente ese mismo video al
+  // motor de análisis de IA... en segundo plano y sin intervención del
+  // usuario"). Guarda la URL (normalizada, ver
+  // analysis/mediaFingerprint.normalizeMediaUrl) del último video de
+  // catálogo que ya se convirtió en un fotograma de Análisis IA (tarjeta
+  // LATERAL) — ver analysis/autoVideoAnalysis.ts. Es la ÚNICA fuente de
+  // verdad de "¿ya procesé este video?": si el video vigente en
+  // `mediaJson` coincide con esto, no se vuelve a procesar (evita
+  // reanálisis repetidos cada vez que el barrido nocturno de Media corre,
+  // requisito explícito "no reprocesar salvo video nuevo/distinto"); si la
+  // casa de ventas reemplaza el video por otro, esto queda desactualizado
+  // y el próximo barrido lo detecta y reprocesa solo. `null` = todavía no
+  // se generó ningún fotograma automático para este Hip (Hip sin video
+  // publicado, o el/los video(s) publicados nunca se pudieron leer con
+  // ffmpeg — ej. privados/segmentados). No se toca si el Hip ya tiene una
+  // foto LATERAL puesta a mano por el usuario (ver autoVideoAnalysis.ts,
+  // regla "nunca pisar una foto manual") — en ese caso simplemente no hay
+  // nada que guardar acá todavía.
+  autoVideoFrameSourceUrl String?
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

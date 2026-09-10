@@ -2,6 +2,7 @@ import { db } from "./db";
 import { clientFor } from "./saleHouses/registry";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
+import { autoAnalyzeNewCatalogVideoIfNeeded } from "./analysis/autoVideoAnalysis";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -141,7 +142,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
 
         const existing = await db.hip.findMany({
           where: { saleId: sale.id },
-          select: { id: true, hipNumber: true, mediaJson: true },
+          select: { id: true, hipNumber: true, horseName: true, mediaJson: true, autoVideoFrameSourceUrl: true },
         });
         const existingByNumber = new Map(existing.map((h) => [h.hipNumber, h]));
 
@@ -175,6 +176,28 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             data: { mediaJson: freshMedia as unknown as object },
           });
           hipsWithNewMedia += 1;
+
+          // ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE VIDEO (2026-09-10, a
+          // pedido explícito de Ramon) — ESTE es el punto exacto en el
+          // que "RM Selection detecta que la casa de venta publicó/cargó
+          // un nuevo video": `freshMedia` ya se confirmó distinto de lo
+          // guardado y ya se persistió arriba. Contenido en su propio
+          // try/catch (ver también el try/catch interno de la función):
+          // un problema acá NUNCA debe impedir que el resto del barrido
+          // de Media (fotos, otros Hips, otras ventas) siga su curso
+          // normal — el barrido de Media es la responsabilidad principal
+          // de este archivo, el análisis de video es un beneficio
+          // adicional, nunca al revés.
+          if (videos > 0) {
+            try {
+              await autoAnalyzeNewCatalogVideoIfNeeded(
+                { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoVideoFrameSourceUrl: row.autoVideoFrameSourceUrl },
+                freshMedia
+              );
+            } catch (err) {
+              console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de video:`, err);
+            }
+          }
         }
 
         hipsReviewedTotal += hipsReviewed;

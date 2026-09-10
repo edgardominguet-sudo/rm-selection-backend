@@ -151,3 +151,71 @@ export async function extractGaitFrames(videoUrl: string): Promise<FrameExtracti
   // URL directa (mp4 propio del catálogo, ej. under_tack_show_video).
   return extractFramesFromUrl(videoUrl);
 }
+
+/**
+ * Extrae UN SOLO fotograma JPEG, en el punto medio del clip — pensado para
+ * ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE VIDEO (2026-09-10, a pedido explícito
+ * de Ramon: "enviar automáticamente ese mismo video al motor de análisis de
+ * IA", resultado "exactamente en el formato establecido actualmente"). A
+ * diferencia de `extractFramesFromUrl` (hasta 40 fotogramas, pensado para
+ * un análisis de marcha por movimiento que hoy no está conectado a ningún
+ * lado — ver comentario de `extractGaitFrames`), acá alcanza con UN
+ * fotograma representativo porque el destino es el MISMO motor de fotos
+ * fijas que ya usa Análisis IA (tarjeta LATERAL) — no se reinventa ningún
+ * criterio de puntaje nuevo, se le da al motor existente una foto más,
+ * simplemente obtenida de un video en vez de la cámara. El punto medio
+ * (50% de la duración) es una elección determinística y estable: mismo
+ * video → mismo instante → mismo fotograma siempre, sin importar cuántas
+ * veces se vuelva a correr (necesario para el caché por hash exacto de
+ * `landmarkVisionClient.ts` y para que el resultado no dependa de qué
+ * dispositivo o qué momento disparó el análisis).
+ */
+async function extractSingleFrame(videoUrl: string, atFraction = 0.5): Promise<Buffer | null> {
+  const durationSeconds = await probeDuration(videoUrl);
+  if (!durationSeconds) return null;
+
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "rm-frame-"));
+  try {
+    const clamped = Math.min(Math.max(atFraction, 0), 0.999);
+    const timestamp = durationSeconds * clamped;
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(videoUrl)
+        .on("end", () => resolve())
+        .on("error", (err) => reject(err))
+        .screenshots({
+          timestamps: [timestamp],
+          filename: "frame.jpg",
+          folder: tmpDir,
+          size: "?x720",
+        });
+    });
+
+    return await readFile(path.join(tmpDir, "frame.jpg"));
+  } catch {
+    return null;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Punto de entrada único para el análisis automático de video (ver
+ * `extractSingleFrame` arriba) — mismo camino de resolución de URL
+ * (Vimeo progresivo o mp4 directo) que `extractGaitFrames`, pero
+ * devolviendo un solo fotograma en vez de una serie. Nunca tira
+ * excepción: `null` si el video no se pudo leer por ningún camino (privado,
+ * solo HLS segmentado, URL rota, etc.) — quien llama simplemente no genera
+ * ningún fotograma automático para ese video, sin romper nada más.
+ */
+export async function extractRepresentativeVideoFrame(videoUrl: string): Promise<Buffer | null> {
+  if (videoUrl.includes("vimeo.com")) {
+    const id = vimeoIdFromUrl(videoUrl);
+    if (!id) return null;
+    const progressiveUrl = await resolveVimeoProgressiveUrl(id);
+    if (!progressiveUrl) return null;
+    return extractSingleFrame(progressiveUrl);
+  }
+  if (videoUrl.toLowerCase().includes("m3u8")) return null;
+  return extractSingleFrame(videoUrl);
+}

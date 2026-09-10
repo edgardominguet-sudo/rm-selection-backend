@@ -162,3 +162,22 @@ export async function deleteObject(storageKey: string): Promise<void> {
     throw new Error(`No se pudo borrar el objeto ${storageKey} de R2: HTTP ${res.status}`);
   }
 }
+
+/**
+ * Sube un objeto DIRECTO desde el servidor (fetch nativo de Node 20 contra
+ * una URL firmada de PUT) — para ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE VIDEO
+ * (2026-09-10): a diferencia del flujo normal en dos fases (POST /me/media
+ * → el DISPOSITIVO sube el archivo → PUT confirm, ver comentario de arriba
+ * del archivo), acá no hay ningún dispositivo en el medio — el fotograma
+ * se extrae de un video de catálogo enteramente en el servidor
+ * (autoVideoAnalysis.ts), así que el servidor mismo tiene que ser quien lo
+ * suba. Reutiliza la MISMA firma SigV4 (`createUploadUrl`) que ya usan los
+ * dispositivos — una sola implementación de la firma, dos consumidores.
+ */
+export async function uploadObject(storageKey: string, body: Buffer, contentType: string): Promise<void> {
+  const url = createUploadUrl(storageKey);
+  const res = await fetch(url, { method: "PUT", body, headers: { "Content-Type": contentType } });
+  if (!res.ok) {
+    throw new Error(`No se pudo subir el objeto ${storageKey} a R2: HTTP ${res.status}`);
+  }
+}

@@ -11,7 +11,7 @@ import { CatalogMediaItem } from "../types";
  * parseable, se usa tal cual — mejor un falso positivo ocasional que
  * perder la detección de cambios reales.
  */
-function normalizeMediaUrl(url: string): string {
+export function normalizeMediaUrl(url: string): string {
   try {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname}`;
