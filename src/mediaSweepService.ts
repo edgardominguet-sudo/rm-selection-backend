@@ -3,7 +3,9 @@ import { clientFor } from "./saleHouses/registry";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 import { autoAnalyzeNewCatalogVideoIfNeeded } from "./analysis/autoVideoAnalysis";
-import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisBudget, DEFAULT_AUTO_PHOTO_ANALYSIS_BUDGET } from "./analysis/autoPhotoAnalysis";
+import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisOutcome } from "./analysis/autoPhotoAnalysis";
+import { runWithConcurrencyLimit } from "./util/concurrencyPool";
+import { config } from "./config";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -70,6 +72,29 @@ export interface MediaSweepSaleDetail {
    * barrido, y ahí sí puede tratarse de un problema de nuestro lado.
    */
   hipsWithoutMediaYet: number;
+  /**
+   * Resultado del análisis automático de fotos (autoPhotoAnalysis.ts)
+   * para ESTA venta en ESTA corrida — pedido explícito de Ramon
+   * (2026-09-10) de poder confirmar, corrida por corrida, cuántas fotos
+   * pendientes encontró, cuántas analizó correctamente y cuántas
+   * fallaron, sin depender de contar líneas de log a mano.
+   */
+  autoPhotoAnalysis: {
+    /** Hips con al menos una foto publicada — el universo evaluado. */
+    photoHipsEvaluated: number;
+    /** Nueva tarjeta LATERAL creada y analizada con éxito. */
+    applied: number;
+    /** Ya estaba procesado de antes (idempotencia) — nada que hacer. */
+    alreadyProcessed: number;
+    /** El motor funcionó, pero ninguna foto publicada es LATERAL con confianza suficiente — resultado válido, no es un fallo. */
+    noLateralCandidate: number;
+    /** Todas las organizaciones ya tienen una LATERAL puesta a mano — nada que tocar. */
+    noEligibleOrg: number;
+    /** Fallo técnico real (descarga, IA, subida, base de datos) — se reintentará, sujeto al tope de reintentos. */
+    failed: number;
+    /** Tope de reintentos técnicos consecutivos alcanzado — dejado de lado hasta que cambie la foto o se revise a mano. */
+    retriesExhausted: number;
+  };
 }
 
 export interface MediaSweepSummary {
@@ -119,15 +144,6 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
         : { isActive: true, catalogAccess: "FULL" },
     });
 
-    // Presupuesto de clasificaciones automáticas de FOTO, COMPARTIDO entre
-    // todas las ventas de esta corrida (mismo criterio que AnalysisBudget
-    // en rankingService.ts) — ver el comentario completo en
-    // analysis/autoPhotoAnalysis.ts. Sin esto, la primera corrida contra
-    // una venta grande nunca antes procesada (ej. Keeneland September,
-    // miles de Hips, prácticamente todos con foto) intentaría clasificar
-    // con IA todas sus fotos de una sola vez.
-    const autoPhotoBudget: AutoPhotoAnalysisBudget = { remaining: DEFAULT_AUTO_PHOTO_ANALYSIS_BUDGET };
-
     for (const sale of sales) {
       // Si se pidió una venta puntual que no es FULL (ej. MANUAL_CSV, sin
       // ningún camino legítimo de re-chequeo en vivo), se informa como
@@ -152,7 +168,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
 
         const existing = await db.hip.findMany({
           where: { saleId: sale.id },
-          select: { id: true, hipNumber: true, horseName: true, mediaJson: true, autoVideoFrameSourceUrl: true, autoLateralPhotoSourceUrl: true },
+          select: { id: true, hipNumber: true, horseName: true, mediaJson: true, autoVideoFrameSourceUrl: true, autoLateralPhotoSourceUrl: true, autoLateralPhotoFailedAttempts: true, autoLateralPhotoLastAttemptedFingerprint: true },
         });
         const existingByNumber = new Map(existing.map((h) => [h.hipNumber, h]));
 
@@ -161,6 +177,25 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
         let hipsWithoutMediaYet = 0;
         let photosFound = 0;
         let videosFound = 0;
+
+        // Hips con foto pendiente de evaluar en esta corrida (ver bloque
+        // de análisis automático de fotos más abajo) — se acumulan acá y
+        // se procesan TODOS al final del loop, con concurrencia limitada
+        // (regla explícita de Ramon 2026-09-10: "procesar TODAS las
+        // fotos pendientes en esa misma corrida", ya no un tope fijo de
+        // cantidad por corrida).
+        type PhotoWorkItem = {
+          hip: {
+            id: string;
+            hipNumber: string;
+            horseName: string | null;
+            autoLateralPhotoSourceUrl: string | null;
+            autoLateralPhotoFailedAttempts: number;
+            autoLateralPhotoLastAttemptedFingerprint: string | null;
+          };
+          freshMedia: CatalogMediaItem[];
+        };
+        const photoWorkItems: PhotoWorkItem[] = [];
 
         for (const hip of hips) {
           const row = existingByNumber.get(hip.hipNumber);
@@ -233,34 +268,98 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           // fotos en Media → clasificación para identificar cuál es la
           // foto LATERAL → envío automático al Análisis IA Lateral →
           // análisis → guardado permanente del resultado en el HIP
-          // correspondiente"). Mecanismo COMPLETAMENTE INDEPENDIENTE del
-          // de video de arriba — pedido explícito: "no quiero usar el
-          // mecanismo de video para esta función" — ninguno de los dos
-          // reutiliza ni pisa el trabajo del otro, y este bloque nunca
-          // analiza video ni extrae fotogramas (ver
-          // analysis/autoPhotoAnalysis.ts). Mismo criterio que el bloque
-          // de video: se evalúa en CADA barrido, no solo cuando
-          // `mediaJson` cambió esta corrida — `autoAnalyzeNewCatalogPhotoIfNeeded`
-          // ya es idempotente por su cuenta (compara
-          // `autoLateralPhotoSourceUrl` contra las fotos publicadas hoy),
-          // así que llamarla de más es segura y barata; y es necesario
-          // para no dejar un Hip atascado si la primera pasada todavía
-          // no encontró ninguna foto clasificable como LATERAL. Contenido
-          // en su propio try/catch: un problema acá nunca debe impedir
-          // que el resto del barrido de Media (video, otros Hips, otras
-          // ventas) siga su curso normal.
+          // correspondiente", ajustado el mismo día para procesar TODO
+          // lo pendiente por corrida, en paralelo controlado — ver bloque
+          // de concurrencia después de este loop). Mecanismo
+          // COMPLETAMENTE INDEPENDIENTE del de video de arriba — pedido
+          // explícito: "no quiero usar el mecanismo de video para esta
+          // función" — ninguno de los dos reutiliza ni pisa el trabajo
+          // del otro, y este bloque nunca analiza video ni extrae
+          // fotogramas (ver analysis/autoPhotoAnalysis.ts). Acá SOLO se
+          // recolecta el Hip como candidato — el trabajo real (que
+          // incluye las llamadas a la IA) se hace después del loop, con
+          // concurrencia limitada, para no serializar miles de
+          // clasificaciones una por una. Mismo criterio que el bloque de
+          // video: se evalúa en CADA barrido, no solo cuando `mediaJson`
+          // cambió esta corrida — `autoAnalyzeNewCatalogPhotoIfNeeded` ya
+          // es idempotente por su cuenta, así que incluir de más acá es
+          // seguro y barato (la función resuelve casi al instante para un
+          // Hip ya procesado, sin tocar la base de datos de más).
           if (freshMedia.some((m) => m.kind === "photo" && !!m.url)) {
-            try {
-              await autoAnalyzeNewCatalogPhotoIfNeeded(
-                { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoLateralPhotoSourceUrl: row.autoLateralPhotoSourceUrl },
-                freshMedia,
-                autoPhotoBudget
-              );
-            } catch (err) {
-              console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de foto:`, err);
-            }
+            photoWorkItems.push({
+              hip: {
+                id: row.id,
+                hipNumber: row.hipNumber,
+                horseName: row.horseName,
+                autoLateralPhotoSourceUrl: row.autoLateralPhotoSourceUrl,
+                autoLateralPhotoFailedAttempts: row.autoLateralPhotoFailedAttempts,
+                autoLateralPhotoLastAttemptedFingerprint: row.autoLateralPhotoLastAttemptedFingerprint,
+              },
+              freshMedia,
+            });
           }
         }
+
+        // Procesa TODOS los Hips con foto pendiente de esta venta, con
+        // concurrencia limitada (config.autoPhotoAnalysisConcurrency,
+        // ver config.ts para el razonamiento de seguridad completo —
+        // verificado contra las métricas reales de Railway y el patrón
+        // de reintento con backoff ya existente antes de habilitar
+        // esto). Ya NO hay tope de cantidad por corrida — pedido
+        // explícito de Ramon (2026-09-10): "si hay 10, 50, 200 o 500
+        // fotos nuevas pendientes, debe procesar TODAS las fotos
+        // pendientes en esa misma corrida". La protección de
+        // costo/estabilidad pasa por la concurrencia acotada + el tope
+        // de reintentos técnicos consecutivos dentro de
+        // autoAnalyzeNewCatalogPhotoIfNeeded (regla 7, ver ese archivo),
+        // no por dejar Hips sin evaluar.
+        const autoPhotoAnalysis = {
+          photoHipsEvaluated: photoWorkItems.length,
+          applied: 0,
+          alreadyProcessed: 0,
+          noLateralCandidate: 0,
+          noEligibleOrg: 0,
+          failed: 0,
+          retriesExhausted: 0,
+        };
+        await runWithConcurrencyLimit(photoWorkItems, config.autoPhotoAnalysisConcurrency, async (item) => {
+          let outcome: AutoPhotoAnalysisOutcome;
+          try {
+            outcome = await autoAnalyzeNewCatalogPhotoIfNeeded(item.hip, item.freshMedia);
+          } catch (err) {
+            // autoAnalyzeNewCatalogPhotoIfNeeded ya nunca debería tirar
+            // (todo error queda contenido adentro) — este catch es un
+            // último cinturón de seguridad para que un fallo realmente
+            // inesperado acá NUNCA tumbe el resto del pool de concurrencia.
+            console.error(`[media-sweep] Hip ${item.hip.hipNumber}: error en análisis automático de foto:`, err);
+            outcome = "failed";
+          }
+          switch (outcome) {
+            case "applied":
+              autoPhotoAnalysis.applied += 1;
+              break;
+            case "already_processed":
+              autoPhotoAnalysis.alreadyProcessed += 1;
+              break;
+            case "no_lateral_candidate":
+              autoPhotoAnalysis.noLateralCandidate += 1;
+              break;
+            case "no_eligible_org":
+              autoPhotoAnalysis.noEligibleOrg += 1;
+              break;
+            case "retries_exhausted":
+              autoPhotoAnalysis.retriesExhausted += 1;
+              break;
+            case "failed":
+              autoPhotoAnalysis.failed += 1;
+              break;
+            case "no_photo":
+              // No debería pasar acá (solo se agregan Hips CON foto a
+              // photoWorkItems) — no se cuenta en ningún casillero
+              // específico, no afecta el resumen.
+              break;
+          }
+        });
 
         hipsReviewedTotal += hipsReviewed;
         hipsWithNewMediaTotal += hipsWithNewMedia;
@@ -276,6 +375,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           photosFound,
           videosFound,
           hipsWithoutMediaYet,
+          autoPhotoAnalysis,
         });
       } catch (err) {
         if (err instanceof CatalogNotYetPublishedError) {
@@ -292,6 +392,15 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             photosFound: 0,
             videosFound: 0,
             hipsWithoutMediaYet: 0,
+            autoPhotoAnalysis: {
+              photoHipsEvaluated: 0,
+              applied: 0,
+              alreadyProcessed: 0,
+              noLateralCandidate: 0,
+              noEligibleOrg: 0,
+              failed: 0,
+              retriesExhausted: 0,
+            },
           });
           continue;
         }

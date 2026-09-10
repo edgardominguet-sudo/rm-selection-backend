@@ -72,6 +72,26 @@ export const config = {
   // servidores. Formato cron estándar.
   discoveryIntervalCron: process.env.DISCOVERY_INTERVAL_CRON ?? "0 */6 * * *",
 
+  // ANÁLISIS AUTOMÁTICO DE FOTOS DE CATÁLOGO (autoPhotoAnalysis.ts,
+  // 2026-09-10) — cuántos Hips se procesan EN PARALELO como máximo
+  // dentro de una misma corrida del barrido de Media. Elegido de forma
+  // conservadora tras revisar los 3 recursos reales que comparte: el
+  // backend corre con 8 vCPU / 8GB en Railway prácticamente ocioso
+  // (verificado con métricas reales antes de habilitar concurrencia),
+  // Postgres tiene margen equivalente, y cada Hip procesado hace como
+  // máximo 2 llamadas a la API de Anthropic EN SECUENCIA (nunca 2 a la
+  // vez para el mismo Hip) — así que 5 Hips en paralelo significan como
+  // máximo 5 llamadas simultáneas a Anthropic, muy por debajo de
+  // cualquier límite de cuenta razonable, con reintento con backoff ya
+  // incorporado (`landmarkVisionClient.ts`) si de todas formas se pisa
+  // un 429. Ajustable sin redeploy de código si hiciera falta afinarlo.
+  autoPhotoAnalysisConcurrency: Number(process.env.AUTO_PHOTO_ANALYSIS_CONCURRENCY ?? 5),
+  // Tope de intentos técnicos fallidos CONSECUTIVOS (no de "foto no es
+  // lateral", eso no cuenta) para el mismo conjunto de fotos de un Hip,
+  // antes de dejar de reintentarlo automáticamente — ver
+  // `MAX_CONSECUTIVE_FAILED_ATTEMPTS` en autoPhotoAnalysis.ts.
+  autoPhotoAnalysisMaxFailedAttempts: Number(process.env.AUTO_PHOTO_ANALYSIS_MAX_FAILED_ATTEMPTS ?? 5),
+
   // Almacenamiento de objetos para medios cargados por el usuario (fotos de
   // reporte veterinario, video/fotos propias) — sincronización
   // multidispositivo, 2026-08-08. Cloudflare R2 (API compatible con S3),

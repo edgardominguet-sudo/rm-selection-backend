@@ -499,6 +499,27 @@ model Hip {
   // dos).
   autoLateralPhotoSourceUrl String?
 
+  // Reintentos acotados (2026-09-10, ver autoPhotoAnalysis.ts regla 7):
+  // cuántos intentos técnicos FALLARON consecutivamente para el MISMO
+  // conjunto de fotos publicadas de este Hip — NUNCA cuenta "ninguna
+  // foto es lateral" (resultado válido), solo fallos reales (no se pudo
+  // ni descargar/clasificar ninguna foto, o no se pudo aplicar el
+  // resultado en ninguna organización). Al llegar al tope
+  // (`config.autoPhotoAnalysisMaxFailedAttempts`), el Hip deja de
+  // reintentarse automáticamente hasta que cambie la foto publicada
+  // (ver `autoLateralPhotoLastAttemptedFingerprint` abajo) o se revise a
+  // mano. Se reinicia solo a 0 en cualquier intento técnicamente sano
+  // (haya encontrado LATERAL o no).
+  autoLateralPhotoFailedAttempts Int @default(0)
+  // Huella (sha256 de las URLs normalizadas de las fotos publicadas,
+  // ordenadas) del ÚLTIMO conjunto de fotos sobre el que se intentó
+  // clasificar/analizar — permite distinguir "sigue fallando la MISMA
+  // foto" (cuenta para el tope de arriba) de "apareció una foto
+  // nueva/distinta, vale la pena reintentar de cero" (reinicia el
+  // contador solo, sin intervención manual). `null` = todavía no se
+  // intentó nunca.
+  autoLateralPhotoLastAttemptedFingerprint String?
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
