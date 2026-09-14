@@ -10,6 +10,7 @@ import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
+import { runReferenceRecalcSweep } from "../analysis/referenceRecalcService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
 import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
@@ -1332,6 +1333,50 @@ router.get("/sales/:saleId/media-sweep", requireUser, handleManualMediaSweep);
 router.get("/media-sweep/runs", requireUser, async (req, res) => {
   const limit = Math.min(50, Number(req.query.limit) || 20);
   const runs = await db.mediaSweepRun.findMany({
+    orderBy: { startedAt: "desc" },
+    take: limit,
+  });
+  res.json(runs);
+});
+
+// BARRIDO DE RECÁLCULO POR CAMBIO DE CABALLO REFERENTE / MOTOR (2026-09-11,
+// ver referenceRecalcService.ts — instrucción 18 de Ramon). A diferencia de
+// /sales/:saleId/media-sweep (una sola venta, responde sincrónico), este
+// barrido recorre TODOS los Hip×Organización con foto LATERAL vigente en
+// TODA la base — puede tardar minutos/horas con miles de Hips, muy por
+// encima del timeout del proxy de Railway (~300-350s). Por eso se dispara
+// en SEGUNDO PLANO (no se espera la promesa) y responde de inmediato: el
+// progreso/resultado real se consulta después vía
+// GET /reference-recalc-sweep/runs (mismo patrón que media-sweep/runs).
+router.post("/reference-recalc-sweep", requireUser, async (req, res) => {
+  runReferenceRecalcSweep({ trigger: "manual" }).catch((err) => {
+    console.error("[reference-recalc] Error en corrida:", err);
+  });
+  res.json({
+    started: true,
+    message: "Barrido de recálculo de referente iniciado en segundo plano. Consultar GET /reference-recalc-sweep/runs?limit=1 para ver el progreso/resultado.",
+  });
+});
+
+// Alias GET — mismo criterio que /sales/:saleId/media-sweep: permite
+// disparar el barrido desde un entorno que no puede mandar POST con
+// headers custom (?apiKey=... por query).
+router.get("/reference-recalc-sweep", requireUser, async (req, res) => {
+  runReferenceRecalcSweep({ trigger: "manual" }).catch((err) => {
+    console.error("[reference-recalc] Error en corrida:", err);
+  });
+  res.json({
+    started: true,
+    message: "Barrido de recálculo de referente iniciado en segundo plano. Consultar GET /reference-recalc-sweep/runs?limit=1 para ver el progreso/resultado.",
+  });
+});
+
+// Historial de corridas del barrido de recálculo — mismo espíritu que
+// /media-sweep/runs: poder confirmar "¿corrió?, ¿qué encontró?, ¿ya
+// terminó?" sin depender de logs de Railway. Más reciente primero.
+router.get("/reference-recalc-sweep/runs", requireUser, async (req, res) => {
+  const limit = Math.min(50, Number(req.query.limit) || 20);
+  const runs = await db.referenceRecalcRun.findMany({
     orderBy: { startedAt: "desc" },
     take: limit,
   });

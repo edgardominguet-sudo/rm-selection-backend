@@ -800,6 +800,26 @@ model AnalysisResult {
   // fuerza una repasada completa una sola vez).
   viewSourceAssetIdsJson Json?
 
+  // CONTROL DE VERSIÓN DEL REFERENTE (2026-09-11, "RECÁLCULO COMPLETO CON
+  // NUEVO CABALLO REFERENTE 10/10" — pedido explícito de Ramon). Hash del
+  // caballo referente (ver referenceViewHash, referenceCalibration.ts) que
+  // produjo el resultado GUARDADO de cada vista en ESTA fila —
+  // Partial<Record<ViewName, string>>, exactamente el mismo criterio que
+  // viewSourceAssetIdsJson arriba pero para el REFERENTE en vez de la foto
+  // del Hip. Sin esto, "vista estable" (misma foto de Hip, ver
+  // analyzeHipOnDemand) copiaría para siempre el resultado viejo aunque
+  // Ramon reemplace el caballo referente — el motor no tendría forma de
+  // saber que el patrón de comparación cambió. Con este campo, cambiar
+  // SOLO la foto lateral del referente (o subir ENGINE_FORMULA_VERSION por
+  // un cambio de fórmulas) invalida automáticamente, vista por vista, todo
+  // análisis calculado con el referente anterior — sin depender de fecha
+  // ni de un número de versión manual (instrucción explícita de Ramon:
+  // "no depender solamente de la fecha para determinarlo"). null en filas
+  // anteriores a este campo — se tratan como "referente desconocido",
+  // fuerza un recálculo real la próxima vez que se pida esa vista (nunca
+  // se asume vigente lo que no se puede confirmar).
+  viewReferenceHashJson Json?
+
   // Diagnóstico técnico (opcional, para depurar calidad del análisis):
   // cuántos fotogramas de marcha se pudieron usar y de qué duración.
   // LEGADO — la metodología nueva no usa video/marcha en este módulo (ver
@@ -1116,6 +1136,61 @@ model MediaSweepRun {
   resourcesFound   Int       @default(0)
   errorMessage     String?
   detailsJson      Json?
+
+  @@index([startedAt])
+}
+
+// Corrida del RECÁLCULO COMPLETO tras cambiar el caballo referente (o los
+// parámetros/fórmulas del motor) — 2026-09-11, "RECÁLCULO COMPLETO DE
+// TODOS LOS HIP CON EL NUEVO CABALLO REFERENTE 10/10" (pedido explícito de
+// Ramon). Mismo espíritu y mismo patrón exacto que MediaSweepRun arriba
+// (permite responder "¿cuándo corrió, qué encontró?" sin depender de logs
+// de Railway), pero para un tipo de corrida completamente distinto: no
+// busca fotos/video nuevos, sino que recalcula el SCORE de fotos ya
+// publicadas contra un referente que cambió — ver
+// analysis/referenceRecalcService.ts. Nunca se dispara sola (ni cron ni
+// automático): siempre a pedido explícito, vía POST/GET
+// /reference-recalc-sweep, porque cambiar el caballo referente es una
+// decisión humana, no algo que deba pasar sin que alguien lo pida.
+model ReferenceRecalcRun {
+  id             String    @id @default(cuid())
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  // "manual" — hoy el único origen posible (ver nota arriba). Se deja como
+  // string, no un literal fijo, por si en el futuro se agrega otro origen
+  // (ej. un botón dedicado en un panel de administración) sin tocar el
+  // schema.
+  trigger        String    @default("manual")
+  // "running" | "completed" | "failed".
+  status         String    @default("running")
+  // Universo evaluado: Hips (por organización) con al menos una foto
+  // LATERAL de Análisis IA vigente (manual o automática) — ver
+  // findHipsNeedingLateralAnalysis en referenceRecalcService.ts.
+  hipsEvaluated  Int       @default(0)
+  // Se volvió a llamar al motor de verdad porque el referente (o la foto)
+  // efectivamente cambió desde el último análisis guardado — incluye
+  // tanto reanálisis (Hip ya tenía análisis con el referente viejo, punto
+  // A de la tarea) como primer análisis (Hip con foto pero sin análisis
+  // previo, punto B).
+  reanalyzed     Int       @default(0)
+  // Ya estaba calculado con el referente/versión VIGENTE — nada que
+  // hacer, cuenta como éxito (evita gasto/reanálisis duplicado, punto G
+  // de la tarea). Si se re-ejecuta esta corrida más de una vez (ej. tras
+  // un corte por falta de crédito), los Hips ya recalculados en la
+  // corrida anterior caen acá, gratis.
+  reused         Int       @default(0)
+  // La organización de este Hip no tiene el caballo referente
+  // completamente configurado (falta alguna de las 3 fotos) — no es un
+  // fallo técnico, es un estado de configuración; se detalla en
+  // detailsJson para poder revisarlo a mano.
+  noReference    Int       @default(0)
+  // Fallo técnico real (IA, base de datos, red) para un Hip puntual — no
+  // interrumpe el resto de la corrida (punto H de la tarea); se puede
+  // reintentar simplemente volviendo a disparar la corrida, ver comentario
+  // de `reused` arriba.
+  errors         Int       @default(0)
+  errorMessage   String?
+  detailsJson    Json?
 
   @@index([startedAt])
 }

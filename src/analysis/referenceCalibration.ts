@@ -73,6 +73,30 @@ export function referenceSourceHash(assets: ReferenceHorseAssets): string {
   return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
 }
 
+/**
+ * CONTROL DE VERSIÓN DEL REFERENTE POR VISTA (2026-09-11, "RECÁLCULO
+ * COMPLETO CON NUEVO CABALLO REFERENTE 10/10" — pedido explícito de
+ * Ramon). Análogo a `referenceSourceHash` de arriba, pero de UNA sola
+ * vista en vez de las 3 combinadas — deliberado: Ramon reemplazó
+ * únicamente la foto LATERAL del referente (frontal/posterior quedaron
+ * igual), así que solo la vista lateral de cada Hip necesita recalcularse
+ * — usar el hash combinado de las 3 fotos habría invalidado también
+ * frontal/posterior sin necesidad, gastando IA de más en vistas que ni
+ * siquiera se muestran hoy (`rmSingleLateralAnalysisMode`).
+ *
+ * `analyzeHipOnDemand` (rankingService.ts) guarda, por vista, el resultado
+ * de esta función en `AnalysisResult.viewReferenceHashJson` — la próxima
+ * vez que se pida esa vista, si el hash guardado no coincide con el
+ * vigente (cambió la foto del referente para esa vista, o subió
+ * `ENGINE_FORMULA_VERSION` por un cambio de fórmulas), la vista se trata
+ * como "sucia" y se recalcula de verdad, SIN IMPORTAR que la foto del
+ * propio Hip no haya cambiado — es justamente el caso que hace falta
+ * cubrir para el recálculo completo.
+ */
+export function referenceViewHash(url: string | null | undefined): string {
+  return crypto.createHash("sha256").update(`${url ?? ""}|${ENGINE_FORMULA_VERSION}`).digest("hex");
+}
+
 async function extractViewLandmarks<V extends "frontal" | "lateral" | "posterior">(
   url: string,
   view: V,

@@ -92,6 +92,13 @@ export const config = {
   // `MAX_CONSECUTIVE_FAILED_ATTEMPTS` en autoPhotoAnalysis.ts.
   autoPhotoAnalysisMaxFailedAttempts: Number(process.env.AUTO_PHOTO_ANALYSIS_MAX_FAILED_ATTEMPTS ?? 5),
 
+  // Concurrencia controlada para el BARRIDO DE RECÁLCULO por cambio de
+  // caballo referente/motor de análisis (ver referenceRecalcService.ts) —
+  // mismo patrón que autoPhotoAnalysisConcurrency, para no disparar miles de
+  // solicitudes a la vez (ver punto H de la especificación: "procesamiento
+  // por cola/lotes con concurrencia controlada").
+  referenceRecalcConcurrency: Number(process.env.REFERENCE_RECALC_CONCURRENCY ?? 5),
+
   // Almacenamiento de objetos para medios cargados por el usuario (fotos de
   // reporte veterinario, video/fotos propias) — sincronización
   // multidispositivo, 2026-08-08. Cloudflare R2 (API compatible con S3),

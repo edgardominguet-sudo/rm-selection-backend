@@ -9,6 +9,7 @@ import { ViewName } from "./analysis/landmarks";
 import { PhotoClassification } from "./analysis/prompt";
 import { overallScore, classify, emptyScores, setScore, LATERAL_TRAITS, FRONTAL_TRAITS, POSTERIOR_TRAITS, METHODOLOGY_VERSION, ConformationScores } from "./analysis/conformationScores";
 import { getReferenceHorse } from "./referenceHorse";
+import { referenceViewHash } from "./analysis/referenceCalibration";
 import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip, SaleHouseClient } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
@@ -627,6 +628,22 @@ export async function analyzeHipOnDemand(
         where: { hipId_organizationId: { hipId: hip.id, organizationId } },
         include: { analysisResult: true },
       });
+
+      // CONTROL DE VERSIÓN DEL REFERENTE (2026-09-11, ver comentario en
+      // AnalysisResult.viewReferenceHashJson, schema.prisma): se calcula
+      // ACÁ, antes de cualquier atajo de reuso, el hash vigente del
+      // referente para cada vista — necesario tanto para el atajo de
+      // abajo (mediaHash sin cambios) como para el detalle vista-por-
+      // vista más abajo. `viewNames` se define acá (y no donde antes,
+      // más abajo) porque hace falta desde este punto en adelante.
+      const viewNames: ViewName[] = ["frontal", "lateral", "posterior"];
+      const referenceAssets = await getReferenceHorse(organizationId);
+      const currentReferenceHashByView: Record<ViewName, string> = {
+        frontal: referenceViewHash(referenceAssets.frontalPhotoUrl),
+        lateral: referenceViewHash(referenceAssets.lateralPhotoUrl),
+        posterior: referenceViewHash(referenceAssets.posteriorPhotoUrl),
+      };
+
       if (pointer && pointer.analysisResult.mediaHash === currentHash) {
         // INDEPENDENCIA REAL DE VISTAS (2026-09-04): la huella de media es
         // sobre las 3 fotos juntas (ver mediaFingerprint) — no cambia solo
@@ -643,7 +660,23 @@ export async function analyzeHipOnDemand(
         const requestedAlreadyAvailable =
           !requestedView ||
           !!(pointer.analysisResult.landmarksJson as Record<ViewName, ViewAnalysisDetail> | null)?.[requestedView]?.available;
-        if (requestedAlreadyAvailable) {
+        // CONTROL DE VERSIÓN DEL REFERENTE: este atajo (ni siquiera entrar
+        // al detalle vista-por-vista) solo es válido si, ADEMÁS, el
+        // referente que produjo el resultado guardado de la(s) vista(s)
+        // relevante(s) sigue vigente — de lo contrario se sigue de largo
+        // hacia la lógica de abajo, que sí sabe recalcular solo lo que
+        // corresponde. Filas sin `viewReferenceHashJson` (anteriores a
+        // este campo) nunca cuentan como vigentes — fuerzan, una sola vez,
+        // pasar por la lógica de abajo.
+        const previousRefHashesForShortcut = (pointer.analysisResult.viewReferenceHashJson as Partial<Record<ViewName, string>> | null) ?? null;
+        const storedLandmarksForShortcut = pointer.analysisResult.landmarksJson as Record<ViewName, ViewAnalysisDetail> | null;
+        const viewsRelevantForShortcut: ViewName[] = requestedView
+          ? [requestedView]
+          : viewNames.filter((v) => storedLandmarksForShortcut?.[v]?.available);
+        const referenceStillCurrentForShortcut =
+          !!previousRefHashesForShortcut &&
+          viewsRelevantForShortcut.every((v) => previousRefHashesForShortcut![v] === currentReferenceHashByView[v]);
+        if (requestedAlreadyAvailable && referenceStillCurrentForShortcut) {
           return { analysis: pointer.analysisResult, reused: true };
         }
       }
@@ -660,8 +693,8 @@ export async function analyzeHipOnDemand(
       // llamar a la IA ni recalcular nada.
       const previous = pointer?.analysisResult ?? null;
       const previousSourceIds = (previous?.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null) ?? null;
+      const previousRefHashes = (previous?.viewReferenceHashJson as Partial<Record<ViewName, string>> | null) ?? null;
       const currentByView = groupAIAnalysisMediaByView(media);
-      const viewNames: ViewName[] = ["frontal", "lateral", "posterior"];
 
       // Sin procedencia guardada (fila anterior a este campo, o primer
       // análisis de este Hip): ninguna vista cuenta como estable — se
@@ -671,9 +704,21 @@ export async function analyzeHipOnDemand(
       // última vez (ambos ausentes — "seguía sin foto" — también cuenta
       // como estable, ver test 1 de la especificación: borrar UNA vista no
       // debe tocar las otras dos).
-      const dirtyViews = previousSourceIds
-        ? viewNames.filter((view) => (currentByView[view]?.id ?? null) !== (previousSourceIds[view] ?? null))
-        : [...viewNames];
+      const dirtyViews = viewNames.filter((view) => {
+        const idChanged = previousSourceIds
+          ? (currentByView[view]?.id ?? null) !== (previousSourceIds[view] ?? null)
+          : true;
+        // CONTROL DE VERSIÓN DEL REFERENTE: una vista con la MISMA foto de
+        // Hip que antes igual cuenta como "sucia" si el referente que la
+        // calculó ya no es el vigente — es justo el caso que hace falta
+        // cubrir para el recálculo completo (ver AnalysisResult.
+        // viewReferenceHashJson). Se ignora para vistas que nunca tuvieron
+        // ni tienen foto (ninguna de las dos existe) — no tiene sentido
+        // marcarlas "sucias" si no hay ni habrá nada que analizar.
+        const hasPhotoContext = !!(currentByView[view] || previousSourceIds?.[view]);
+        const referenceChanged = hasPhotoContext && (previousRefHashes?.[view] ?? null) !== currentReferenceHashByView[view];
+        return idChanged || referenceChanged;
+      });
 
       // INDEPENDENCIA REAL DE VISTAS (2026-09-04): de las vistas "sucias"
       // (con foto nueva/distinta a la del último análisis), solo se manda
@@ -706,7 +751,7 @@ export async function analyzeHipOnDemand(
             horseName: hip.horseName ?? undefined,
             organizationId,
             media: dirtyMedia,
-            reference: await getReferenceHorse(organizationId),
+            reference: referenceAssets,
           })
         : null;
 
@@ -717,6 +762,7 @@ export async function analyzeHipOnDemand(
       const mergedDetail = {} as Record<ViewName, ViewAnalysisDetail>;
       const mergedScores = emptyScores();
       const mergedSourceIds: Partial<Record<ViewName, string>> = {};
+      const mergedReferenceHashes: Partial<Record<ViewName, string>> = {};
       const summaryLines: string[] = [];
 
       for (const view of viewNames) {
@@ -729,6 +775,7 @@ export async function analyzeHipOnDemand(
           mergedDetail[view] = freshDetailForView;
           for (const key of TRAITS_BY_VIEW[view]) setScore(mergedScores, `${view}.${key}`, fresh!.scores[`${view}.${key}`] ?? 0);
           if (fresh!.viewSourceAssetIds[view]) mergedSourceIds[view] = fresh!.viewSourceAssetIds[view];
+          mergedReferenceHashes[view] = currentReferenceHashByView[view];
         } else if (wasSentToAI) {
           // Vista pedida por el usuario en ESTA llamada, sin resultado
           // disponible (la foto se borró, o la foto nueva no dio válida
@@ -744,6 +791,7 @@ export async function analyzeHipOnDemand(
             for (const key of TRAITS_BY_VIEW[view]) setScore(mergedScores, `${view}.${key}`, previousScores[`${view}.${key}`] ?? 0);
           }
           if (previousSourceIds?.[view]) mergedSourceIds[view] = previousSourceIds[view]!;
+          mergedReferenceHashes[view] = previousRefHashes?.[view] ?? currentReferenceHashByView[view];
         } else if (isDirty) {
           // INDEPENDENCIA REAL DE VISTAS (2026-09-04): esta vista tiene una
           // foto nueva/distinta (por eso `isDirty`), pero el usuario
@@ -800,6 +848,7 @@ export async function analyzeHipOnDemand(
           model: config.anthropicModel,
           deviceId,
           viewSourceAssetIdsJson: mergedSourceIds as unknown as object,
+          viewReferenceHashJson: mergedReferenceHashes as unknown as object,
         },
       });
       await tx.currentHipAnalysis.upsert({
