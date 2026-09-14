@@ -4,7 +4,7 @@ import { config } from "./config";
 import { clientFor } from "./saleHouses/registry";
 import { pollIntervalMinutes, shouldCheckNow } from "./saleHouses/pollingPolicy";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
-import { analyzeHip, MissingReferenceHorseError, NoPhotosError, ViewAnalysisDetail } from "./analysis/anthropicClient";
+import { analyzeHip, NoPhotosError, ViewAnalysisDetail } from "./analysis/anthropicClient";
 import { ViewName } from "./analysis/landmarks";
 import { PhotoClassification } from "./analysis/prompt";
 import { overallScore, classify, emptyScores, setScore, LATERAL_TRAITS, FRONTAL_TRAITS, POSTERIOR_TRAITS, METHODOLOGY_VERSION, ConformationScores } from "./analysis/conformationScores";
@@ -408,138 +408,40 @@ export interface AnalysisBudget {
 }
 
 /**
- * Analiza (o reanaliza) con IA todos los Hips de una jornada que lo
- * necesiten — porque nunca se analizaron, o porque apareció una foto o
- * video nuevo desde el último análisis — y deja el ranking de esa jornada
- * actualizado. Se llama tanto para la generación anticipada (12h antes)
- * como para la actualización incremental cuando cambia algo antes de la
- * subasta.
+ * Recalcula el Ranking del Día de una jornada usando EXCLUSIVAMENTE los
+ * scores YA GUARDADOS (CurrentHipAnalysis / AnalysisResult) — nunca
+ * dispara un análisis nuevo ni llama a Anthropic. A pedido explícito de
+ * Ramon (2026-09-14, "IMPLEMENTAR — RANKING DEL DÍA / RM SELECTION"):
+ * "NO debe volver a enviar las fotos a Anthropic. NO debe reanalizar
+ * caballos. NO debe generar llamadas adicionales de IA para hacer el
+ * ranking." El análisis en sí ocurre en otro lado (botón manual
+ * "Analizar", barrido de recálculo de referente, y el análisis
+ * automático y silencioso de fotos de catálogo del barrido nocturno —
+ * ver autoPhotoAnalysis.ts) y siempre termina en analyzeHipOnDemand más
+ * abajo, que ya deja el Ranking del Día actualizado por su cuenta apenas
+ * guarda un análisis nuevo (ver refreshRankingSnapshotForHip). Esta
+ * función es la que llama processSale en cada tick del scheduler de 5
+ * minutos — sin lógica de análisis, solo relee y reordena lo que ya está
+ * guardado, así que ese tick deja de costar nada de Anthropic (antes de
+ * este cambio, este era exactamente el mecanismo que el 2026-09-14
+ * intentó reanalizar Hips con el saldo de Anthropic en cero — ver
+ * investigación "REPARAR AHORA" — porque dependía de las 3 fotos legado
+ * de Análisis IA en vez del score único de la vista lateral que usa el
+ * motor actual). Sirve además de red de respaldo: si por cualquier
+ * motivo el hook de analyzeHipOnDemand no llegó a correr para algún Hip,
+ * este tick de 5 minutos lo termina reflejando en el ranking igual, sin
+ * costo.
  */
-export async function analyzeAndRankSession(saleId: string, organizationId: string, sessionDate: Date, budget: AnalysisBudget): Promise<void> {
+export async function analyzeAndRankSession(saleId: string, organizationId: string, sessionDate: Date): Promise<void> {
   const dayStart = startOfCalendarDay(sessionDate);
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
-  const hips = await db.hip.findMany({
+  const totalHipsToday = await db.hip.count({
     where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
   });
-  if (hips.length === 0) return;
+  if (totalHipsToday === 0) return;
 
-  // Puntero al análisis vigente de cada Hip PARA ESTA organización — bajo
-  // multi-tenant, dos organizaciones pueden estar en versiones distintas
-  // del mismo Hip (referentes distintos, o una todavía no lo analizó).
-  const pointers = await db.currentHipAnalysis.findMany({
-    where: { organizationId, hipId: { in: hips.map((h) => h.id) } },
-    include: { analysisResult: true },
-  });
-  const pointerByHipId = new Map(pointers.map((p) => [p.hipId, p]));
-
-  const reference = await getReferenceHorse(organizationId);
-  let anyChange = false;
-
-  for (const hip of hips) {
-    // Análisis IA (2026-08-13): SOLO fotos tomadas por el usuario desde la
-    // pantalla Análisis (IA) de este Hip — nunca `hip.mediaJson` (catálogo).
-    // Un Hip sin esas 3 fotos todavía queda afuera del Ranking del Día
-    // hasta que el usuario las tome — comportamiento nuevo, a propósito
-    // (ver comentario de resolveAIAnalysisMedia).
-    const media = await resolveAIAnalysisMedia(hip.id, organizationId);
-    const currentHash = mediaFingerprint(media);
-    const pointer = pointerByHipId.get(hip.id);
-    const needsAnalysis = !pointer || pointer.analysisResult.mediaHash !== currentHash;
-    if (!needsAnalysis) continue;
-
-    if (budget.remaining <= 0) {
-      console.warn(`[ranking] Presupuesto de análisis agotado para este ciclo — Hip ${hip.hipNumber} queda pendiente para el próximo.`);
-      continue;
-    }
-
-    // No se genera ningún puntaje sin las 3 fotos (frontal/lateral/
-    // posterior) — mismo criterio que se aplica del lado de iOS antes de
-    // siquiera pedir el análisis, repetido acá porque este ciclo corre
-    // solo (scheduler) sin pasar por esa pantalla.
-    if (media.length < 3) continue;
-
-    const triggerReason = pointer ? "media_changed" : "initial";
-
-    try {
-      const outcome = await analyzeHip({
-        hipNumber: hip.hipNumber,
-        horseName: hip.horseName ?? undefined,
-        organizationId,
-        media,
-        reference,
-      });
-      budget.remaining -= 1;
-      const score = overallScore(outcome.scores);
-      const classification = classify(score);
-
-      // Nunca se sobrescribe: se agrega una fila nueva de historial y
-      // recién después se actualiza (o crea) el puntero CurrentHipAnalysis
-      // de este Hip+organización — así una evaluación pasada nunca se
-      // pierde, aunque el Hip se vuelva a analizar más adelante (ver
-      // ARCHITECTURE.md sección 1a). Ambas escrituras van en UNA
-      // transacción: si el proceso se corta a mitad de camino (ej. Railway
-      // reinicia el contenedor), no puede quedar un AnalysisResult nuevo
-      // con el puntero todavía apuntando al viejo (mostraría un puntaje
-      // desactualizado sin que nada lo detecte).
-      const previousVersionCount = await db.analysisResult.count({ where: { hipId: hip.id, organizationId } });
-      await db.$transaction(async (tx) => {
-        const created = await tx.analysisResult.create({
-          data: {
-            hipId: hip.id,
-            organizationId,
-            version: previousVersionCount + 1,
-            triggerReason,
-            mediaHash: currentHash,
-            conformationScoresJson: outcome.scores as unknown as object,
-            overallScore: score,
-            classification,
-            methodologyVersion: outcome.methodologyVersion,
-            photoClassificationsJson: outcome.photoClassifications as unknown as object,
-            // Motor de Análisis Anatómico (2026-08-14) — landmarks y
-            // hallazgos crudos por vista, para poder auditar cualquier
-            // análisis pasado sin volver a llamar a la IA. Ver
-            // ViewAnalysisDetail en anthropicClient.ts.
-            landmarksJson: outcome.detail as unknown as object,
-            findingsJson: Object.fromEntries(
-              Object.entries(outcome.detail).map(([view, d]) => [view, d.displayFindings])
-            ) as unknown as object,
-            summary: outcome.summary,
-            model: config.anthropicModel,
-          },
-        });
-        await tx.currentHipAnalysis.upsert({
-          where: { hipId_organizationId: { hipId: hip.id, organizationId } },
-          create: { hipId: hip.id, organizationId, analysisResultId: created.id },
-          update: { analysisResultId: created.id },
-        });
-      });
-      anyChange = true;
-    } catch (err) {
-      // Un Hip puntual sin fotos suficientes, o sin caballo referente
-      // configurado, no debe tirar abajo el resto de la jornada — se
-      // deja afuera del ranking (sin AnalysisResult) y se sigue con el
-      // resto. Se vuelve a intentar solo en el próximo ciclo.
-      if (err instanceof MissingReferenceHorseError) {
-        console.error(`[ranking] Organización ${organizationId}: falta configurar el caballo referente — no se puede analizar nada todavía.`);
-        return;
-      }
-      if (err instanceof NoPhotosError) {
-        console.warn(`[ranking] Hip ${hip.hipNumber}: ${err.message}`);
-        continue;
-      }
-      console.error(`[ranking] Error analizando Hip ${hip.hipNumber}:`, err);
-    }
-  }
-
-  if (!anyChange) {
-    const existing = await db.rankingSnapshot.findUnique({
-      where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
-    });
-    if (existing) return; // ya está al día, no hace falta recalcular
-  }
-
-  await rebuildRankingSnapshot(saleId, organizationId, dayStart, hips.length, anyChange ? "media_changed" : "initial");
+  await rebuildRankingSnapshot(saleId, organizationId, dayStart, totalHipsToday, "scheduled_refresh");
 }
 
 /**
@@ -617,7 +519,7 @@ export async function analyzeHipOnDemand(
   const currentHash = mediaFingerprint(media);
   const lockKey = `${hip.id}:${organizationId}`;
 
-  return db.$transaction(
+  const result = await db.$transaction(
     async (tx) => {
       // hashtext() da un int4 determinístico a partir del string — se
       // castea a bigint porque pg_advisory_xact_lock solo tiene overload
@@ -864,13 +766,70 @@ export async function analyzeHipOnDemand(
     // camino en un Hip con video largo.
     { timeout: 120_000, maxWait: 120_000 }
   );
+
+  // Ranking del Día (2026-09-14, pedido explícito de Ramon): si este
+  // análisis se guardó de verdad (no fue un reuso del resultado ya
+  // vigente), recalcula al toque el Ranking del Día de la jornada de
+  // este Hip usando el score recién guardado — SIN volver a llamar a
+  // Anthropic (ver refreshRankingSnapshotForHip más abajo). Nunca debe
+  // poder afectar la respuesta del análisis en sí: se dispara sin
+  // esperar (fire-and-forget) y cualquier error queda solo logueado.
+  if (!result.reused) {
+    void refreshRankingSnapshotForHip(hip, organizationId).catch((err) => {
+      console.error(`[ranking] Error recalculando el Ranking del Día tras analizar Hip ${hip.hipNumber}:`, err);
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Reconstruye y guarda el Ranking del Día de una jornada a partir de los
+ * scores YA GUARDADOS (CurrentHipAnalysis) — nunca llama a Anthropic acá
+ * adentro. Único par de llamadores: analyzeAndRankSession (tick de 5
+ * minutos, sin análisis) y refreshRankingSnapshotForHip (justo después
+ * de guardar un análisis real, ver más abajo).
+ *
+ * Ranking del Día (2026-09-14, "IMPLEMENTAR — RANKING DEL DÍA / RM
+ * SELECTION", pedido explícito de Ramon): cada entrada del Top 5 trae,
+ * además del score, Sire/Dam y una miniatura de la foto lateral — se
+ * agregan acá para que GET /ranking (routes.ts) no tenga que volver a
+ * tocar la base. La miniatura se guarda como `lateralPhotoStorageKey`
+ * (NO como URL firmada): una URL firmada expira en 1h (ver
+ * resolveReadUrl, r2Client.ts) y este snapshot puede quedar guardado
+ * muchas horas sin regenerarse (de madrugada a la mañana siguiente) — la
+ * URL definitiva se resuelve recién en la propia respuesta de
+ * GET /ranking, mismo criterio que resolveAIAnalysisMedia más arriba en
+ * este archivo.
+ *
+ * Detección de cambios: si el Top 5 resultante es idéntico al que ya
+ * estaba guardado (mismo orden, mismos scores, misma miniatura), no
+ * reescribe nada — evita crear una fila de RankingSnapshotVersion nueva
+ * en cada tick del scheduler de 5 minutos cuando en realidad no cambió
+ * nada (el caso normal, la mayor parte del día).
+ */
+/**
+ * Igual que JSON.stringify pero ordena las claves de cada objeto antes de
+ * serializar — Postgres jsonb no preserva el orden de inserción de un
+ * objeto al volver a leerlo, así que un JSON.stringify directo no sirve
+ * para comparar "¿es este valor igual al que ya estaba guardado?". Usada
+ * únicamente por rebuildRankingSnapshot para no reescribir el Ranking del
+ * Día cuando en realidad no cambió nada.
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => JSON.stringify(k) + ":" + stableStringify(v)).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 async function rebuildRankingSnapshot(saleId: string, organizationId: string, dayStart: Date, totalHipsToday: number, triggerReason: string): Promise<void> {
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const hips = await db.hip.findMany({
     where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
-    select: { id: true, hipNumber: true, horseName: true },
+    select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true },
   });
 
   const pointers = await db.currentHipAnalysis.findMany({
@@ -885,13 +844,54 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
     .sort((a, b) => b.analysis.overallScore - a.analysis.overallScore)
     .slice(0, config.topRankingSize);
 
-  const entries = ranked.map((entry, index) => ({
-    rank: index + 1,
-    hipNumber: entry.hip.hipNumber,
-    horseName: entry.hip.horseName,
-    overallScore: entry.analysis.overallScore,
-    classification: entry.analysis.classification,
-  }));
+  // Miniatura de la foto lateral de cada HIP del Top 5 — viewSourceAssetIdsJson
+  // guarda, por vista, el MediaAsset.id cuya foto produjo el resultado
+  // GUARDADO (ver comentario del campo en schema.prisma); se resuelve en
+  // un solo select por lote, no uno por Hip.
+  const lateralAssetIdByHipId = new Map(
+    ranked.map((entry) => [
+      entry.hip.id,
+      (entry.analysis.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null)?.lateral ?? null,
+    ])
+  );
+  const lateralAssetIds = [...lateralAssetIdByHipId.values()].filter((id): id is string => !!id);
+  const lateralAssets = lateralAssetIds.length
+    ? await db.mediaAsset.findMany({
+        where: { id: { in: lateralAssetIds }, deletedAt: null },
+        select: { id: true, storageKey: true },
+      })
+    : [];
+  const storageKeyByAssetId = new Map(lateralAssets.map((a) => [a.id, a.storageKey]));
+
+  const entries = ranked.map((entry, index) => {
+    const lateralAssetId = lateralAssetIdByHipId.get(entry.hip.id) ?? null;
+    return {
+      rank: index + 1,
+      hipNumber: entry.hip.hipNumber,
+      horseName: entry.hip.horseName,
+      sire: entry.hip.sire,
+      dam: entry.hip.dam,
+      overallScore: entry.analysis.overallScore,
+      classification: entry.analysis.classification,
+      lateralPhotoStorageKey: lateralAssetId ? storageKeyByAssetId.get(lateralAssetId) ?? null : null,
+    };
+  });
+
+  const existing = await db.rankingSnapshot.findUnique({
+    where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
+  });
+  // Comparación insensible al orden de claves: Postgres guarda entriesJson
+  // como jsonb, que NO preserva el orden de inserción de un objeto al
+  // volver a leerlo — un JSON.stringify directo compararía distinto
+  // aunque el contenido sea idéntico, y esta detección de cambios nunca
+  // "pegaría" (dejaría de aportar nada, sin romper nada — solo generaría
+  // más historial del necesario). stableStringify ordena las claves antes
+  // de comparar, así que sí detecta correctamente "no cambió nada".
+  const unchanged =
+    !!existing &&
+    existing.totalHipsToday === totalHipsToday &&
+    stableStringify(existing.entriesJson) === stableStringify(entries);
+  if (unchanged) return;
 
   await db.$transaction([
     db.rankingSnapshot.upsert({
@@ -900,12 +900,42 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
       update: { entriesJson: entries as unknown as object, totalHipsToday, updatedAt: new Date() },
     }),
     // Historial: una fila nueva en cada recálculo, nunca se sobrescribe —
-    // deja lista la base para mostrar más adelante "cómo cambió el top 20
+    // deja lista la base para mostrar más adelante "cómo cambió el Top 5
     // a lo largo del día" (ver ARCHITECTURE.md sección 1b).
     db.rankingSnapshotVersion.create({
       data: { organizationId, saleId, sessionDate: dayStart, entriesJson: entries as unknown as object, totalHipsToday, triggerReason },
     }),
   ]);
+}
+
+/**
+ * Recalcula (sin nueva llamada a Anthropic) el Ranking del Día de la
+ * jornada a la que pertenece este Hip, usando el score que ACABA de
+ * guardarse — a pedido explícito de Ramon (2026-09-14, "IMPLEMENTAR —
+ * RANKING DEL DÍA / RM SELECTION"): "si durante el día aparece y se
+ * analiza una nueva foto, el ranking puede recalcularse utilizando el
+ * nuevo SCORE YA GUARDADO, sin volver a llamar a Anthropic". Se llama
+ * desde el final de analyzeHipOnDemand cada vez que un análisis nuevo se
+ * guardó de verdad (reused === false) — cubre, sin código adicional, los
+ * tres caminos que hoy llaman a analyzeHipOnDemand: el botón manual
+ * "Analizar", el barrido de recálculo de referente
+ * (referenceRecalcService.ts) y el análisis automático y silencioso de
+ * fotos de catálogo del barrido nocturno (autoPhotoAnalysis.ts). Nunca
+ * debe poder tirar abajo a su llamador — se invoca envuelta en try/catch
+ * desde ahí y acá adentro nunca relanza.
+ */
+async function refreshRankingSnapshotForHip(hip: { id: string; hipNumber: string }, organizationId: string): Promise<void> {
+  const hipRow = await db.hip.findUnique({ where: { id: hip.id }, select: { saleId: true, sessionDate: true } });
+  if (!hipRow?.sessionDate) return;
+
+  const dayStart = startOfCalendarDay(hipRow.sessionDate);
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const totalHipsToday = await db.hip.count({
+    where: { saleId: hipRow.saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
+  });
+  if (totalHipsToday === 0) return;
+
+  await rebuildRankingSnapshot(hipRow.saleId, organizationId, dayStart, totalHipsToday, "media_changed");
 }
 
 // Ventana antes de (o después de empezada) la fecha oficial de una venta
@@ -1202,7 +1232,9 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
       // debe quedar borrado, no resucitar en el próximo tick.
       const expired = now.getTime() >= sessionExpiresAt(sessionDate).getTime();
       if (!withinLeadWindow || expired) continue;
-      await analyzeAndRankSession(sale.id, organization.id, sessionDate, budget);
+      // analyzeAndRankSession ya no analiza nada (ver su comentario) —
+      // no necesita/recibe el presupuesto de análisis del ciclo.
+      await analyzeAndRankSession(sale.id, organization.id, sessionDate);
     }
   }
 }

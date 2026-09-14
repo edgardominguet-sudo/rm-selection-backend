@@ -57,7 +57,10 @@ export const config = {
   // Cada cuántos minutos corre el ciclo del scheduler (chequeo de nuevas
   // jornadas a generar + reanálisis incremental de Hips con media nueva).
   schedulerIntervalMinutes: Number(process.env.SCHEDULER_INTERVAL_MINUTES ?? 15),
-  topRankingSize: Number(process.env.TOP_RANKING_SIZE ?? 20),
+  // Cuántos Hips como máximo entran en el Ranking del Día — Top 5 a
+  // pedido explícito de Ramon (2026-09-14, "IMPLEMENTAR — RANKING DEL
+  // DÍA"): los mejores 5 HIP de la jornada, no una lista larga.
+  topRankingSize: Number(process.env.TOP_RANKING_SIZE ?? 5),
   // Tope de seguridad: cuántos Hips se pueden analizar con IA como máximo
   // en UN ciclo del scheduler, sumando todas las ventas activas. Protege
   // contra un gasto descontrolado si un bug hiciera que muchos Hips

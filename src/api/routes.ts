@@ -156,10 +156,29 @@ router.get("/ranking", requireUser, async (req, res) => {
     return;
   }
 
+  // Ranking del Día (2026-09-14): entriesJson guarda `lateralPhotoStorageKey`
+  // (no una URL firmada — esas expiran en 1h, ver comentario de
+  // rebuildRankingSnapshot en rankingService.ts) — la URL de lectura se
+  // resuelve recién acá, en esta misma request, mismo criterio que el
+  // resto del backend usa para toda la media de Análisis IA.
+  const entries = (snapshot.entriesJson as Array<Record<string, unknown>>).map((entry) => {
+    const storageKey = entry.lateralPhotoStorageKey;
+    return {
+      rank: entry.rank,
+      hipNumber: entry.hipNumber,
+      horseName: entry.horseName,
+      sire: entry.sire,
+      dam: entry.dam,
+      overallScore: entry.overallScore,
+      classification: entry.classification,
+      lateralPhotoUrl: typeof storageKey === "string" ? resolveReadUrl(storageKey) : null,
+    };
+  });
+
   res.json({
     saleName: sale.name,
     status: "ready",
-    entries: snapshot.entriesJson,
+    entries,
     totalHipsToday: snapshot.totalHipsToday,
     generatedAt: snapshot.generatedAt,
     updatedAt: snapshot.updatedAt,
