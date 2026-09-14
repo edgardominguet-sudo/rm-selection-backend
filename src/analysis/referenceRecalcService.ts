@@ -5,6 +5,8 @@ import { analyzeHipOnDemand } from "../rankingService";
 import { MissingReferenceHorseError } from "./anthropicClient";
 import { ViewName } from "./landmarks";
 import { CatalogMediaItem } from "../types";
+import { getReferenceHorse } from "../referenceHorse";
+import { referenceViewHash } from "./referenceCalibration";
 
 /**
  * BARRIDO DE RECÁLCULO POR CAMBIO DE CABALLO REFERENTE / MOTOR
@@ -41,15 +43,58 @@ import { CatalogMediaItem } from "../types";
  * asume que haya una sola — si alguna todavía no tiene su caballo
  * referente configurado (las 3 fotos), esos pares quedan contabilizados
  * aparte (`noReference`), nunca se pierden ni se cuentan como error.
+ *
+ * ALCANCE ACOTADO (2026-09-14, "INSTRUCCIÓN ACTUALIZADA – BARRIDO
+ * KEENELAND", a pedido explícito de Ramon): además del barrido global de
+ * siempre, este archivo ahora soporta un `ReferenceRecalcFilter` opcional
+ * — venta puntual + rango de número de Hip — para poder limitar una
+ * corrida a exactamente los Hip que Ramon va a trabajar en persona (ej.
+ * "solo HIP 1976 a 4650 de Keeneland, del 21 al 26 de sep"). Sin filtro,
+ * el comportamiento es EXACTAMENTE el de siempre (todas las ventas, todos
+ * los Hip). Independiente de esto, y de forma PERMANENTE (no solo para
+ * este pedido puntual): un Hip marcado OUT/Withdrawn por la casa de venta
+ * (`Hip.saleResultJson.soldAsCode === "Y"`, ver `field_out` en
+ * saleHouses/keeneland.ts) NUNCA se manda a la IA — no tiene sentido
+ * gastar cuota recalculando un caballo que ya se retiró de la venta, y
+ * esto reduce costo/tiempo de CUALQUIER corrida futura, acotada o no.
  */
 
 const MAX_ERROR_SAMPLES_IN_MESSAGE = 20;
 
+/**
+ * Filtro opcional de alcance para una corrida puntual. `hipNumberMin`/`Max`
+ * comparan el valor NUMÉRICO de `Hip.hipNumber` (que ya se guarda sin
+ * ceros a la izquierda, ver `normalizeHipNumber` en saleHouses/keeneland.ts)
+ * — un Hip cuyo número no sea puramente numérico (ej. un sufijo de letra,
+ * rarísimo pero posible) queda afuera de cualquier filtro por rango, nunca
+ * se incluye "por las dudas".
+ */
+export interface ReferenceRecalcFilter {
+  saleId?: string;
+  hipNumberMin?: number;
+  hipNumberMax?: number;
+}
+
+function hipNumberInRange(hipNumber: string, filter?: ReferenceRecalcFilter): boolean {
+  if (!filter || (filter.hipNumberMin === undefined && filter.hipNumberMax === undefined)) return true;
+  const n = Number(hipNumber);
+  if (!Number.isFinite(n) || !/^\d+$/.test(hipNumber.trim())) return false;
+  if (filter.hipNumberMin !== undefined && n < filter.hipNumberMin) return false;
+  if (filter.hipNumberMax !== undefined && n > filter.hipNumberMax) return false;
+  return true;
+}
+
+/** `true` si la casa de venta marcó este Hip como retirado (OUT/Withdrawn) — ver comentario grande arriba. Nunca se manda a la IA. */
+function isOut(saleResultJson: unknown): boolean {
+  const code = (saleResultJson as { soldAsCode?: string } | null)?.soldAsCode;
+  return code === "Y";
+}
+
 export interface ReferenceRecalcSummary {
   runId: string;
-  /** Pares Hip×Organización con foto LATERAL vigente (AI_ANALYSIS_PHOTO procesada, no borrada) — el universo real de trabajo de este barrido. */
+  /** Pares Hip×Organización con foto LATERAL vigente (AI_ANALYSIS_PHOTO procesada, no borrada), dentro del filtro y sin contar Hip OUT — el universo real de trabajo de esta corrida. */
   pairsEvaluated: number;
-  /** Hips DISTINTOS (sin repetir por organización) incluidos en pairsEvaluated — para comparar contra "TOTAL DE HIP CON FOTO LATERAL DISPONIBLE" del punto I tal como lo pide Ramon. */
+  /** Hips DISTINTOS (sin repetir por organización) incluidos en pairsEvaluated. */
   hipsEvaluated: number;
   /** De los pares evaluados: la IA corrió de nuevo porque la vista estaba "sucia" (foto y/o referente cambiado desde el último resultado guardado). */
   reanalyzed: number;
@@ -60,47 +105,82 @@ export interface ReferenceRecalcSummary {
   /** Fallo técnico real (no MissingReferenceHorseError) al intentar analizar un par puntual — no detiene el resto del barrido (punto H). */
   errors: number;
   errorSamples: string[];
-  /** Hips (a nivel catálogo, sin importar organización) sin NINGUNA foto publicada todavía. */
+  /** Hips dentro del filtro, activos (no OUT), sin NINGUNA foto de catálogo publicada todavía. */
   hipsWithoutPhoto: number;
-  /** Hips con foto de catálogo publicada, pero para los que NINGUNA organización llegó a tener una LATERAL válida, y la clasificación automática ya agotó sus reintentos (ver autoLateralPhotoFailedAttempts) — foto disponible pero ninguna resultó ser una lateral utilizable. */
+  /** Hips dentro del filtro, activos, con foto de catálogo publicada, pero para los que NINGUNA organización llegó a tener una LATERAL válida y la clasificación automática ya agotó sus reintentos. */
   hipsWithInvalidPhoto: number;
-  /** Hips con foto de catálogo publicada, sin LATERAL válida todavía en ninguna organización, pero que TODAVÍA pueden resolverse solos (el barrido de Media nocturno los reintentará) — no agotaron reintentos. */
+  /** Hips dentro del filtro, activos, con foto de catálogo publicada, sin LATERAL válida todavía, pero que pueden resolverse solos (el barrido de Media nocturno los reintentará). */
   hipsPending: number;
+  /** Hips dentro del filtro marcados OUT/Withdrawn — excluidos por completo, nunca enviados a la IA. */
+  hipsOut: number;
   /** Organizaciones que tienen al menos un par pendiente por falta de caballo referente configurado. */
   organizationsWithoutReference: string[];
+  /** Filtro efectivamente aplicado a esta corrida (null = sin acotar, alcance global). */
+  filter: ReferenceRecalcFilter | null;
 }
 
 interface LateralPair {
   hip: { id: string; hipNumber: string; horseName: string | null };
   organizationId: string;
+  lateralAssetId: string;
+}
+
+/**
+ * Hips activos (no OUT) dentro del filtro, con sus datos base (número,
+ * saleResultJson) — punto de partida compartido por el barrido real y por
+ * el preview de solo lectura, para no duplicar el criterio de exclusión en
+ * dos lugares.
+ */
+async function findActiveHipsInFilter(filter?: ReferenceRecalcFilter): Promise<{
+  id: string;
+  hipNumber: string;
+  horseName: string | null;
+}[]> {
+  const allHips = await db.hip.findMany({
+    where: filter?.saleId ? { saleId: filter.saleId } : undefined,
+    select: { id: true, hipNumber: true, horseName: true, saleResultJson: true },
+  });
+  return allHips
+    .filter((h) => hipNumberInRange(h.hipNumber, filter))
+    .filter((h) => !isOut(h.saleResultJson))
+    .map((h) => ({ id: h.id, hipNumber: h.hipNumber, horseName: h.horseName }));
 }
 
 /**
  * Todos los pares Hip×Organización que hoy tienen una foto LATERAL vigente
  * de Análisis (IA) — cubre A (ya analizados) y B (con foto, sin analizar
  * todavía) de una sola vez: `analyzeHipOnDemand` decide internamente, por
- * par, si hace falta llamar a la IA de nuevo o si ya está al día.
+ * par, si hace falta llamar a la IA de nuevo o si ya está al día. Excluye
+ * SIEMPRE los Hip OUT/Withdrawn, y respeta el `filter` opcional de venta +
+ * rango de número (ver comentario grande arriba del archivo).
  */
-async function findValidLateralPairs(): Promise<LateralPair[]> {
+async function findValidLateralPairs(filter?: ReferenceRecalcFilter): Promise<LateralPair[]> {
+  const activeHips = await findActiveHipsInFilter(filter);
+  if (activeHips.length === 0) return [];
+  const activeHipById = new Map(activeHips.map((h) => [h.id, h]));
+
   const assets = await db.mediaAsset.findMany({
-    where: { kind: "AI_ANALYSIS_PHOTO", conformationView: "lateral", uploadStatus: "PROCESSED", deletedAt: null },
-    select: { hipId: true, organizationId: true },
+    where: {
+      hipId: { in: [...activeHipById.keys()] },
+      kind: "AI_ANALYSIS_PHOTO",
+      conformationView: "lateral",
+      uploadStatus: "PROCESSED",
+      deletedAt: null,
+    },
+    select: { id: true, hipId: true, organizationId: true },
+    // Última foto lateral vigente por Hip×Organización primero, para que
+    // el `distinct` se quede con la más reciente si por algún motivo
+    // hubiera más de una activa (no debería, ver autoPhotoAnalysis.ts,
+    // "una foto = un registro").
+    orderBy: { createdAt: "desc" },
     distinct: ["hipId", "organizationId"],
   });
-  if (assets.length === 0) return [];
-
-  const hipIds = [...new Set(assets.map((a) => a.hipId))];
-  const hips = await db.hip.findMany({
-    where: { id: { in: hipIds } },
-    select: { id: true, hipNumber: true, horseName: true },
-  });
-  const hipById = new Map(hips.map((h) => [h.id, h]));
 
   const pairs: LateralPair[] = [];
   for (const a of assets) {
-    const hip = hipById.get(a.hipId);
-    if (!hip) continue; // Defensivo: no debería pasar (FK), pero nunca revienta el barrido por esto.
-    pairs.push({ hip, organizationId: a.organizationId });
+    const hip = activeHipById.get(a.hipId);
+    if (!hip) continue; // Fuera del filtro o OUT — nunca se manda a la IA.
+    pairs.push({ hip, organizationId: a.organizationId, lateralAssetId: a.id });
   }
   return pairs;
 }
@@ -108,24 +188,30 @@ async function findValidLateralPairs(): Promise<LateralPair[]> {
 /**
  * Desglose a nivel Hip (independiente de organización, porque el catálogo
  * de fotos es compartido) de "sin foto" / "foto no válida" / "pendiente"
- * para el punto I — SOLO para los Hips que quedaron FUERA de
- * `hipsWithValidLateral` (ya cubiertos arriba).
+ * para el punto I — SOLO para los Hip ACTIVOS (no OUT) dentro del filtro
+ * que quedaron FUERA de `hipsWithValidLateral` (ya cubiertos arriba).
  */
-async function classifyHipsWithoutValidLateral(hipsWithValidLateral: Set<string>): Promise<{
+async function classifyActiveHipsWithoutValidLateral(
+  hipsWithValidLateral: Set<string>,
+  filter?: ReferenceRecalcFilter
+): Promise<{
   hipsWithoutPhoto: number;
   hipsWithInvalidPhoto: number;
   hipsPending: number;
 }> {
   const maxFailedAttempts = config.autoPhotoAnalysisMaxFailedAttempts;
-  const allHips = await db.hip.findMany({
-    select: { id: true, mediaJson: true, autoLateralPhotoFailedAttempts: true },
+  const activeHips = await db.hip.findMany({
+    where: filter?.saleId ? { saleId: filter.saleId } : undefined,
+    select: { id: true, hipNumber: true, mediaJson: true, autoLateralPhotoFailedAttempts: true, saleResultJson: true },
   });
 
   let hipsWithoutPhoto = 0;
   let hipsWithInvalidPhoto = 0;
   let hipsPending = 0;
 
-  for (const hip of allHips) {
+  for (const hip of activeHips) {
+    if (!hipNumberInRange(hip.hipNumber, filter)) continue;
+    if (isOut(hip.saleResultJson)) continue; // Contado aparte como hipsOut.
     if (hipsWithValidLateral.has(hip.id)) continue;
     const media = (Array.isArray(hip.mediaJson) ? hip.mediaJson : []) as unknown as CatalogMediaItem[];
     const hasPhoto = media.some((m) => m.kind === "photo" && !!m.url);
@@ -144,11 +230,124 @@ async function classifyHipsWithoutValidLateral(hipsWithValidLateral: Set<string>
 }
 
 /**
- * Corre el barrido completo. Seguro para llamar más de una vez (punto G):
- * los pares ya al día con el referente vigente se resuelven casi al
- * instante vía `analyzeHipOnDemand` sin gastar cuota de IA.
+ * Cuenta los Hip OUT/Withdrawn dentro del filtro — informativo, para el
+ * punto 9 del pedido de Ramon ("cantidad de OUT/Withdrawn detectados").
  */
-export async function runReferenceRecalcSweep(opts: { trigger: "scheduled" | "manual" } = { trigger: "manual" }): Promise<ReferenceRecalcSummary> {
+async function countOutHipsInFilter(filter?: ReferenceRecalcFilter): Promise<number> {
+  const allHips = await db.hip.findMany({
+    where: filter?.saleId ? { saleId: filter.saleId } : undefined,
+    select: { hipNumber: true, saleResultJson: true },
+  });
+  return allHips.filter((h) => hipNumberInRange(h.hipNumber, filter) && isOut(h.saleResultJson)).length;
+}
+
+export interface ReferenceRecalcPreview {
+  filter: ReferenceRecalcFilter;
+  /** Total de Hip dentro del filtro (venta + rango de número), OUT incluidos. */
+  totalInRange: number;
+  /** De esos, cuántos están marcados OUT/Withdrawn — excluidos, nunca se envían a la IA. */
+  outCount: number;
+  /** Hip activos (no OUT) dentro del filtro. */
+  activeInRange: number;
+  /** De los activos: cuántos tienen ya una foto LATERAL vigente en al menos una organización (son los que este barrido realmente evalúa). */
+  activeWithValidLateral: number;
+  /** De los pares activos con LATERAL vigente: cuántos YA están al día con el referente/foto actuales — no se les vuelve a llamar a la IA (gratis, punto G). */
+  pairsAlreadyUpToDate: number;
+  /** De los pares activos con LATERAL vigente: cuántos están "sucios" (foto y/o referente cambiado) y por lo tanto SÍ dispararán una llamada real a la IA si se ejecuta el barrido. Es la cifra que más le importa a Ramon para dimensionar el gasto real. */
+  pairsToSend: number;
+  /** Hip activos dentro del filtro que todavía no tienen ninguna LATERAL válida en ninguna organización (sin foto, foto no válida, o pendiente de clasificar) — quedan fuera de ESTE barrido, ver hipsWithoutPhoto/hipsWithInvalidPhoto/hipsPending de una corrida real para el desglose fino. */
+  activeWithoutValidLateral: number;
+}
+
+/**
+ * Calcula, SIN llamar a la IA ni gastar un solo crédito, exactamente lo
+ * que un `runReferenceRecalcSweep(filter)` real haría — pensado para
+ * responder el punto 9 de Ramon ("infórmame los números antes de
+ * ejecutar") sin ningún costo ni efecto secundario. Réplica de solo
+ * lectura de la lógica de "¿está sucia esta vista?" de `analyzeHipOnDemand`
+ * (rankingService.ts) — comparar el id de la foto lateral vigente y el
+ * hash del referente vigente contra lo guardado en el último análisis —
+ * pero sin transacción, sin candado, sin tocar la base de datos.
+ */
+export async function previewReferenceRecalcSweep(filter: ReferenceRecalcFilter): Promise<ReferenceRecalcPreview> {
+  const [totalInRangeHips, outCount, pairs] = await Promise.all([
+    (async () => {
+      const allHips = await db.hip.findMany({
+        where: filter.saleId ? { saleId: filter.saleId } : undefined,
+        select: { hipNumber: true },
+      });
+      return allHips.filter((h) => hipNumberInRange(h.hipNumber, filter)).length;
+    })(),
+    countOutHipsInFilter(filter),
+    findValidLateralPairs(filter),
+  ]);
+
+  const activeInRange = await db.hip
+    .count({ where: filter.saleId ? { saleId: filter.saleId } : undefined })
+    .then(async () => {
+      // Recontar con el mismo criterio activo/rango que el resto del
+      // archivo (evita un tercer camino de filtrado): total en rango menos
+      // OUT en rango.
+      return totalInRangeHips - outCount;
+    });
+
+  const distinctHipIds = new Set(pairs.map((p) => p.hip.id));
+
+  // Hash de referente vigente por organización — se calcula una sola vez
+  // por organización distinta entre los pares (normalmente una sola).
+  const refHashByOrg = new Map<string, string>();
+  for (const orgId of new Set(pairs.map((p) => p.organizationId))) {
+    const reference = await getReferenceHorse(orgId);
+    refHashByOrg.set(orgId, referenceViewHash(reference.lateralPhotoUrl));
+  }
+
+  let pairsAlreadyUpToDate = 0;
+  let pairsToSend = 0;
+  for (const pair of pairs) {
+    const pointer = await db.currentHipAnalysis.findUnique({
+      where: { hipId_organizationId: { hipId: pair.hip.id, organizationId: pair.organizationId } },
+      include: { analysisResult: true },
+    });
+    if (!pointer) {
+      pairsToSend += 1;
+      continue;
+    }
+    const prevSourceIds = (pointer.analysisResult.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null) ?? null;
+    const prevRefHashes = (pointer.analysisResult.viewReferenceHashJson as Partial<Record<ViewName, string>> | null) ?? null;
+    const idChanged = (pair.lateralAssetId ?? null) !== (prevSourceIds?.lateral ?? null);
+    const currentRefHash = refHashByOrg.get(pair.organizationId) ?? "";
+    const refChanged = (prevRefHashes?.lateral ?? null) !== currentRefHash;
+    if (idChanged || refChanged) {
+      pairsToSend += 1;
+    } else {
+      pairsAlreadyUpToDate += 1;
+    }
+  }
+
+  return {
+    filter,
+    totalInRange: totalInRangeHips,
+    outCount,
+    activeInRange,
+    activeWithValidLateral: distinctHipIds.size,
+    pairsAlreadyUpToDate,
+    pairsToSend,
+    activeWithoutValidLateral: activeInRange - distinctHipIds.size,
+  };
+}
+
+/**
+ * Corre el barrido completo (o acotado por `opts.filter`, ver
+ * `ReferenceRecalcFilter`). Seguro para llamar más de una vez (punto G):
+ * los pares ya al día con el referente vigente se resuelven casi al
+ * instante vía `analyzeHipOnDemand` sin gastar cuota de IA. Los Hip
+ * OUT/Withdrawn quedan SIEMPRE excluidos, filtro o no (ver comentario
+ * grande arriba del archivo).
+ */
+export async function runReferenceRecalcSweep(
+  opts: { trigger: "scheduled" | "manual"; filter?: ReferenceRecalcFilter } = { trigger: "manual" }
+): Promise<ReferenceRecalcSummary> {
+  const filter = opts.filter ?? null;
   const run = await db.referenceRecalcRun.create({ data: { trigger: opts.trigger, status: "running" } });
 
   const errorSamples: string[] = [];
@@ -159,7 +358,7 @@ export async function runReferenceRecalcSweep(opts: { trigger: "scheduled" | "ma
   const noReferenceOrgs = new Set<string>();
 
   try {
-    const pairs = await findValidLateralPairs();
+    const pairs = await findValidLateralPairs(filter ?? undefined);
     const distinctHipIds = new Set(pairs.map((p) => p.hip.id));
 
     await runWithConcurrencyLimit(pairs, config.referenceRecalcConcurrency, async (pair) => {
@@ -187,7 +386,10 @@ export async function runReferenceRecalcSweep(opts: { trigger: "scheduled" | "ma
       }
     });
 
-    const { hipsWithoutPhoto, hipsWithInvalidPhoto, hipsPending } = await classifyHipsWithoutValidLateral(distinctHipIds);
+    const [{ hipsWithoutPhoto, hipsWithInvalidPhoto, hipsPending }, hipsOut] = await Promise.all([
+      classifyActiveHipsWithoutValidLateral(distinctHipIds, filter ?? undefined),
+      countOutHipsInFilter(filter ?? undefined),
+    ]);
 
     const summary: ReferenceRecalcSummary = {
       runId: run.id,
@@ -201,7 +403,9 @@ export async function runReferenceRecalcSweep(opts: { trigger: "scheduled" | "ma
       hipsWithoutPhoto,
       hipsWithInvalidPhoto,
       hipsPending,
+      hipsOut,
       organizationsWithoutReference: [...noReferenceOrgs],
+      filter,
     };
 
     await db.referenceRecalcRun.update({

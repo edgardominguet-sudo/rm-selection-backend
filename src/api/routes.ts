@@ -10,7 +10,7 @@ import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
-import { runReferenceRecalcSweep } from "../analysis/referenceRecalcService";
+import { runReferenceRecalcSweep, previewReferenceRecalcSweep, type ReferenceRecalcFilter } from "../analysis/referenceRecalcService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
 import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
@@ -1348,27 +1348,72 @@ router.get("/media-sweep/runs", requireUser, async (req, res) => {
 // en SEGUNDO PLANO (no se espera la promesa) y responde de inmediato: el
 // progreso/resultado real se consulta después vía
 // GET /reference-recalc-sweep/runs (mismo patrón que media-sweep/runs).
+// Parsea el filtro opcional (saleId, hipNumberMin, hipNumberMax) desde
+// query params — usado tanto por el barrido real como por el preview
+// sin costo. Ver "INSTRUCCIÓN ACTUALIZADA – BARRIDO KEENELAND" (2026-09-14):
+// Ramon quiere poder acotar el barrido a un rango exacto de HIP (y
+// opcionalmente a una venta) en vez de correrlo siempre sobre toda la
+// base. Si no se manda ningún parámetro, el comportamiento es idéntico
+// al de antes (sin filtro = toda la base).
+function parseReferenceRecalcFilter(req: Request): ReferenceRecalcFilter {
+  const filter: ReferenceRecalcFilter = {};
+  const { saleId, hipNumberMin, hipNumberMax } = req.query;
+  if (typeof saleId === "string" && saleId.trim()) filter.saleId = saleId.trim();
+  if (hipNumberMin !== undefined) {
+    const n = Number(hipNumberMin);
+    if (Number.isFinite(n)) filter.hipNumberMin = n;
+  }
+  if (hipNumberMax !== undefined) {
+    const n = Number(hipNumberMax);
+    if (Number.isFinite(n)) filter.hipNumberMax = n;
+  }
+  return filter;
+}
+
 router.post("/reference-recalc-sweep", requireUser, async (req, res) => {
-  runReferenceRecalcSweep({ trigger: "manual" }).catch((err) => {
+  const filter = parseReferenceRecalcFilter(req);
+  runReferenceRecalcSweep({ trigger: "manual", filter }).catch((err) => {
     console.error("[reference-recalc] Error en corrida:", err);
   });
   res.json({
     started: true,
+    filter,
     message: "Barrido de recálculo de referente iniciado en segundo plano. Consultar GET /reference-recalc-sweep/runs?limit=1 para ver el progreso/resultado.",
   });
 });
 
 // Alias GET — mismo criterio que /sales/:saleId/media-sweep: permite
 // disparar el barrido desde un entorno que no puede mandar POST con
-// headers custom (?apiKey=... por query).
+// headers custom (?apiKey=... por query). Acepta los mismos filtros
+// opcionales que el POST: ?saleId=...&hipNumberMin=...&hipNumberMax=...
 router.get("/reference-recalc-sweep", requireUser, async (req, res) => {
-  runReferenceRecalcSweep({ trigger: "manual" }).catch((err) => {
+  const filter = parseReferenceRecalcFilter(req);
+  runReferenceRecalcSweep({ trigger: "manual", filter }).catch((err) => {
     console.error("[reference-recalc] Error en corrida:", err);
   });
   res.json({
     started: true,
+    filter,
     message: "Barrido de recálculo de referente iniciado en segundo plano. Consultar GET /reference-recalc-sweep/runs?limit=1 para ver el progreso/resultado.",
   });
+});
+
+// PREVIEW sin costo — cero llamadas a Anthropic. Responde exactamente los
+// 3 números que pidió Ramon en la "INSTRUCCIÓN ACTUALIZADA – BARRIDO
+// KEENELAND" (punto 9) antes de autorizar el barrido real: total de HIP
+// en el rango, cuántos están OUT/Withdrawn, y cuántos activos realmente
+// se enviarían a análisis de IA (después de cruzar con foto lateral
+// válida y estado de vigencia del caballo referente). Se puede llamar
+// en cualquier momento, sin importar el saldo de créditos de Anthropic.
+router.get("/reference-recalc-sweep/preview", requireUser, async (req, res) => {
+  try {
+    const filter = parseReferenceRecalcFilter(req);
+    const preview = await previewReferenceRecalcSweep(filter);
+    res.json(preview);
+  } catch (err) {
+    console.error("[reference-recalc] Error en preview:", err);
+    res.status(500).json({ error: "No se pudo calcular el preview del barrido." });
+  }
 });
 
 // Historial de corridas del barrido de recálculo — mismo espíritu que
