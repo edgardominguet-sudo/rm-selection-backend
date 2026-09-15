@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { startOfCalendarDay } from "./util/easternCalendarDay";
+import { startOfCalendarDay, isSameEasternCalendarDay } from "./util/easternCalendarDay";
 
 /**
  * "RNA del Día" (2026-09-15, a pedido explícito de Ramon, propuesta
@@ -156,13 +156,13 @@ export async function getRnaDelDia(saleId: string): Promise<RnaDelDiaResult> {
           const sessionDate = new Date(time);
           if (!today && isSessionInProgress(sessionDate, now)) {
                   today = {
-                            date: sessionDate,
-                            rnaCount: rows.length,
+date: sessionDate,
+                      rnaCount: rows.length,
                             sessionInProgress: true,
                             entries: sortByHipNumber(rows.map(toEntry)),
                   };
           } else {
-                  previousDays.push({ date: sessionDate, rnaCount: rows.length });
+previousDays.push({ date: sessionDate, rnaCount: rows.length });
           }
     }
 
@@ -174,16 +174,16 @@ export async function getRnaDelDia(saleId: string): Promise<RnaDelDiaResult> {
  * "Días anteriores" en RNA del Día, cargado bajo demanda recién al tocar
  * ese día (nunca se manda todo de una vez, ver comentario arriba).
  */
-export async function getRnaDelDiaForDay(saleId: string, sessionDate: Date): Promise<RnaDayDetail> {
+export async function getRnaDelDiaForDay(saleId: string, referenceInstant: Date): Promise<RnaDayDetail> {
     const hips = await db.hip.findMany({
-          where: { saleId, sessionDate },
+          where: { saleId, sessionDate: { not: null } },
           select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
     });
-    const rnaRows = hips.filter((h) => isRnaResult(h.saleResultJson));
+    const rnaRows = hips.filter((h) => h.sessionDate && isSameEasternCalendarDay(h.sessionDate, referenceInstant) && isRnaResult(h.saleResultJson));
     return {
-          date: sessionDate,
+          date: rnaRows[0]?.sessionDate ?? referenceInstant,
           rnaCount: rnaRows.length,
-          sessionInProgress: isSessionInProgress(sessionDate, new Date()),
+          sessionInProgress: isSessionInProgress(referenceInstant, new Date()),
           entries: sortByHipNumber(rnaRows.map(toEntry)),
     };
 }
