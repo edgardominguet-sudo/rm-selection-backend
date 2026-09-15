@@ -2,7 +2,8 @@ import { db } from "./db";
 import { clientFor } from "./saleHouses/registry";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
-import { autoAnalyzeNewCatalogVideoIfNeeded } from "./analysis/autoVideoAnalysis";
+// DESACTIVADO 2026-09-15 (ver comentario largo más abajo, bloque de análisis automático de video comentado): import dejado de lado, no borrado.
+// import { autoAnalyzeNewCatalogVideoIfNeeded } from "./analysis/autoVideoAnalysis";
 import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisOutcome } from "./analysis/autoPhotoAnalysis";
 import { runWithConcurrencyLimit } from "./util/concurrencyPool";
 import { config } from "./config";
@@ -251,17 +252,32 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           // Contenido en su propio try/catch: un problema acá NUNCA debe
           // impedir que el resto del barrido de Media (fotos, otros Hips,
           // otras ventas) siga su curso normal.
-          const hasPendingVideo = freshMedia.some((m) => m.kind === "video" && !!m.url);
-          if (hasPendingVideo) {
-            try {
-              await autoAnalyzeNewCatalogVideoIfNeeded(
-                { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoVideoFrameSourceUrl: row.autoVideoFrameSourceUrl },
-                freshMedia
-              );
-            } catch (err) {
-              console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de video:`, err);
-            }
-          }
+          // DESACTIVADO 2026-09-15 (a pedido explícito de Ramon: "solo
+          // vamos a realizar analisis lateral... el video tampoco debes
+          // analizarlo. solo se va a analisar la foto lateral que da la
+          // casa de venta"). Este bloque llamaba a
+          // `autoAnalyzeNewCatalogVideoIfNeeded` (2026-09-10,
+          // analysis/autoVideoAnalysis.ts): extraía un fotograma del
+          // video de catálogo y lo mandaba a analizar como si fuera la
+          // foto LATERAL. Eso es exactamente lo que la instrucción de
+          // arriba prohíbe -- el puntaje de un Hip debe salir SIEMPRE de
+          // la foto lateral real que publica la casa de venta, nunca de
+          // un fotograma de video. Se deja el código de
+          // autoVideoAnalysis.ts intacto (sin llamarlo desde ningún
+          // lado) en vez de borrarlo, por si en el futuro se pide
+          // reactivarlo -- no vuelve a correr hasta que alguien
+          // descomente este bloque a pedido explícito.
+          // const hasPendingVideo = freshMedia.some((m) => m.kind === "video" && !!m.url);
+          // if (hasPendingVideo) {
+          //   try {
+          //     await autoAnalyzeNewCatalogVideoIfNeeded(
+          //       { id: row.id, hipNumber: row.hipNumber, horseName: row.horseName, autoVideoFrameSourceUrl: row.autoVideoFrameSourceUrl },
+          //       freshMedia
+          //     );
+          //   } catch (err) {
+          //     console.error(`[media-sweep] Hip ${row.hipNumber}: error en análisis automático de video:`, err);
+          //   }
+          // }
 
           // ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE FOTOS (2026-09-10, a
           // pedido explícito de Ramon: "detección automática de nuevas
