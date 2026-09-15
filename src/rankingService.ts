@@ -829,7 +829,7 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const hips = await db.hip.findMany({
     where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
-    select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true },
+    select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, saleResultJson: true },
   });
 
   const pointers = await db.currentHipAnalysis.findMany({
@@ -874,6 +874,20 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
       overallScore: entry.analysis.overallScore,
       classification: entry.analysis.classification,
       lateralPhotoStorageKey: lateralAssetId ? storageKeyByAssetId.get(lateralAssetId) ?? null : null,
+      // CORRECCIÓN 2026-09-15 (a pedido explícito de Ramon: "quiero ver el
+      // precio de los hip que se venden en el dia en tiempo real durante
+      // la venta"): el Ranking del Día mostraba Sire/Dam y miniatura pero
+      // NUNCA el resultado de venta -- el snapshot no lo guardaba. Se
+      // guarda tal cual viene de Hip.saleResultJson (mismo shape que ya
+      // usa el catálogo normal -- ver BackendCatalogSaleResultEntry en el
+      // cliente iOS) para que GET /ranking lo pueda exponer sin ningún
+      // cálculo nuevo. Como esta función se vuelve a correr sola cada 5
+      // minutos (tick "scheduled_refresh" del scheduler) Y cada vez que se
+      // guarda un análisis nuevo, el precio sincronizado por
+      // syncLivePricesForActiveSessions (cada 10 min, ver más abajo) queda
+      // reflejado acá con un atraso máximo de pocos minutos, sin que este
+      // job tenga que enterarse de nada sobre precios por su cuenta.
+      saleResult: entry.hip.saleResultJson ?? null,
     };
   });
 

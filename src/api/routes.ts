@@ -172,6 +172,10 @@ router.get("/ranking", requireUser, async (req, res) => {
       overallScore: entry.overallScore,
       classification: entry.classification,
       lateralPhotoUrl: typeof storageKey === "string" ? resolveReadUrl(storageKey) : null,
+      // CORRECCIÓN 2026-09-15 (ver comentario completo en
+      // rebuildRankingSnapshot, rankingService.ts): el precio en vivo ya
+      // estaba guardado en el snapshot pero nunca salía en esta respuesta.
+      saleResult: entry.saleResult ?? null,
     };
   });
 
