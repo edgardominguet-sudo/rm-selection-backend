@@ -15,6 +15,7 @@ import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
+import { startOfCalendarDay } from "./util/easternCalendarDay";
 
 /**
  * Fotos de un Hip que puede usar el motor de Análisis IA — Tarea "Análisis
@@ -62,10 +63,6 @@ function groupAIAnalysisMediaByView(media: CatalogMediaItem[]): Partial<Record<V
     }
   }
   return result;
-}
-
-function startOfCalendarDay(date: Date): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
 // Pedido explícito del usuario: 2 horas después de terminada la venta del

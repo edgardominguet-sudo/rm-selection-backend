@@ -7,6 +7,7 @@ import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
+import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
@@ -135,8 +136,16 @@ router.get("/ranking", requireUser, async (req, res) => {
   }
   const saleId = sale.id;
 
-  const day = dateParam ? new Date(`${dateParam}T00:00:00Z`) : new Date();
-  const dayStart = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()));
+  // CORRECCIÓN 2026-09-15 (bug "no se ven los precios" — ver util/easternCalendarDay.ts):
+  // antes se parseaba dateParam a medianoche UTC y se re-truncaba con
+  // componentes UTC, lo que definía "hoy" en huso UTC en vez del huso real
+  // de la venta (America/New_York) — desalineaba este dayStart respecto al
+  // que usa rankingService.ts para generar/borrar el RankingSnapshot, y
+  // podía devolver "sin ranking" aunque sí existiera. T16:00:00Z (~mediodía
+  // ET) evita que el parseo mismo ruede al día anterior antes de llegar a
+  // startOfCalendarDay.
+  const day = dateParam ? new Date(`${dateParam}T16:00:00Z`) : new Date();
+  const dayStart = startOfCalendarDay(day);
 
   const snapshot = await db.rankingSnapshot.findUnique({
     where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },

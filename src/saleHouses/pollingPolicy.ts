@@ -11,6 +11,8 @@
 // respaldo razonable, documentado abajo — no fue parte del pedido
 // original, pero hace falta algún valor para esos casos.
 
+import { isSameEasternCalendarDay } from "../util/easternCalendarDay";
+
 export const POLLING_TIERS_MINUTES = {
   moreThan30Days: 24 * 60, // respaldo: no especificado por el usuario, 1 vez por día alcanza con un mes de anticipación.
   between30And15Days: 12 * 60,
@@ -41,10 +43,11 @@ export function pollIntervalMinutes(now: Date, nextSessionDate: Date | null): nu
   const msPerHour = 60 * 60 * 1000;
   const msPerDay = 24 * msPerHour;
 
-  const isSameCalendarDay =
-    now.getUTCFullYear() === nextSessionDate.getUTCFullYear() &&
-    now.getUTCMonth() === nextSessionDate.getUTCMonth() &&
-    now.getUTCDate() === nextSessionDate.getUTCDate();
+  // CORRECCIÓN 2026-09-15: comparar "mismo día calendario" en huso UTC
+  // desalineaba el tier agresivo (5 min) de sondeo respecto al huso real
+  // de la venta (America/New_York) — ver util/easternCalendarDay.ts, mismo
+  // bug de fondo que afectaba al Ranking del Día y al precio en vivo.
+  const isSameCalendarDay = isSameEasternCalendarDay(now, nextSessionDate);
 
   if (isSameCalendarDay) {
     return POLLING_TIERS_MINUTES.sessionDayActive;
