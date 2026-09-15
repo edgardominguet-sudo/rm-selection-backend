@@ -8,6 +8,7 @@ import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
+import { getRnaDelDia, getRnaDelDiaForDay } from "../rnaOfTheDayService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
