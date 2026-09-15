@@ -62,9 +62,11 @@ interface RawEntry {
     field_sex?: string | null;
     field_consignor?: string | null;
     field_barns?: string[] | null;
+    field_price?: string | null;
     field_sale_price?: string | null;
     field_buyer_name?: string | null;
     field_out?: string | null;
+    field_rna_indicator?: string | null;
     field_video_upload?: unknown[];
     field_other_videos?: unknown[];
 }
@@ -112,7 +114,26 @@ function normalize(entry: RawEntry): NormalizedHip {
           if (embed) media.push({ kind: "video", url: embed });
     }
 
-  const hasSaleResult = entry.field_sale_price != null || entry.field_buyer_name != null || entry.field_out != null;
+  // CORRECCIÓN 2026-09-15 (bug "no se ven los precios", root cause real de
+  // fondo — confirmado contra el JSON en vivo de Keeneland): el precio de
+  // venta NUNCA vino de "field_sale_price" (ese campo llega SIEMPRE vacío
+  // en el feed real de catalog-backend.keeneland.com, en los 4642 Hips de
+  // September Yearling Sale 2026, vendidos o no) — el precio real está en
+  // "field_price" ("700000.00", etc.). Un Hip R.N.A. trae en "field_price"
+  // el centinela "-2.00" (nunca un precio real), y el dato de R.N.A. en sí
+  // está en "field_rna_indicator" ("Y"/"N"/"P"), NO en "field_out" (ese
+  // campo indica otra cosa — Hip retirado/fuera de catálogo, ver
+  // referenceRecalcService.ts, exclusión de OUT). Antes se guardaba
+  // soldAsCode = field_out ("Y"/"N"), que nunca coincide con los códigos
+  // "RNA"/"PS" que espera SaleResult.outcome en el cliente iOS (Hip.swift)
+  // — con eso más el precio siempre vacío, TODO Hip de Keeneland caía en
+  // el caso "pending" (sin badge), estuviera vendido o no.
+  const rawPrice = entry.field_price?.trim();
+  const priceNumber = rawPrice ? Number(rawPrice) : NaN;
+  const hasRealPrice = !!rawPrice && Number.isFinite(priceNumber) && priceNumber > 0;
+  const isRna = entry.field_rna_indicator?.trim().toUpperCase() === "Y";
+
+  const hasSaleResult = entry.field_price != null || entry.field_buyer_name != null || entry.field_rna_indicator != null;
 
   return {
         hipNumber: normalizeHipNumber(entry.field_hip_number),
@@ -132,9 +153,9 @@ function normalize(entry: RawEntry): NormalizedHip {
         media,
         saleResult: hasSaleResult
           ? {
-                      priceRaw: entry.field_sale_price ?? undefined,
-                      purchaser: entry.field_buyer_name ?? undefined,
-                      soldAsCode: entry.field_out ?? undefined,
+                      priceRaw: hasRealPrice ? rawPrice : undefined,
+                      purchaser: entry.field_buyer_name || undefined,
+                      soldAsCode: isRna ? "RNA" : undefined,
           }
                 : undefined,
   };
