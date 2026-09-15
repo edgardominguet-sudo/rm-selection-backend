@@ -1586,7 +1586,7 @@ router.get("/sales/rna-del-dia/day", requireUser, async (req, res) => {
   // 2026-09-15): T16:00:00Z evita que el parseo mismo ruede al día
   // anterior antes de llegar a startOfCalendarDay.
   const day = new Date(`${dateParam}T16:00:00Z`);
-  const sessionDate = startOfCalendarDay(day);
-  const detail = await getRnaDelDiaForDay(sale.id, sessionDate);
+  // CORRECCION 2026-09-15: se pasa day (mediodia ET) directo, sin normalizar -- ver comentario en getRnaDelDiaForDay (rnaOfTheDayService.ts).
+  const detail = await getRnaDelDiaForDay(sale.id, day);
   res.json({ saleName: sale.name, ...detail });
 });
