@@ -1,4 +1,5 @@
 import { NormalizedHip, ResolvedSaleDay, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError } from "../types";
+import { fetchWithRetry } from "../util/httpRetry";
 import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
 import { parseFoalingDate } from "./dateParsing";
 
@@ -99,7 +100,11 @@ export class FasigTiptonClient implements SaleHouseClient {
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached.entries;
 
     const url = `https://www.fasigtipton.com/django/api/horses/?sale=${externalSaleId}`;
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    // CORRECCION 2026-09-15 (a pedido explicito de Ramon, mismo criterio que
+    // Keeneland -- ver util/httpRetry.ts para la investigacion completa):
+    // reintenta unas pocas veces con backoff corto ante un 5xx transitorio en vez
+    // de perder el ciclo de 10 minutos completo del precio en vivo.
+    const response = await fetchWithRetry(url, { headers: { Accept: "application/json" } });
     // Se lee como texto primero (en vez de response.json() directo) a
     // propósito: un 200 con body vacío/cortado (le pasó a Fasig-Tipton
     // alguna vez) hacía que JSON.parse tirara "Unexpected end of JSON

@@ -1,4 +1,5 @@
 import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError, SaleFetchContext, ResolvedSaleDay } from "../types";
+import { fetchWithRetry } from "../util/httpRetry";
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
 import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
 import { resolveKeenelandSaleDays } from "./keenelandHipGrouping";
@@ -156,7 +157,12 @@ export class KeenelandClient implements SaleHouseClient {
       const url = catalogBackendId
                 ? `https://catalog-backend.keeneland.com/sites/default/files/json_hde/sale_data_${catalogBackendId}.json`
                 : `https://www.keeneland.com/json/sale_api/get/catalog/${externalSaleId}`;
-        const response = await fetch(url, { headers: { Accept: "application/json" } });
+        // CORRECCION 2026-09-15 (a pedido explicito de Ramon, ver util/httpRetry.ts
+        // para la investigacion completa): reintenta unas pocas veces con backoff
+        // corto ante un 5xx transitorio de Cloudflare/Keeneland (confirmado real el
+        // 2026-09-14, 17:00-17:50 UTC: 522/503/521/502, justo cuando arranco la
+        // sesion en vivo) en vez de perder el ciclo de 10 minutos completo.
+        const response = await fetchWithRetry(url, { headers: { Accept: "application/json" } });
         const rawBody = await response.text();
         if (!response.ok) {
                 throw new Error(`Keeneland catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
