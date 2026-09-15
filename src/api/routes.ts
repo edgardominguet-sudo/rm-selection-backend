@@ -1534,3 +1534,58 @@ router.get("/reference-recalc-sweep/runs", requireUser, async (req, res) => {
   });
   res.json(runs);
 });
+
+// "RNA del Día" (2026-09-15, a pedido explícito de Ramon, propuesta
+// aceptada tal cual): Hips de la venta ya confirmados en RNA ("Reserve Not
+// Attained") por la propia casa de ventas, agrupados por jornada — ver
+// rnaOfTheDayService.ts para el detalle completo de la fuente de datos
+// (100% real, mismo campo que ya usa Ranking del Día y la pestaña Decisión
+// de cada Hip, nunca inventado ni estimado). Mismo criterio de identidad
+// (house+externalSaleId) y misma autenticación que /ranking y /sales/days
+// — puramente aditivo, no modifica ninguna otra ruta.
+router.get("/sales/rna-del-dia", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.json({ saleName: null, today: null, previousDays: [] });
+    return;
+  }
+
+  const result = await getRnaDelDia(sale.id);
+  res.json({ saleName: sale.name, ...result });
+});
+
+// Detalle completo de UNA jornada de "RNA del Día" (todas las filas de ese
+// día) — cargado bajo demanda al tocar un día en "Días anteriores" (nunca
+// se manda todo de una vez, ver comentario en rnaOfTheDayService.ts).
+router.get("/sales/rna-del-dia/day", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  const dateParam = req.query.date as string | undefined; // "YYYY-MM-DD"
+
+  if (!house || !externalSaleId || !dateParam) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId, date." });
+    return;
+  }
+
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.json({ saleName: null, date: dateParam, sessionInProgress: false, rnaCount: 0, entries: [] });
+    return;
+  }
+
+  // Mismo criterio de parseo que /ranking (ver comentario ahí, corrección
+  // 2026-09-15): T16:00:00Z evita que el parseo mismo ruede al día
+  // anterior antes de llegar a startOfCalendarDay.
+  const day = new Date(`${dateParam}T16:00:00Z`);
+  const sessionDate = startOfCalendarDay(day);
+  const detail = await getRnaDelDiaForDay(sale.id, sessionDate);
+  res.json({ saleName: sale.name, ...detail });
+});
