@@ -14,7 +14,7 @@ import { runNightlyMediaSweep } from "../mediaSweepService";
 import { runReferenceRecalcSweep, previewReferenceRecalcSweep, type ReferenceRecalcFilter } from "../analysis/referenceRecalcService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
-import { MissingReferenceHorseError, NoPhotosError } from "../analysis/anthropicClient";
+import { MissingReferenceHorseError, NoPhotosError, AnthropicCreditExhaustedError } from "../analysis/anthropicClient";
 import {
   importManualCatalog,
   EmptyManualCatalogError,
@@ -563,6 +563,16 @@ router.post("/hips/:hipId/analysis", requireUser, async (req, res) => {
     }
     if (err instanceof NoPhotosError) {
       res.status(422).json({ error: err.message });
+      return;
+    }
+    // AGREGADO 2026-09-15 (incidente real del mismo día): antes, esto caía
+    // en el 500 genérico de más abajo — si Ramon toca "Analizar" en vivo
+    // durante una venta y se quedó sin saldo de Anthropic, necesita
+    // enterarse YA de qué pasó (no "no se pudo completar el análisis", que
+    // podría ser cualquier cosa), para poder recargar saldo desde el celular
+    // sin perder tiempo adivinando.
+    if (err instanceof AnthropicCreditExhaustedError) {
+      res.status(503).json({ error: "Se agotó el saldo de la cuenta de Anthropic — no se puede analizar en este momento. Recargá saldo en console.anthropic.com y volvé a intentar en unos minutos." });
       return;
     }
     console.error(`[analysis] Hip ${hipId}:`, err);

@@ -2,7 +2,7 @@ import { db } from "../db";
 import { runWithConcurrencyLimit } from "../util/concurrencyPool";
 import { config } from "../config";
 import { analyzeHipOnDemand } from "../rankingService";
-import { MissingReferenceHorseError } from "./anthropicClient";
+import { MissingReferenceHorseError, AnthropicCreditExhaustedError } from "./anthropicClient";
 import { ViewName } from "./landmarks";
 import { CatalogMediaItem } from "../types";
 import { getReferenceHorse } from "../referenceHorse";
@@ -356,12 +356,20 @@ export async function runReferenceRecalcSweep(
   let noReference = 0;
   let errorCount = 0;
   const noReferenceOrgs = new Set<string>();
+  // AGREGADO 2026-09-15 (mismo criterio que mediaSweepService.ts — ver
+  // AnthropicCreditExhaustedError): si se agota el saldo de Anthropic a
+  // mitad de un recálculo, no tiene sentido seguir probando el resto de los
+  // pares contra la misma pared, ni contarlos como "errorCount" genéricos
+  // (eso sugeriría un problema real de esos Hips puntuales, cuando en
+  // realidad es una condición de toda la cuenta).
+  let creditExhausted = false;
 
   try {
     const pairs = await findValidLateralPairs(filter ?? undefined);
     const distinctHipIds = new Set(pairs.map((p) => p.hip.id));
 
     await runWithConcurrencyLimit(pairs, config.referenceRecalcConcurrency, async (pair) => {
+      if (creditExhausted) return;
       try {
         const result = await analyzeHipOnDemand(pair.hip, pair.organizationId, undefined, "lateral" as ViewName);
         if (result.reused) {
@@ -370,6 +378,10 @@ export async function runReferenceRecalcSweep(
           reanalyzed += 1;
         }
       } catch (err) {
+        if (err instanceof AnthropicCreditExhaustedError) {
+          creditExhausted = true;
+          return;
+        }
         if (err instanceof MissingReferenceHorseError) {
           noReference += 1;
           noReferenceOrgs.add(pair.organizationId);
@@ -408,20 +420,25 @@ export async function runReferenceRecalcSweep(
       filter,
     };
 
+    const creditExhaustedMessage = creditExhausted
+      ? `Se agotó el saldo de la cuenta de Anthropic durante el recálculo — se detuvo antes de terminar los ${pairs.length} pares evaluables. Lo ya recalculado (${reanalyzed} reanálisis, ${reused} reusados) quedó guardado correctamente. Recargar saldo en console.anthropic.com y volver a correr el recálculo para completar lo que falta.`
+      : null;
+
     await db.referenceRecalcRun.update({
       where: { id: run.id },
       data: {
         finishedAt: new Date(),
-        status: errorCount > 0 && reanalyzed + reused === 0 && pairs.length > 0 ? "failed" : "completed",
+        status: creditExhausted || (errorCount > 0 && reanalyzed + reused === 0 && pairs.length > 0) ? "failed" : "completed",
         hipsEvaluated: distinctHipIds.size,
         reanalyzed,
         reused,
         noReference,
         errors: errorCount,
         errorMessage:
-          errorSamples.length > 0
+          creditExhaustedMessage ??
+          (errorSamples.length > 0
             ? errorSamples.join(" | ") + (errorCount > errorSamples.length ? ` … (+${errorCount - errorSamples.length} más, ver detailsJson)` : "")
-            : null,
+            : null),
         detailsJson: summary as unknown as object,
       },
     });

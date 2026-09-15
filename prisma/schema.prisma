@@ -369,6 +369,11 @@ enum SaleAlertKind {
   // todo bien (a pedido, 2026-08-12: "no confundir catálogo no publicado
   // con no localizado por el método primario").
   CATALOG_CHECK_INCONCLUSIVE
+  // AGREGADO 2026-09-15 (incidente real: se agotó el saldo de Anthropic a
+  // mitad de un barrido de fotos, sin ningún aviso visible hasta que Ramon
+  // preguntó por qué faltaban Hips por analizar) — ver mediaSweepService.ts,
+  // AnthropicCreditExhaustedError.
+  AI_CREDIT_EXHAUSTED
 }
 
 model SaleAlert {

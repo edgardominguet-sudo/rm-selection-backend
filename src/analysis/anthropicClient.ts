@@ -3,7 +3,12 @@ import { fetchAndDownscale } from "./imageDownscale";
 import { ALL_TRAIT_IDS, ConformationScores, emptyScores, setScore, METHODOLOGY_VERSION } from "./conformationScores";
 import { CatalogMediaItem } from "../types";
 import { PhotoClassification } from "./prompt";
-import { extractLandmarksFromPhoto } from "./landmarkVisionClient";
+import { extractLandmarksFromPhoto, AnthropicCreditExhaustedError } from "./landmarkVisionClient";
+// Re-exportado para que routes.ts y otros llamadores puedan importar los 3
+// errores tipados de este motor (Missing/NoPhotos/CreditExhausted) desde el
+// mismo lugar, sin tener que saber que CreditExhausted vive en
+// landmarkVisionClient.ts.
+export { AnthropicCreditExhaustedError };
 import { ViewLandmarks, ViewName } from "./landmarks";
 import { evaluateFrontalFindings, evaluateLateralFindings, evaluatePosteriorFindings } from "./rmPriorityRules";
 import { scoreView, ViewScore } from "./scoringEngine";
@@ -130,6 +135,14 @@ export async function analyzeHip(opts: {
         });
       }
     } catch (err) {
+      // Saldo de Anthropic agotado (2026-09-15): NUNCA se trata como "esta
+      // foto puntual falló" — es una condición de toda la cuenta, así que
+      // ninguna foto siguiente de este Hip va a andar mejor. Se relanza de
+      // inmediato para que el llamador (analyzeHipOnDemand/rankingService.ts,
+      // autoPhotoAnalysis.ts) lo distinga de un fallo técnico real y pare en
+      // seco en vez de agotar reintentos/tiempo probando el resto de las
+      // fotos contra la misma pared.
+      if (err instanceof AnthropicCreditExhaustedError) throw err;
       console.error(`[analysis] Error extrayendo landmarks de la foto #${i + 1} del Hip ${opts.hipNumber}:`, err);
       photoClassifications.push({ index: i + 1, view: "unclear", valid: false, invalidReason: "Error al procesar la foto.", assetId: item.id });
     }

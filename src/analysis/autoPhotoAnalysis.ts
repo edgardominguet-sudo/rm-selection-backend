@@ -4,7 +4,7 @@ import { db } from "../db";
 import { broadcastChange } from "../realtime";
 import { buildStorageKey, uploadObject, deleteObject } from "../storage/r2Client";
 import { fetchAndDownscale } from "./imageDownscale";
-import { extractLandmarksFromPhoto } from "./landmarkVisionClient";
+import { extractLandmarksFromPhoto, AnthropicCreditExhaustedError } from "./landmarkVisionClient";
 import { normalizeMediaUrl } from "./mediaFingerprint";
 import { CatalogMediaItem } from "../types";
 import { ViewName } from "./landmarks";
@@ -126,7 +126,8 @@ export type AutoPhotoAnalysisOutcome =
   | "retries_exhausted" // tope de fallos técnicos consecutivos alcanzado para este mismo conjunto de fotos (regla 7) — se salta hasta que cambie la foto o se revise a mano.
   | "no_lateral_candidate" // el motor funcionó bien, pero ninguna foto publicada clasificó como LATERAL con confianza suficiente (regla 3) — resultado válido, no es un fallo.
   | "applied" // se encontró una foto LATERAL, se guardó y se analizó correctamente en al menos una organización.
-  | "failed"; // fallo técnico real (descarga, IA, subida a R2, o base de datos) — se reintentará en la próxima corrida, sujeto al tope de la regla 7.
+  | "failed" // fallo técnico real (descarga, IA, subida a R2, o base de datos) — se reintentará en la próxima corrida, sujeto al tope de la regla 7.
+  | "credit_exhausted"; // AGREGADO 2026-09-15: se agotó el saldo de Anthropic a mitad del barrido — NUNCA cuenta como fallo técnico de este Hip puntual (no toca el tope de reintentos de la regla 7, ver registerFailedAttempt) — es una condición de toda la cuenta. mediaSweepService.ts corta el resto de la corrida apenas ve el primero de estos, en vez de seguir "fallando" Hip por Hip contra una pared.
 
 function catalogPhotoUrls(media: CatalogMediaItem[]): string[] {
   return media.filter((m) => m.kind === "photo" && !!m.url).map((m) => m.url);
@@ -259,6 +260,10 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
           break;
         }
       } catch (err) {
+        // Saldo agotado: no tiene sentido seguir probando las demás fotos
+        // de ESTE Hip (van a fallar exactamente igual) — se relanza para
+        // que el catch de más abajo lo distinga de un fallo técnico real.
+        if (err instanceof AnthropicCreditExhaustedError) throw err;
         // Una foto puntual que no se puede clasificar (error de red,
         // timeout de la IA, formato inesperado) simplemente se salta —
         // se sigue probando con las demás fotos publicadas.
@@ -335,6 +340,11 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
         appliedForAtLeastOneOrg = true;
         console.log(`[auto-photo-analysis] Hip ${hip.hipNumber}: foto LATERAL automática de Media aplicada y analizada (org ${org.organizationId}).`);
       } catch (err) {
+        // Saldo agotado: es una condición de toda la cuenta, no de esta
+        // organización puntual — probar el resto de las organizaciones
+        // contra la misma pared no tiene sentido. Se relanza para que el
+        // catch exterior lo cuente como "credit_exhausted", no como fallo.
+        if (err instanceof AnthropicCreditExhaustedError) throw err;
         // Un fallo de IA (referente faltante, error transitorio del
         // servidor, etc.) para UNA organización no debe impedir que otra
         // organización, ni el resto del barrido, sigan su curso — el
@@ -358,6 +368,14 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
     await registerFailedAttempt(hip, failedAttemptsBaseline, photoFingerprint);
     return "failed";
   } catch (err) {
+    if (err instanceof AnthropicCreditExhaustedError) {
+      // A propósito, NO se llama a registerFailedAttempt acá: este Hip no
+      // tiene ningún problema real con su foto, así que no debe gastar
+      // presupuesto del tope de reintentos técnicos (regla 7) por un
+      // problema de saldo de cuenta que no tiene nada que ver con él.
+      console.error(`[auto-photo-analysis] Hip ${hip.hipNumber}: ${err.message}`);
+      return "credit_exhausted";
+    }
     console.error(`[auto-photo-analysis] Hip ${hip.hipNumber}: error inesperado, se aborta sin romper el barrido:`, err);
     return "failed";
   }

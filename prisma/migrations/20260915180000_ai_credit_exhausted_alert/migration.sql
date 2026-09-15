@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "SaleAlertKind" ADD VALUE 'AI_CREDIT_EXHAUSTED';

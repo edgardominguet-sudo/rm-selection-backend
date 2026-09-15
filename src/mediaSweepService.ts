@@ -95,7 +95,16 @@ export interface MediaSweepSaleDetail {
     failed: number;
     /** Tope de reintentos técnicos consecutivos alcanzado — dejado de lado hasta que cambie la foto o se revise a mano. */
     retriesExhausted: number;
+    /** AGREGADO 2026-09-15: se agotó el saldo de Anthropic durante esta venta — ver `haltedByCreditExhaustion` en MediaSweepSummary para el detalle completo de dónde se frenó la corrida. */
+    creditExhausted: number;
   };
+}
+
+/** AGREGADO 2026-09-15 (incidente real del mismo día, ver AnthropicCreditExhaustedError) — punto exacto donde una corrida se frenó por falta de saldo, si pasó. `null` = la corrida terminó su trabajo normalmente (con o sin errores puntuales de otro tipo). */
+export interface MediaSweepCreditHalt {
+  saleId: string;
+  saleName: string;
+  hipNumber: string;
 }
 
 export interface MediaSweepSummary {
@@ -107,6 +116,7 @@ export interface MediaSweepSummary {
   resourcesFound: number;
   errors: string[];
   saleDetails: MediaSweepSaleDetail[];
+  haltedByCreditExhaustion: MediaSweepCreditHalt | null;
 }
 
 function countNewResources(fresh: CatalogMediaItem[], stored: CatalogMediaItem[]): { photos: number; videos: number } {
@@ -149,6 +159,18 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
   let hipsReviewedTotal = 0;
   let hipsWithNewMediaTotal = 0;
   let resourcesFoundTotal = 0;
+  // AGREGADO 2026-09-15 (incidente real del mismo día — ver
+  // AnthropicCreditExhaustedError y el comentario largo más abajo, en el
+  // bloque de análisis automático de fotos): apenas se detecta que se agotó
+  // el saldo de Anthropic, se deja de lanzar MÁS llamadas a la IA (no tiene
+  // sentido: van a fallar exactamente igual, una por una, quemando tiempo y
+  // ensuciando el resumen con cientos de "failed" que no son fallos reales
+  // de esas fotos) y se corta la corrida entera apenas termina de procesar
+  // los items ya en vuelo de la venta actual — nunca se pasa a la venta
+  // siguiente. Queda el punto exacto (venta + Hip) donde se frenó, para
+  // poder avisarle a Ramon con un mensaje accionable en vez de que se entere
+  // días después revisando logs a mano.
+  let creditExhaustedAt: MediaSweepCreditHalt | null = null;
 
   try {
     const sales = await db.sale.findMany({
@@ -359,8 +381,15 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           noEligibleOrg: 0,
           failed: 0,
           retriesExhausted: 0,
+          creditExhausted: 0,
         };
         await runWithConcurrencyLimit(photoWorkItems, config.autoPhotoAnalysisConcurrency, async (item) => {
+          // Corte temprano (ver comentario largo de creditExhaustedAt más
+          // arriba): si otro item concurrente ya detectó que se acabó el
+          // saldo, este item ni siquiera intenta llamar a la IA — así, el
+          // resto de la cola de photoWorkItems se vacía casi al instante en
+          // vez de fallar uno por uno contra la misma pared.
+          if (creditExhaustedAt) return;
           let outcome: AutoPhotoAnalysisOutcome;
           try {
             outcome = await autoAnalyzeNewCatalogPhotoIfNeeded(item.hip, item.freshMedia);
@@ -391,6 +420,16 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             case "failed":
               autoPhotoAnalysis.failed += 1;
               break;
+            case "credit_exhausted":
+              autoPhotoAnalysis.creditExhausted += 1;
+              // Se guarda solo el PRIMER punto donde se detectó (los demás
+              // items concurrentes que estaban en vuelo en simultáneo van a
+              // reportar lo mismo casi al mismo tiempo — no aporta nada
+              // sobrescribirlo con el último).
+              if (!creditExhaustedAt) {
+                creditExhaustedAt = { saleId: sale.id, saleName: sale.name, hipNumber: item.hip.hipNumber };
+              }
+              break;
             case "no_photo":
               // No debería pasar acá (solo se agregan Hips CON foto a
               // photoWorkItems) — no se cuenta en ningún casillero
@@ -415,6 +454,11 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           hipsWithoutMediaYet,
           autoPhotoAnalysis,
         });
+
+        // Ver comentario largo de creditExhaustedAt más arriba: se corta la
+        // corrida completa acá, nunca se pasa a la venta siguiente — es una
+        // condición de toda la cuenta de Anthropic, no de esta venta.
+        if (creditExhaustedAt) break;
       } catch (err) {
         if (err instanceof CatalogNotYetPublishedError) {
           // Estado normal de espera, no un error — no ensucia el resumen,
@@ -438,6 +482,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
               noEligibleOrg: 0,
               failed: 0,
               retriesExhausted: 0,
+              creditExhausted: 0,
             },
           });
           continue;
@@ -452,20 +497,59 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       ? 0
       : await db.sale.count({ where: { isActive: true, catalogAccess: { not: "FULL" } } });
 
+    // AGREGADO 2026-09-15: mensaje específico y accionable cuando la corrida
+    // se frenó por falta de saldo — a propósito NUNCA se mezcla con
+    // `errors` (esos son fallos reales de re-chequeo de catálogo por venta,
+    // esto es una condición de cuenta) para que quien lea MediaSweepRun.
+    // errorMessage entienda de inmediato qué pasó y qué hacer, sin tener que
+    // interpretar logs.
+    const creditExhaustedMessage = creditExhaustedAt
+      ? `Se agotó el saldo de la cuenta de Anthropic durante el barrido de "${creditExhaustedAt.saleName}" — se detuvo en el Hip ${creditExhaustedAt.hipNumber}. Los Hips procesados antes de ese punto quedaron guardados correctamente (ver detailsJson); los que venían después todavía no se analizaron. Recargar saldo en console.anthropic.com y volver a correr el barrido para completar lo que falta.`
+      : null;
+
     await db.mediaSweepRun.update({
       where: { id: run.id },
       data: {
         finishedAt: new Date(),
-        status: errors.length > 0 && salesChecked === 0 ? "failed" : "completed",
+        status: creditExhaustedAt ? "failed" : errors.length > 0 && salesChecked === 0 ? "failed" : "completed",
         salesChecked,
         salesSkipped,
         hipsReviewed: hipsReviewedTotal,
         hipsWithNewMedia: hipsWithNewMediaTotal,
         resourcesFound: resourcesFoundTotal,
-        errorMessage: errors.length > 0 ? errors.join(" | ") : null,
+        errorMessage: creditExhaustedMessage ?? (errors.length > 0 ? errors.join(" | ") : null),
         detailsJson: saleDetails as unknown as object,
       },
     });
+
+    // AGREGADO 2026-09-15 (pedido explícito de Ramon tras el incidente real
+    // de hoy: "no quiero enterarme días después, para Fasig, que esto no
+    // estaba funcionando") — hasta hoy, un barrido que se frenaba por falta
+    // de saldo no dejaba NINGÚN rastro visible en la app, solo en
+    // MediaSweepRun (que nadie consulta salvo que alguien ya sospeche que
+    // algo anda mal). Ahora queda una alerta real en /api/v1/alerts, la
+    // misma pantalla donde ya aparecen "venta nueva detectada" — mismo
+    // mecanismo, mismo lugar, cero código nuevo de UI necesario.
+    if (creditExhaustedAt && creditExhaustedMessage) {
+      // Envuelto en try/catch a propósito: el resultado de la corrida
+      // (contadores, MediaSweepRun ya actualizado arriba) es lo importante y
+      // ya quedó guardado — si por algún motivo falla la creación de esta
+      // alerta puntual, NUNCA debe hacer que la corrida entera se reporte
+      // como un fallo distinto/genérico (ver catch exterior de esta
+      // función), solo se pierde el aviso en /alerts, que igual queda
+      // completamente diagnosticable vía MediaSweepRun.errorMessage.
+      try {
+        await db.saleAlert.create({
+          data: {
+            saleId: creditExhaustedAt.saleId,
+            kind: "AI_CREDIT_EXHAUSTED",
+            message: creditExhaustedMessage,
+          },
+        });
+      } catch (err) {
+        console.error(`[media-sweep] No se pudo crear la alerta de saldo agotado:`, err);
+      }
+    }
 
     return {
       runId: run.id,
@@ -476,6 +560,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       resourcesFound: resourcesFoundTotal,
       errors,
       saleDetails,
+      haltedByCreditExhaustion: creditExhaustedAt,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

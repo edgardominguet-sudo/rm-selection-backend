@@ -13,6 +13,33 @@ import { correctLeftRightConsistency } from "./landmarkSideConsistency";
 
 export class LandmarkExtractionError extends Error {}
 
+// AGREGADO 2026-09-15 (a pedido explícito de Ramon, tras diagnosticar en vivo
+// el incidente real de hoy: "no quiero enterarme días después, para Fasig,
+// que esto no estaba funcionando"). CAUSA RAÍZ del incidente: cuando el saldo
+// de Anthropic se agota, la API devuelve un 400 (invalid_request_error, "Your
+// credit balance is too low...") — un error que, sin este tipo dedicado, caía
+// en el mismo cajón genérico que "esta foto puntual está corrupta/rota" en
+// TODOS los llamadores (ver catch en anthropicClient.ts y
+// autoPhotoAnalysis.ts): se reintentaba foto por foto, Hip por Hip, sin
+// avisar a nadie, y encima quemaba el contador de reintentos técnicos
+// (autoLateralPhotoFailedAttempts) de Hips que no tenían NINGÚN problema real
+// con su foto. Este tipo permite que cada llamador distinga "se acabó la
+// plata" (condición de cuenta, no de esta foto puntual — hay que frenar YA y
+// avisar) de un problema técnico real de una foto concreta.
+export class AnthropicCreditExhaustedError extends Error {}
+
+const CREDIT_EXHAUSTED_PATTERN = /credit balance is too low/i;
+
+function isCreditExhaustedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  if (CREDIT_EXHAUSTED_PATTERN.test(message)) return true;
+  // El SDK de Anthropic expone el body crudo del error en `.error.message`
+  // para errores de API (ver @anthropic-ai/sdk APIError) — se chequea
+  // también ahí por si el texto no quedara en `.message` de más arriba.
+  const nested = (err as { error?: { message?: string } })?.error?.message;
+  return typeof nested === "string" && CREDIT_EXHAUSTED_PATTERN.test(nested);
+}
+
 // CAUSA RAÍZ (2026-08-19, reporte de Ramon: "para la misma foto analizada
 // en 3 oportunidades la IA dio tres resultados diferentes") — investigado
 // y confirmado: el modelo de visión NO admite `temperature` acá (ver
@@ -185,6 +212,17 @@ async function sendWithRetry(client: Anthropic, content: Array<ImageBlock | Text
       { timeout: REQUEST_TIMEOUT_MS }
     );
   } catch (err) {
+    // Saldo agotado (ver AnthropicCreditExhaustedError arriba): NUNCA
+    // reintentar — un 400 de saldo insuficiente no se arregla solo, y
+    // reintentar 3 veces por foto solo tripilica el tiempo hasta que el
+    // llamador se entera de que hace falta recargar saldo. Se lanza el
+    // tipo dedicado de inmediato para que cada llamador lo distinga de un
+    // problema técnico puntual de esta foto.
+    if (isCreditExhaustedError(err)) {
+      throw new AnthropicCreditExhaustedError(
+        "Se agotó el saldo de la cuenta de Anthropic (créditos insuficientes para seguir llamando a la API). Hace falta recargar saldo en console.anthropic.com antes de que el análisis pueda seguir."
+      );
+    }
     const status = (err as { status?: number }).status;
     if (status && [502, 503, 504, 429].includes(status) && attempt < 3) {
       await new Promise((r) => setTimeout(r, attempt * 1500));
