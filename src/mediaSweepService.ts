@@ -170,7 +170,17 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
   // siguiente. Queda el punto exacto (venta + Hip) donde se frenó, para
   // poder avisarle a Ramon con un mensaje accionable en vez de que se entere
   // días después revisando logs a mano.
-  let creditExhaustedAt: MediaSweepCreditHalt | null = null;
+  // NOTA TÉCNICA: se usa un objeto envoltorio ({ at: ... }) en vez de una
+  // variable `let` suelta a propósito — TypeScript tiene una limitación
+  // conocida de análisis de flujo: cuando una variable `let` inicializada en
+  // `null` se reasigna ÚNICAMENTE dentro de una función anidada (acá, el
+  // callback de runWithConcurrencyLimit), el compilador la sigue
+  // considerando `null` después del `await`, aunque el callback la haya
+  // reasignado en tiempo de ejecución — termina marcando el tipo como
+  // `never` y falla la build (confirmado: rompió el deploy la primera vez
+  // que se probó esto). Mutar una PROPIEDAD de un objeto capturado por
+  // referencia no tiene ese problema.
+  const creditHalt: { at: MediaSweepCreditHalt | null } = { at: null };
 
   try {
     const sales = await db.sale.findMany({
@@ -384,12 +394,12 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           creditExhausted: 0,
         };
         await runWithConcurrencyLimit(photoWorkItems, config.autoPhotoAnalysisConcurrency, async (item) => {
-          // Corte temprano (ver comentario largo de creditExhaustedAt más
+          // Corte temprano (ver comentario largo de creditHalt.at más
           // arriba): si otro item concurrente ya detectó que se acabó el
           // saldo, este item ni siquiera intenta llamar a la IA — así, el
           // resto de la cola de photoWorkItems se vacía casi al instante en
           // vez de fallar uno por uno contra la misma pared.
-          if (creditExhaustedAt) return;
+          if (creditHalt.at) return;
           let outcome: AutoPhotoAnalysisOutcome;
           try {
             outcome = await autoAnalyzeNewCatalogPhotoIfNeeded(item.hip, item.freshMedia);
@@ -426,8 +436,8 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
               // items concurrentes que estaban en vuelo en simultáneo van a
               // reportar lo mismo casi al mismo tiempo — no aporta nada
               // sobrescribirlo con el último).
-              if (!creditExhaustedAt) {
-                creditExhaustedAt = { saleId: sale.id, saleName: sale.name, hipNumber: item.hip.hipNumber };
+              if (!creditHalt.at) {
+                creditHalt.at = { saleId: sale.id, saleName: sale.name, hipNumber: item.hip.hipNumber };
               }
               break;
             case "no_photo":
@@ -455,10 +465,10 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           autoPhotoAnalysis,
         });
 
-        // Ver comentario largo de creditExhaustedAt más arriba: se corta la
+        // Ver comentario largo de creditHalt.at más arriba: se corta la
         // corrida completa acá, nunca se pasa a la venta siguiente — es una
         // condición de toda la cuenta de Anthropic, no de esta venta.
-        if (creditExhaustedAt) break;
+        if (creditHalt.at) break;
       } catch (err) {
         if (err instanceof CatalogNotYetPublishedError) {
           // Estado normal de espera, no un error — no ensucia el resumen,
@@ -503,15 +513,15 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
     // esto es una condición de cuenta) para que quien lea MediaSweepRun.
     // errorMessage entienda de inmediato qué pasó y qué hacer, sin tener que
     // interpretar logs.
-    const creditExhaustedMessage = creditExhaustedAt
-      ? `Se agotó el saldo de la cuenta de Anthropic durante el barrido de "${creditExhaustedAt.saleName}" — se detuvo en el Hip ${creditExhaustedAt.hipNumber}. Los Hips procesados antes de ese punto quedaron guardados correctamente (ver detailsJson); los que venían después todavía no se analizaron. Recargar saldo en console.anthropic.com y volver a correr el barrido para completar lo que falta.`
+    const creditExhaustedMessage = creditHalt.at
+      ? `Se agotó el saldo de la cuenta de Anthropic durante el barrido de "${creditHalt.at.saleName}" — se detuvo en el Hip ${creditHalt.at.hipNumber}. Los Hips procesados antes de ese punto quedaron guardados correctamente (ver detailsJson); los que venían después todavía no se analizaron. Recargar saldo en console.anthropic.com y volver a correr el barrido para completar lo que falta.`
       : null;
 
     await db.mediaSweepRun.update({
       where: { id: run.id },
       data: {
         finishedAt: new Date(),
-        status: creditExhaustedAt ? "failed" : errors.length > 0 && salesChecked === 0 ? "failed" : "completed",
+        status: creditHalt.at ? "failed" : errors.length > 0 && salesChecked === 0 ? "failed" : "completed",
         salesChecked,
         salesSkipped,
         hipsReviewed: hipsReviewedTotal,
@@ -530,7 +540,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
     // algo anda mal). Ahora queda una alerta real en /api/v1/alerts, la
     // misma pantalla donde ya aparecen "venta nueva detectada" — mismo
     // mecanismo, mismo lugar, cero código nuevo de UI necesario.
-    if (creditExhaustedAt && creditExhaustedMessage) {
+    if (creditHalt.at && creditExhaustedMessage) {
       // Envuelto en try/catch a propósito: el resultado de la corrida
       // (contadores, MediaSweepRun ya actualizado arriba) es lo importante y
       // ya quedó guardado — si por algún motivo falla la creación de esta
@@ -541,7 +551,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       try {
         await db.saleAlert.create({
           data: {
-            saleId: creditExhaustedAt.saleId,
+            saleId: creditHalt.at.saleId,
             kind: "AI_CREDIT_EXHAUSTED",
             message: creditExhaustedMessage,
           },
@@ -560,7 +570,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       resourcesFound: resourcesFoundTotal,
       errors,
       saleDetails,
-      haltedByCreditExhaustion: creditExhaustedAt,
+      haltedByCreditExhaustion: creditHalt.at,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
