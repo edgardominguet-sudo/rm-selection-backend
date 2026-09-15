@@ -1325,12 +1325,35 @@ router.get("/sales/:saleId/catalog/imports", requireUser, async (req, res) => {
 // "necesitamos comprobar AHORA que el mecanismo realmente funciona, no
 // esperar hasta las 3am"). Corre exactamente el mismo mecanismo que el
 // cron nocturno (runNightlyMediaSweep), acotado a UNA sola venta — nunca
-// se reinventa un camino aparte. Se ejecuta de forma SÍNCRONA (se espera
-// la respuesta) a propósito: es una corrida de diagnóstico puntual sobre
-// una sola venta, no el barrido completo de todas las ventas activas, así
-// que el tiempo de respuesta es razonable y el llamador necesita ver el
-// resultado real (Hips revisados, fotos/videos encontrados) en la misma
-// respuesta, no adivinar consultando logs después.
+// se reinventa un camino aparte.
+//
+// ACTUALIZADO 2026-09-15 (a pedido explícito de Ramon, tras diagnosticar en
+// vivo un incidente real): ANTES corría de forma SÍNCRONA (se esperaba la
+// respuesta completa antes de contestar). Con un rango grande de Hip esto
+// puede tardar 10-15+ minutos, muy por encima de lo que Safari/el proxy de
+// Railway están dispuestos a mantener una conexión HTTP abierta sin
+// respuesta — el navegador termina mostrando "upstream error" aunque el
+// barrido en el servidor siga corriendo bien. Peor: como el trabajo del
+// servidor NO se cancela solo porque el navegador cerró la conexión, si el
+// usuario reintenta la misma URL creyendo que falló, dispara una SEGUNDA
+// corrida en paralelo sobre el mismo rango — confirmado en vivo el
+// 2026-09-15: dos peticiones de Ramon (13:19:05 y 13:25:47) corrieron
+// concurrentemente ~11 minutos, terminando con menos de 1 segundo de
+// diferencia entre sí, con evidencia clara de Hips analizados dos veces
+// (gasto de IA duplicado, acotado pero real) antes de que la protección de
+// idempotencia normal (autoLateralPhotoSourceUrl) alcanzara a frenarlas.
+//
+// Ahora, mismo patrón que /reference-recalc-sweep (ver más abajo): dispara
+// el barrido SIN esperarlo (fire-and-forget) y responde de inmediato con
+// "Barrido iniciado" — el progreso/resultado real se consulta después vía
+// GET /media-sweep/runs?limit=1 (ya existía, ver más abajo). Además, un
+// guard en memoria (activeManualSweepSaleIds) impide que dos barridos
+// manuales para LA MISMA venta corran a la vez: si ya hay uno en curso,
+// responde de inmediato explicando que hay que esperar, en vez de arrancar
+// un segundo que compita con el primero por los mismos Hips. Esto ataca la
+// causa raíz real del incidente de hoy, no solo el síntoma del timeout.
+const activeManualSweepSaleIds = new Set<string>();
+
 async function handleManualMediaSweep(req: Request, res: Response): Promise<void> {
   const { saleId } = req.params;
   const sale = await db.sale.findUnique({ where: { id: saleId } });
@@ -1357,14 +1380,37 @@ async function handleManualMediaSweep(req: Request, res: Response): Promise<void
     }
     hipNumberRange = { min, max };
   }
-  try {
-    const summary = await runNightlyMediaSweep({ trigger: "manual", saleId, hipNumberRange });
-    res.json(summary);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[media-sweep] Error en corrida manual para "${sale.name}":`, err);
-    res.status(500).json({ error: `Error corriendo el barrido de Media para "${sale.name}": ${message}` });
+
+  // Guard de concurrencia (2026-09-15) — ver nota arriba: sin esto, dos
+  // peticiones para la misma venta (típicamente el propio usuario
+  // reintentando tras un "upstream error" del navegador) corren en
+  // paralelo y pueden analizar/cobrar el mismo Hip dos veces antes de que
+  // la idempotencia normal alcance a frenar la segunda corrida.
+  if (activeManualSweepSaleIds.has(saleId)) {
+    res.status(409).json({
+      error: `Ya hay un barrido manual en curso para "${sale.name}". No se inició uno nuevo para evitar volver a analizar (y cobrar) los mismos Hips en paralelo. Esperá a que termine y consultá GET /media-sweep/runs?limit=1 para ver el resultado.`,
+    });
+    return;
   }
+
+  activeManualSweepSaleIds.add(saleId);
+  runNightlyMediaSweep({ trigger: "manual", saleId, hipNumberRange })
+    .catch((err) => {
+      console.error(`[media-sweep] Error en corrida manual en segundo plano para "${sale.name}":`, err);
+    })
+    .finally(() => {
+      activeManualSweepSaleIds.delete(saleId);
+    });
+
+  res.json({
+    started: true,
+    saleId,
+    saleName: sale.name,
+    hipNumberRange: hipNumberRange ?? null,
+    message: `Barrido iniciado en segundo plano para "${sale.name}"${
+      hipNumberRange ? ` (Hip ${hipNumberRange.min}–${hipNumberRange.max})` : ""
+    }. Consultar GET /media-sweep/runs?limit=1 para ver el progreso/resultado.`,
+  });
 }
 
 router.post("/sales/:saleId/media-sweep", requireUser, handleManualMediaSweep);
