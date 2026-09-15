@@ -1338,8 +1338,27 @@ async function handleManualMediaSweep(req: Request, res: Response): Promise<void
     res.status(404).json({ error: "Venta no encontrada." });
     return;
   }
+  // Rango opcional de Hip (2026-09-15, a pedido explícito de Ramon: "trabaja
+  // con los analisis de las fotos lateral dentro del rango establecido...
+  // 1976 hasta el Hip 4650") — ver @param opts.hipNumberRange en
+  // runNightlyMediaSweep (mediaSweepService.ts) para el alcance exacto: solo
+  // acota qué Hips entran a la cola que gasta IA, nunca la sincronización de
+  // catálogo. Ambos query params son opcionales pero van juntos: si se pasa
+  // uno sin el otro, se responde 400 en vez de adivinar un límite.
+  const minRaw = typeof req.query.minHipNumber === "string" ? req.query.minHipNumber : undefined;
+  const maxRaw = typeof req.query.maxHipNumber === "string" ? req.query.maxHipNumber : undefined;
+  let hipNumberRange: { min: number; max: number } | undefined;
+  if (minRaw !== undefined || maxRaw !== undefined) {
+    const min = Number(minRaw);
+    const max = Number(maxRaw);
+    if (minRaw === undefined || maxRaw === undefined || !Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+      res.status(400).json({ error: "minHipNumber y maxHipNumber deben pasarse juntos, ambos numéricos, con minHipNumber <= maxHipNumber." });
+      return;
+    }
+    hipNumberRange = { min, max };
+  }
   try {
-    const summary = await runNightlyMediaSweep({ trigger: "manual", saleId });
+    const summary = await runNightlyMediaSweep({ trigger: "manual", saleId, hipNumberRange });
     res.json(summary);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

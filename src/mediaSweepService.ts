@@ -125,8 +125,20 @@ function countNewResources(fresh: CatalogMediaItem[], stored: CatalogMediaItem[]
  *   (usado por el endpoint manual — nunca hace falta barrer todas las
  *   ventas activas para probar una sola). Si se omite, se procesan todas
  *   las ventas activas con catalogAccess=FULL (comportamiento del cron).
+ * @param opts.hipNumberRange  ACOTA EL GASTO DE IA, no la sincronización
+ *   de catálogo (2026-09-15, a pedido explícito de Ramon: "trabaja con
+ *   los analisis de las fotos lateral dentro del rango establecido...
+ *   1976 hasta el Hip 4650"). Si se pasa, `mediaJson` de TODOS los Hips
+ *   de la venta se sigue sincronizando normalmente (es solo una
+ *   escritura de DB, no cuesta nada de IA) — lo que se filtra es
+ *   ÚNICAMENTE la cola de clasificación/análisis automático de foto
+ *   lateral (`photoWorkItems`, la única parte de este barrido que llama
+ *   a la API de Anthropic): un Hip fuera del rango nunca entra a esa
+ *   cola, así que nunca genera una llamada de IA aunque tenga foto
+ *   pendiente. `undefined` (comportamiento por defecto, cron nocturno)
+ *   = sin acotar, se evalúan todos los Hips con foto pendiente.
  */
-export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manual"; saleId?: string } = { trigger: "scheduled" }): Promise<MediaSweepSummary> {
+export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manual"; saleId?: string; hipNumberRange?: { min: number; max: number } } = { trigger: "scheduled" }): Promise<MediaSweepSummary> {
   const run = await db.mediaSweepRun.create({
     data: { trigger: opts.trigger, status: "running" },
   });
@@ -301,7 +313,17 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           // es idempotente por su cuenta, así que incluir de más acá es
           // seguro y barato (la función resuelve casi al instante para un
           // Hip ya procesado, sin tocar la base de datos de más).
-          if (freshMedia.some((m) => m.kind === "photo" && !!m.url)) {
+          // Filtro de rango (ver @param opts.hipNumberRange arriba) — se
+          // evalúa ACÁ, justo antes de encolar trabajo que cuesta IA, para
+          // que un Hip fuera del rango pedido nunca dispare una llamada a
+          // Anthropic aunque tenga foto lateral pendiente. La sincronización
+          // de mediaJson de arriba (gratis, solo DB) no se ve afectada.
+          const hipNumberAsInt = Number(row.hipNumber);
+          const withinRequestedRange =
+            !opts.hipNumberRange ||
+            (Number.isFinite(hipNumberAsInt) && hipNumberAsInt >= opts.hipNumberRange.min && hipNumberAsInt <= opts.hipNumberRange.max);
+
+          if (withinRequestedRange && freshMedia.some((m) => m.kind === "photo" && !!m.url)) {
             photoWorkItems.push({
               hip: {
                 id: row.id,
