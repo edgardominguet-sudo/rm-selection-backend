@@ -835,22 +835,32 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   });
   const analysisByHipId = new Map(pointers.map((p) => [p.hipId, p.analysisResult]));
 
-  // RANKING CONGELADO (2026-09-15, a pedido explícito de Ramon: "una vez
-  // que tu determines el ranking del dia... el que yo los abra uno por
-  // uno, no debe cambiar la posicion que tu le diste en el Top 20 ni
-  // mucho menos desaparecer y que aparezca un nuevo Hip. lo que tu
-  // agrupaste y clasificaste en el ranking asi debe quedar"). Se lee el
-  // snapshot YA GUARDADO de esta misma jornada ANTES de recalcular nada:
-  // cada entrada que ya está ahí (posición, score, clasificación, foto,
-  // resultado de venta) se copia tal cual, sin volver a evaluarla, sin
-  // importar que un reanálisis posterior (manual, barrido nocturno o
-  // recálculo de referente) haya cambiado el score real de ese Hip por su
-  // cuenta. Este job SOLO puede: (a) no tocar nada, o (b) llenar cupos
-  // TODAVÍA VACÍOS del Top N con Hips recién analizados que aún no tienen
-  // lugar — nunca reordena ni saca una entrada ya congelada. Coincide con
-  // hipId cuando la entrada ya lo tiene (formato nuevo); si es una entrada
-  // vieja de antes de este cambio (sin hipId todavía), coincide por
-  // hipNumber (único dentro de una venta).
+  // RANKING CONGELADO POR REANÁLISIS + MERITOCRACIA PARA HIPS NUEVOS
+  // (2026-09-15, a pedido explícito de Ramon, en dos mensajes seguidos):
+  // "una vez que tu determines el ranking del dia... el que yo los abra
+  // uno por uno, no debe cambiar la posicion que tu le diste en el Top 20
+  // ni mucho menos desaparecer... lo que tu agrupaste y clasificaste en
+  // el ranking asi debe quedar" y, acto seguido, matizado con: "si en la
+  // mañana sacaste un top 20... y en el transcurso del dia suben otra
+  // foto que no analisaste mas temprano, la app deberia darle a ese nuevo
+  // hip analizado, si obtuvo un gran numero en el score, su posicion
+  // dentro del ranking y sacar al numero 20".
+  //
+  // Regla final (las dos cosas a la vez):
+  //   1) Un Hip YA CONGELADO en el ranking nunca pierde su lugar por SU
+  //      PROPIO reanálisis -- se usa siempre su score y datos tal como
+  //      quedaron guardados la primera vez que entró, nunca el valor
+  //      actual de CurrentHipAnalysis (que puede haber cambiado de ahí en
+  //      más por un botón "Analizar", el barrido nocturno o un recálculo
+  //      de referente).
+  //   2) Un Hip que se analiza por PRIMERA VEZ en el día SÍ compite por un
+  //      lugar con ese score fresco: si supera al más débil de los ya
+  //      congelados, entra en su posición real por score y desplaza al
+  //      que hasta ese momento ocupaba el último puesto del Top N.
+  // Osea: nunca se reordena ni se saca una entrada por reanálisis de ELLA
+  // MISMA; sí se puede reordenar/sacar por la LLEGADA de una entrada
+  // nueva mejor puntuada. Se lee el snapshot ya guardado de esta jornada
+  // ANTES de recalcular nada.
   const existing = await db.rankingSnapshot.findUnique({
     where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
   });
@@ -862,24 +872,38 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
       .filter((id): id is string => !!id)
   );
 
-  const remainingSlots = Math.max(0, config.topRankingSize - lockedEntries.length);
-  const ranked =
-    remainingSlots === 0
-      ? []
-      : hips
-          .map((hip) => ({ hip, analysis: analysisByHipId.get(hip.id) }))
-          .filter(
-            (entry): entry is { hip: (typeof hips)[number]; analysis: NonNullable<typeof entry.analysis> } =>
-              !!entry.analysis && !lockedHipIds.has(entry.hip.id)
-          )
-          .sort((a, b) => b.analysis.overallScore - a.analysis.overallScore)
-          .slice(0, remainingSlots);
+  // Candidatos: Hips con análisis que TODAVÍA no están congelados en el
+  // ranking -- es decir, compitiendo por un lugar por primera vez hoy.
+  // Los ya congelados NUNCA entran acá, así que su reanálisis (si lo hay)
+  // jamás puede afectar el orden ni sacarlos.
+  const candidates = hips
+    .map((hip) => ({ hip, analysis: analysisByHipId.get(hip.id) }))
+    .filter(
+      (entry): entry is { hip: (typeof hips)[number]; analysis: NonNullable<typeof entry.analysis> } =>
+        !!entry.analysis && !lockedHipIds.has(entry.hip.id)
+    );
 
-  // Miniatura de la foto lateral — solo hace falta resolverla para las
-  // entradas NUEVAS que se van a agregar esta corrida; las ya congeladas
-  // mantienen la miniatura que ya tenían guardada en lockedEntries.
+  // Fusión por score: cada entrada congelada aporta su score YA GUARDADO
+  // (nunca el actual), cada candidato aporta su score fresco. Se ordena
+  // todo junto y se corta a topRankingSize -- así un candidato mejor que
+  // el último congelado entra en su lugar real y desplaza al más débil,
+  // sin tocar el orden relativo de las congeladas entre sí (Array.sort es
+  // estable, y las congeladas ya venían ordenadas por score entre ellas).
+  type MergedLocked = { source: "locked"; score: number; entry: Record<string, unknown> };
+  type MergedNew = { source: "new"; score: number; hip: (typeof hips)[number]; analysis: NonNullable<(typeof candidates)[number]["analysis"]> };
+  const merged: Array<MergedLocked | MergedNew> = [
+    ...lockedEntries.map((entry): MergedLocked => ({ source: "locked", score: Number(entry.overallScore), entry })),
+    ...candidates.map((c): MergedNew => ({ source: "new", score: c.analysis.overallScore, hip: c.hip, analysis: c.analysis })),
+  ];
+  merged.sort((a, b) => b.score - a.score);
+  const survivors = merged.slice(0, config.topRankingSize);
+  const survivingNew = survivors.filter((item): item is MergedNew => item.source === "new");
+
+  // Miniatura de la foto lateral — solo hace falta resolverla para los
+  // candidatos NUEVOS que sobrevivieron al corte; los congelados
+  // mantienen la miniatura que ya tenían guardada.
   const lateralAssetIdByHipId = new Map(
-    ranked.map((entry) => [
+    survivingNew.map((entry) => [
       entry.hip.id,
       (entry.analysis.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null)?.lateral ?? null,
     ])
@@ -893,17 +917,24 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
     : [];
   const storageKeyByAssetId = new Map(lateralAssets.map((a) => [a.id, a.storageKey]));
 
-  const newEntries = ranked.map((entry, index) => {
-    const lateralAssetId = lateralAssetIdByHipId.get(entry.hip.id) ?? null;
+  const entries = survivors.map((item, index) => {
+    if (item.source === "locked") {
+      // Se copia tal cual, solo se actualiza el número de puesto (rank) --
+      // el resto de los campos (score, clasificación, foto, resultado de
+      // venta) quedan exactamente como se guardaron cuando esta entrada
+      // se congeló, sin importar qué pasó con el Hip real desde entonces.
+      return { ...item.entry, rank: index + 1 };
+    }
+    const lateralAssetId = lateralAssetIdByHipId.get(item.hip.id) ?? null;
     return {
-      rank: lockedEntries.length + index + 1,
-      hipId: entry.hip.id,
-      hipNumber: entry.hip.hipNumber,
-      horseName: entry.hip.horseName,
-      sire: entry.hip.sire,
-      dam: entry.hip.dam,
-      overallScore: entry.analysis.overallScore,
-      classification: entry.analysis.classification,
+      rank: index + 1,
+      hipId: item.hip.id,
+      hipNumber: item.hip.hipNumber,
+      horseName: item.hip.horseName,
+      sire: item.hip.sire,
+      dam: item.hip.dam,
+      overallScore: item.analysis.overallScore,
+      classification: item.analysis.classification,
       lateralPhotoStorageKey: lateralAssetId ? storageKeyByAssetId.get(lateralAssetId) ?? null : null,
       // CORRECCIÓN 2026-09-15 (a pedido explícito de Ramon: "quiero ver el
       // precio de los hip que se venden en el dia en tiempo real durante
@@ -912,22 +943,13 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
       // guarda tal cual viene de Hip.saleResultJson (mismo shape que ya
       // usa el catálogo normal -- ver BackendCatalogSaleResultEntry en el
       // cliente iOS) para que GET /ranking lo pueda exponer sin ningún
-      // cálculo nuevo. Como esta función se vuelve a correr sola cada 5
-      // minutos (tick "scheduled_refresh" del scheduler) Y cada vez que se
-      // guarda un análisis nuevo, el precio sincronizado por
-      // syncLivePricesForActiveSessions (cada 10 min, ver más abajo) queda
-      // reflejado acá con un atraso máximo de pocos minutos, sin que este
-      // job tenga que enterarse de nada sobre precios por su cuenta. Solo
-      // se calcula para entradas NUEVAS -- una entrada ya congelada
-      // conserva el resultado de venta que tenía en el momento de
-      // congelarse (ver comentario de RANKING CONGELADO arriba).
-      saleResult: entry.hip.saleResultJson ?? null,
+      // cálculo nuevo. Solo se calcula para entradas NUEVAS que recién
+      // entran esta corrida -- una entrada ya congelada conserva el
+      // resultado de venta que tenía en el momento de congelarse (ver
+      // comentario de RANKING CONGELADO arriba).
+      saleResult: item.hip.saleResultJson ?? null,
     };
   });
-
-  // Congeladas primero, tal cual estaban guardadas, seguidas de las nuevas
-  // que recién llenan cupos vacíos -- nunca se reordena lo ya congelado.
-  const entries = [...lockedEntries, ...newEntries];
   // Comparación insensible al orden de claves: Postgres guarda entriesJson
   // como jsonb, que NO preserva el orden de inserción de un objeto al
   // volver a leerlo — un JSON.stringify directo compararía distinto
