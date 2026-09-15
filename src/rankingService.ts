@@ -835,16 +835,49 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   });
   const analysisByHipId = new Map(pointers.map((p) => [p.hipId, p.analysisResult]));
 
-  const ranked = hips
-    .map((hip) => ({ hip, analysis: analysisByHipId.get(hip.id) }))
-    .filter((entry): entry is { hip: (typeof hips)[number]; analysis: NonNullable<typeof entry.analysis> } => !!entry.analysis)
-    .sort((a, b) => b.analysis.overallScore - a.analysis.overallScore)
-    .slice(0, config.topRankingSize);
+  // RANKING CONGELADO (2026-09-15, a pedido explícito de Ramon: "una vez
+  // que tu determines el ranking del dia... el que yo los abra uno por
+  // uno, no debe cambiar la posicion que tu le diste en el Top 20 ni
+  // mucho menos desaparecer y que aparezca un nuevo Hip. lo que tu
+  // agrupaste y clasificaste en el ranking asi debe quedar"). Se lee el
+  // snapshot YA GUARDADO de esta misma jornada ANTES de recalcular nada:
+  // cada entrada que ya está ahí (posición, score, clasificación, foto,
+  // resultado de venta) se copia tal cual, sin volver a evaluarla, sin
+  // importar que un reanálisis posterior (manual, barrido nocturno o
+  // recálculo de referente) haya cambiado el score real de ese Hip por su
+  // cuenta. Este job SOLO puede: (a) no tocar nada, o (b) llenar cupos
+  // TODAVÍA VACÍOS del Top N con Hips recién analizados que aún no tienen
+  // lugar — nunca reordena ni saca una entrada ya congelada. Coincide con
+  // hipId cuando la entrada ya lo tiene (formato nuevo); si es una entrada
+  // vieja de antes de este cambio (sin hipId todavía), coincide por
+  // hipNumber (único dentro de una venta).
+  const existing = await db.rankingSnapshot.findUnique({
+    where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
+  });
+  const lockedEntries = ((existing?.entriesJson as unknown as Array<Record<string, unknown>> | null) ?? []).slice();
+  const hipIdByHipNumber = new Map(hips.map((h) => [h.hipNumber, h.id]));
+  const lockedHipIds = new Set(
+    lockedEntries
+      .map((e) => (typeof e.hipId === "string" ? e.hipId : hipIdByHipNumber.get(e.hipNumber as string)))
+      .filter((id): id is string => !!id)
+  );
 
-  // Miniatura de la foto lateral de cada HIP del Top 5 — viewSourceAssetIdsJson
-  // guarda, por vista, el MediaAsset.id cuya foto produjo el resultado
-  // GUARDADO (ver comentario del campo en schema.prisma); se resuelve en
-  // un solo select por lote, no uno por Hip.
+  const remainingSlots = Math.max(0, config.topRankingSize - lockedEntries.length);
+  const ranked =
+    remainingSlots === 0
+      ? []
+      : hips
+          .map((hip) => ({ hip, analysis: analysisByHipId.get(hip.id) }))
+          .filter(
+            (entry): entry is { hip: (typeof hips)[number]; analysis: NonNullable<typeof entry.analysis> } =>
+              !!entry.analysis && !lockedHipIds.has(entry.hip.id)
+          )
+          .sort((a, b) => b.analysis.overallScore - a.analysis.overallScore)
+          .slice(0, remainingSlots);
+
+  // Miniatura de la foto lateral — solo hace falta resolverla para las
+  // entradas NUEVAS que se van a agregar esta corrida; las ya congeladas
+  // mantienen la miniatura que ya tenían guardada en lockedEntries.
   const lateralAssetIdByHipId = new Map(
     ranked.map((entry) => [
       entry.hip.id,
@@ -860,10 +893,11 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
     : [];
   const storageKeyByAssetId = new Map(lateralAssets.map((a) => [a.id, a.storageKey]));
 
-  const entries = ranked.map((entry, index) => {
+  const newEntries = ranked.map((entry, index) => {
     const lateralAssetId = lateralAssetIdByHipId.get(entry.hip.id) ?? null;
     return {
-      rank: index + 1,
+      rank: lockedEntries.length + index + 1,
+      hipId: entry.hip.id,
       hipNumber: entry.hip.hipNumber,
       horseName: entry.hip.horseName,
       sire: entry.hip.sire,
@@ -883,14 +917,17 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
       // guarda un análisis nuevo, el precio sincronizado por
       // syncLivePricesForActiveSessions (cada 10 min, ver más abajo) queda
       // reflejado acá con un atraso máximo de pocos minutos, sin que este
-      // job tenga que enterarse de nada sobre precios por su cuenta.
+      // job tenga que enterarse de nada sobre precios por su cuenta. Solo
+      // se calcula para entradas NUEVAS -- una entrada ya congelada
+      // conserva el resultado de venta que tenía en el momento de
+      // congelarse (ver comentario de RANKING CONGELADO arriba).
       saleResult: entry.hip.saleResultJson ?? null,
     };
   });
 
-  const existing = await db.rankingSnapshot.findUnique({
-    where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
-  });
+  // Congeladas primero, tal cual estaban guardadas, seguidas de las nuevas
+  // que recién llenan cupos vacíos -- nunca se reordena lo ya congelado.
+  const entries = [...lockedEntries, ...newEntries];
   // Comparación insensible al orden de claves: Postgres guarda entriesJson
   // como jsonb, que NO preserva el orden de inserción de un objeto al
   // volver a leerlo — un JSON.stringify directo compararía distinto
