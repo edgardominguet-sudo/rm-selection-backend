@@ -1,0 +1,79 @@
+name: Tests
+
+# Capa extra de seguridad (a pedido explícito de Ramon, 2026-09-15): corre
+# automáticamente en cada push y en cada Pull Request contra `main`, para
+# detectar si un cambio rompió algo importante ANTES de que llegue a
+# producción (Railway despliega desde `main` de forma independiente a este
+# workflow — este archivo es puramente aditivo, no toca el deploy).
+#
+# Dos suites (ver jest.config.js):
+#   - unit: lógica pura del motor RM (scoring, geometría, severidad,
+#     fechas, fingerprint de media) — sin base de datos, siempre rápida.
+#   - integration: rutas críticas de la API (Pedigree, Media, Vet Report,
+#     Notes, Decision/Favoritos, navegación entre Hips, sincronización)
+#     contra una base Postgres real y efímera, generada de cero en cada
+#     corrida — nunca toca la base de producción de Railway.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rmtest
+          POSTGRES_PASSWORD: rmtest
+          POSTGRES_DB: rm_selection_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rmtest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://rmtest:rmtest@localhost:5432/rm_selection_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Instalar dependencias
+        working-directory: backend
+        run: npm ci
+
+      - name: Generar cliente de Prisma
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Aplicar migraciones a la base de test
+        working-directory: backend
+        run: npx prisma migrate deploy
+
+      - name: Compilar (verificación real de tipos — mismo chequeo que usa el build de producción)
+        working-directory: backend
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Tests unitarios (motor RM — scoring, geometría, severidad, fechas)
+        working-directory: backend
+        run: npm run test:unit
+
+      - name: Tests de integración (rutas críticas de la API)
+        working-directory: backend
+        run: npm run test:integration
