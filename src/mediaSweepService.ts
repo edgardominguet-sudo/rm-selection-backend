@@ -31,6 +31,16 @@ import { config } from "./config";
  * schema.prisma) con contadores reales, para poder responder "¿cuándo
  * corrió por última vez, qué encontró?" sin depender de logs de Railway.
  *
+ * NO CONFUNDIR con `singleHipMediaRefreshService.ts` (2026-09-16, a pedido
+ * explícito de Ramon: "refresco manual de Media por Hip individual, en
+ * cualquier momento del día, desde la interfaz normal"). Esa es una
+ * función DISTINTA y deliberadamente separada de este archivo: nunca crea
+ * un `MediaSweepRun`, nunca barre más de un Hip, nunca encola análisis
+ * automático de IA — ver el comentario completo ahí. Este archivo sigue
+ * siendo, tal cual, el único mecanismo de barrido GENERAL (todos los Hips
+ * de una venta), disparado SOLO por el cron de las 3am o por el endpoint
+ * de diagnóstico ya documentado arriba.
+ *
  * SOLO cubre ventas catalogAccess=FULL (Keeneland, Fasig-Tipton con ID
  * numérico real conocido): son las únicas con una API en vivo legítima
  * contra la que volver a chequear. Ventas MANUAL_CSV (ej. Fasig-Tipton — New
@@ -119,7 +129,11 @@ export interface MediaSweepSummary {
   haltedByCreditExhaustion: MediaSweepCreditHalt | null;
 }
 
-function countNewResources(fresh: CatalogMediaItem[], stored: CatalogMediaItem[]): { photos: number; videos: number } {
+// `export` (2026-09-16, a pedido explícito de Ramon: refresco manual de
+// Media por Hip individual, ver singleHipMediaRefreshService.ts) — pura,
+// sin estado, se reutiliza tal cual para contar fotos/video nuevos de UN
+// solo Hip en vez de reimplementar el mismo cálculo dos veces.
+export function countNewResources(fresh: CatalogMediaItem[], stored: CatalogMediaItem[]): { photos: number; videos: number } {
   const storedUrls = new Set(stored.map((m) => m.url));
   const newItems = fresh.filter((m) => !storedUrls.has(m.url));
   return {

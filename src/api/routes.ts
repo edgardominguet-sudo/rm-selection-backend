@@ -12,6 +12,10 @@ import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfThe
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
+import {
+  refreshSingleHipMediaFromLiveSource,
+  SingleHipMediaRefreshError,
+} from "../singleHipMediaRefreshService";
 import { runReferenceRecalcSweep, previewReferenceRecalcSweep, type ReferenceRecalcFilter } from "../analysis/referenceRecalcService";
 import { CatalogNotYetPublishedError } from "../types";
 import { broadcastChange } from "../realtime";
@@ -228,6 +232,43 @@ router.get("/sales/:saleId/hips/:hipNumber", requireUser, async (req, res) => {
     currentAnalysis: pointer?.analysisResult ?? null,
     ...(analysisHistory ? { analysisHistory } : {}),
   });
+});
+
+// Refresco MANUAL de Media para UN SOLO Hip (2026-09-16, a pedido
+// explícito de Ramon: "MEDIA: MANTENER BARRIDO AUTOMÁTICO + HABILITAR
+// REFRESCO MANUAL POR HIP") — ver el comentario completo en
+// singleHipMediaRefreshService.ts para el porqué de NO reutilizar
+// /media-sweep acá (ese es de diagnóstico, barre TODA la venta y encola
+// análisis de IA; esto es de uso normal desde la app, un solo Hip, sin
+// IA). Pensado para el botón "Actualizar Media" de MediaTabView — se
+// puede llamar en cualquier momento del día, cuantas veces se quiera,
+// sin afectar el cron de las 3am ni su propio registro (MediaSweepRun).
+router.post("/sales/hips/media-refresh", requireUser, async (req, res) => {
+  // Identificación de venta por house+externalSaleId (2026-09-16, corregido
+  // para seguir la misma convención que /sales/resync — ver el comentario
+  // en singleHipMediaRefreshService.ts: la app nunca conoce el id interno
+  // de Prisma, solo house+externalSaleId).
+  const { house, externalSaleId, hipNumber } = req.body as {
+    house?: string;
+    externalSaleId?: string;
+    hipNumber?: string;
+  };
+  if (!house || !externalSaleId || !hipNumber) {
+    res.status(400).json({ ok: false, error: "Faltan campos requeridos: house, externalSaleId, hipNumber." });
+    return;
+  }
+  try {
+    const result = await refreshSingleHipMediaFromLiveSource({ house, externalSaleId, hipNumber });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof SingleHipMediaRefreshError) {
+      res.status(404).json({ ok: false, error: err.message });
+      return;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[media-refresh-single] Hip ${hipNumber} (venta ${house}/${externalSaleId}):`, err);
+    res.status(500).json({ ok: false, error: `Error interno actualizando Media. ${message}` });
+  }
 });
 
 // Catálogo completo de una venta, ya guardado en la base de RM Selection —
