@@ -187,3 +187,45 @@ export async function getRnaDelDiaForDay(saleId: string, referenceInstant: Date)
           entries: sortByHipNumber(rnaRows.map(toEntry)),
     };
 }
+
+/**
+ * SOLO "Hoy" (2026-09-16, a pedido explícito de Ramon: "se esta tardando
+ * mucho en abrir la lista de dias anteriores de los RNA, revisa que solo
+ * se descargue una vez... el dia actual de la venta si debe hacer
+ * barridos continuos cada 10 min en busca de nuevos RNA"). A diferencia de
+ * `getRnaDelDia`/`getRnaDelDiaForDay` (que traen TODOS los Hips de la
+ * venta con `sessionDate` no nulo, sin importar el día, para después
+ * filtrar en memoria), esta función acota la consulta a la BASE DE DATOS
+ * al rango exacto [medianoche ET, medianoche ET + 24h) del día que
+ * contiene `referenceInstant` -- así el barrido periódico de "Hoy" (cada
+ * 10 min mientras esa pantalla está abierta, ver RnaDelDiaService.swift)
+ * nunca vuelve a escanear los miles de Hips de días anteriores/futuros de
+ * la venta, solo los de la jornada de hoy. `Hip.sessionDate` vive anclado
+ * a mediodía ET (nunca medianoche, ver comentario en fasigTipton.ts), así
+ * que siempre cae DENTRO de este rango para su propio día calendario ET,
+ * sin importar el horario de verano.
+ *
+ * Devuelve `null` únicamente cuando HOY no hay ninguna jornada en curso NI
+ * ningún RNA registrado (nada que mostrar como "Hoy" en absoluto) — con
+ * sesión en curso pero cero RNA todavía sí devuelve un detalle real
+ * (`rnaCount: 0`), igual criterio que el resto de este archivo: nunca se
+ * inventa ni se omite un estado real.
+ */
+export async function getRnaDelDiaToday(saleId: string, referenceInstant: Date): Promise<RnaDayDetail | null> {
+    const dayStart = startOfCalendarDay(referenceInstant);
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const hips = await db.hip.findMany({
+        where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
+        select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
+    });
+    const rnaRows = hips.filter((h) => isRnaResult(h.saleResultJson));
+    const now = new Date();
+    const sessionInProgress = hips.some((h) => h.sessionDate && isSessionInProgress(h.sessionDate, now));
+    if (!sessionInProgress && rnaRows.length === 0) return null;
+    return {
+        date: rnaRows[0]?.sessionDate ?? hips[0]?.sessionDate ?? referenceInstant,
+        rnaCount: rnaRows.length,
+        sessionInProgress,
+        entries: sortByHipNumber(rnaRows.map(toEntry)),
+    };
+}
