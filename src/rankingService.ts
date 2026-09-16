@@ -865,7 +865,11 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
     where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
   });
   const lockedEntries = ((existing?.entriesJson as unknown as Array<Record<string, unknown>> | null) ?? []).slice();
-  const hipIdByHipNumber = new Map(hips.map((h) => [h.hipNumber, h.id]));
+  const hipIdByHipNumber = new Map<string, string>(hips.map((h) => [h.hipNumber, h.id]));
+  // Usado más abajo para refrescar saleResult de las entradas YA
+  // congeladas -- ver comentario "CORRECCIÓN 2026-09-16" en la
+  // construcción de `entries`.
+  const hipById = new Map<string, (typeof hips)[number]>(hips.map((h) => [h.id, h]));
   const lockedHipIds = new Set(
     lockedEntries
       .map((e) => (typeof e.hipId === "string" ? e.hipId : hipIdByHipNumber.get(e.hipNumber as string)))
@@ -920,10 +924,36 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   const entries = survivors.map((item, index) => {
     if (item.source === "locked") {
       // Se copia tal cual, solo se actualiza el número de puesto (rank) --
-      // el resto de los campos (score, clasificación, foto, resultado de
-      // venta) quedan exactamente como se guardaron cuando esta entrada
-      // se congeló, sin importar qué pasó con el Hip real desde entonces.
-      return { ...item.entry, rank: index + 1 };
+      // el resto de los campos de MÉRITO (score, clasificación, foto)
+      // quedan exactamente como se guardaron cuando esta entrada se
+      // congeló, sin importar qué pasó con el Hip real desde entonces.
+      //
+      // CORRECCIÓN 2026-09-16 (bug reportado por Ramon: "en el ranking del
+      // dia solo se ven algunos precios y no todos, si esa venta del dia
+      // ya termino, si estan OUT debe decirlo"): saleResult es la
+      // EXCEPCIÓN a lo anterior -- no es mérito de ranking, es el
+      // desenlace real de la subasta, que llega en cualquier momento
+      // DESPUÉS de que el Hip ya se haya congelado en el Top N por su
+      // score (el caso normal: el ranking se arma 12h antes de que abra
+      // la venta, mucho antes de que ningún Hip pase por el ring). Antes
+      // esta rama copiaba item.entry TAL CUAL, así que una entrada
+      // congelada quedaba con el saleResult (null, o lo que tuviera) del
+      // momento exacto en que se congeló, PARA SIEMPRE -- de ahí "solo se
+      // ven algunos precios" (solo entraban con precio/RNA ya resuelto los
+      // Hips que llegaban al ranking por PRIMERA VEZ después de ya haberse
+      // vendido). Ahora se refresca siempre con el valor ACTUAL de
+      // Hip.saleResultJson, igual que ya se hacía para las entradas
+      // nuevas más abajo -- así el precio y el estado RNA aparecen para
+      // TODOS los Hips en cuanto la casa de ventas publica el resultado,
+      // sin importar cuándo se congelaron en el ranking.
+      const lockedHipId =
+        typeof item.entry.hipId === "string" ? item.entry.hipId : hipIdByHipNumber.get(item.entry.hipNumber as string);
+      const liveHip = lockedHipId ? hipById.get(lockedHipId) : undefined;
+      return {
+        ...item.entry,
+        rank: index + 1,
+        saleResult: liveHip ? liveHip.saleResultJson ?? null : item.entry.saleResult ?? null,
+      };
     }
     const lateralAssetId = lateralAssetIdByHipId.get(item.hip.id) ?? null;
     return {
