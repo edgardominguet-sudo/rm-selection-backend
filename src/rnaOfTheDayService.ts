@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { startOfCalendarDay, isSameEasternCalendarDay } from "./util/easternCalendarDay";
+import { startOfCalendarDay } from "./util/easternCalendarDay";
 
 /**
  * "RNA del Día" (2026-09-15, a pedido explícito de Ramon, propuesta
@@ -171,21 +171,44 @@ previousDays.push({ date: sessionDate, rnaCount: rows.length });
 
 /**
  * Detalle completo (todas las filas) de UNA jornada puntual — usado por
- * "Días anteriores" en RNA del Día, cargado bajo demanda recién al tocar
- * ese día (nunca se manda todo de una vez, ver comentario arriba).
- */
+  * "Días anteriores" en RNA del Día, cargado bajo demanda recién al tocar
+   * ese día (nunca se manda todo de una vez, ver comentario arriba).
+    *
+     * CORRECCIÓN 2026-09-16 (a pedido explícito de Ramon: "el primer llamado
+      * para cargar los RNA de día anterior se queda pensando, descargando, si
+       * lo paras y le das click la segunda vez, allí sí te da la lista"): esta
+        * función traía TODOS los Hips de la venta con `sessionDate` no nulo —
+         * prácticamente el catálogo entero, sin importar qué día se haya tocado —
+          * y recién filtraba por día EN MEMORIA con `isSameEasternCalendarDay`.
+           * Exactamente el mismo patrón (consulta sin acotar + filtro en memoria)
+            * que ya se había identificado y corregido en `getRnaDelDia`/
+             * `getRnaDelDiaToday` (ver comentario de esa función más abajo) — pero
+              * esta, la que efectivamente usa "Días anteriores" al tocar un día
+               * puntual, había quedado afuera de aquella corrección. En una venta con
+                * miles de Hips esa consulta sin acotar es lenta (coincide con "se queda
+                 * pensando, descargando"); un segundo toque podía verse instantáneo simple-
+                  * mente porque la base de datos ya había resuelto y cacheado el plan de
+                   * esa misma consulta pesada la primera vez, no porque el código fuera
+                    * más liviano la segunda vez. Ahora se acota la consulta a la BASE DE
+                     * DATOS al rango exacto [medianoche ET, medianoche ET + 24h) del día
+                      * pedido — mismo mecanismo exacto que ya usa `getRnaDelDiaToday` — así
+                       * esta consulta nunca vuelve a escanear el resto del catálogo, sin
+                        * importar cuántos Hips tenga la venta ni qué día se pida.
+                         */
 export async function getRnaDelDiaForDay(saleId: string, referenceInstant: Date): Promise<RnaDayDetail> {
-    const hips = await db.hip.findMany({
-          where: { saleId, sessionDate: { not: null } },
-          select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
-    });
-    const rnaRows = hips.filter((h) => h.sessionDate && isSameEasternCalendarDay(h.sessionDate, referenceInstant) && isRnaResult(h.saleResultJson));
-    return {
-          date: rnaRows[0]?.sessionDate ?? referenceInstant,
-          rnaCount: rnaRows.length,
-          sessionInProgress: isSessionInProgress(referenceInstant, new Date()),
-          entries: sortByHipNumber(rnaRows.map(toEntry)),
-    };
+        const dayStart = startOfCalendarDay(referenceInstant);
+        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+        const hips = await db.hip.findMany({
+                      where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
+                      select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
+        });
+        const rnaRows = hips.filter((h) => isRnaResult(h.saleResultJson));
+        return {
+                      date: rnaRows[0]?.sessionDate ?? hips[0]?.sessionDate ?? referenceInstant,
+                      rnaCount: rnaRows.length,
+                      sessionInProgress: isSessionInProgress(referenceInstant, new Date()),
+                      entries: sortByHipNumber(rnaRows.map(toEntry)),
+        };
 }
 
 /**
