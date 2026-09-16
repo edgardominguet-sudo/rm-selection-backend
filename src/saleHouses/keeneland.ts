@@ -121,19 +121,31 @@ function normalize(entry: RawEntry): NormalizedHip {
   // September Yearling Sale 2026, vendidos o no) — el precio real está en
   // "field_price" ("700000.00", etc.). Un Hip R.N.A. trae en "field_price"
   // el centinela "-2.00" (nunca un precio real), y el dato de R.N.A. en sí
-  // está en "field_rna_indicator" ("Y"/"N"/"P"), NO en "field_out" (ese
-  // campo indica otra cosa — Hip retirado/fuera de catálogo, ver
-  // referenceRecalcService.ts, exclusión de OUT). Antes se guardaba
-  // soldAsCode = field_out ("Y"/"N"), que nunca coincide con los códigos
-  // "RNA"/"PS" que espera SaleResult.outcome en el cliente iOS (Hip.swift)
-  // — con eso más el precio siempre vacío, TODO Hip de Keeneland caía en
-  // el caso "pending" (sin badge), estuviera vendido o no.
+  // está en "field_rna_indicator" ("Y"/"N"/"P"), NO en "field_out".
+  //
+  // CORRECCIÓN 2026-09-16 (a pedido explícito de Ramon: "quiero que los OUT
+  // se vean al lado del numero del HIP... alli debe aparecer los OUT"): el
+  // fix de arriba (2026-09-15) dejó "field_out" leído en `RawEntry` pero SIN
+  // usar en absoluto -- "field_out" NO es RNA, es un concepto real DISTINTO
+  // (Hip retirado del catálogo/Withdrawn, ej. vendido en privado antes de
+  // pisar el ring, o retirado por el consignatario) que hasta ahora solo se
+  // usaba para EXCLUIRLO del recálculo de referente (ver
+  // `referenceRecalcService.ts`, `isOut()`) pero nunca se mostraba en
+  // ninguna pantalla -- un Hip así quedaba en soldAsCode=undefined, caía en
+  // el caso "pending" y no mostraba nada, exactamente el bug reportado.
+  // Ahora se guarda como su propio código "OUT" (nunca se pisa con "RNA":
+  // si por algún motivo un Hip trajera las dos señales a la vez, R.N.A. es
+  // la más "final" -- alcanzó a pisar el ring -- así que gana ella). El
+  // cliente iOS (SaleResult.outcome, Hip.swift) ya distingue "OUT" de "RNA"
+  // como dos resultados distintos, con su propia etiqueta.
   const rawPrice = entry.field_price?.trim();
   const priceNumber = rawPrice ? Number(rawPrice) : NaN;
   const hasRealPrice = !!rawPrice && Number.isFinite(priceNumber) && priceNumber > 0;
   const isRna = entry.field_rna_indicator?.trim().toUpperCase() === "Y";
+  const isOut = entry.field_out?.trim().toUpperCase() === "Y";
 
-  const hasSaleResult = entry.field_price != null || entry.field_buyer_name != null || entry.field_rna_indicator != null;
+  const hasSaleResult =
+    entry.field_price != null || entry.field_buyer_name != null || entry.field_rna_indicator != null || entry.field_out != null;
 
   return {
         hipNumber: normalizeHipNumber(entry.field_hip_number),
@@ -155,7 +167,7 @@ function normalize(entry: RawEntry): NormalizedHip {
           ? {
                       priceRaw: hasRealPrice ? rawPrice : undefined,
                       purchaser: entry.field_buyer_name || undefined,
-                      soldAsCode: isRna ? "RNA" : undefined,
+                      soldAsCode: isRna ? "RNA" : isOut ? "OUT" : undefined,
           }
                 : undefined,
   };
