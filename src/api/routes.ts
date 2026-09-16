@@ -8,7 +8,7 @@ import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
-import { getRnaDelDia, getRnaDelDiaForDay } from "../rnaOfTheDayService";
+import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfTheDayService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
@@ -1589,4 +1589,34 @@ router.get("/sales/rna-del-dia/day", requireUser, async (req, res) => {
   // CORRECCION 2026-09-15: se pasa day (mediodia ET) directo, sin normalizar -- ver comentario en getRnaDelDiaForDay (rnaOfTheDayService.ts).
   const detail = await getRnaDelDiaForDay(sale.id, day);
   res.json({ saleName: sale.name, ...detail });
+});
+
+// SOLO "Hoy" (2026-09-16, a pedido explícito de Ramon: "revisa que solo se
+// descargue una vez... el dia actual de la venta si debe hacer barridos
+// continuos cada 10 min en busca de nuevos RNA"). Pensada para que el
+// cliente la llame en un barrido periódico (cada 10 min) mientras la
+// pantalla de RNA del Día está abierta -- a diferencia de `/rna-del-dia`,
+// esta ruta acota la consulta a la base de datos a SOLO el día de hoy (ver
+// getRnaDelDiaToday en rnaOfTheDayService.ts), así el barrido periódico
+// sigue siendo liviano sin importar cuántos Hips tenga ya la venta
+// acumulados de días anteriores. `today` puede venir `null` cuando hoy no
+// hay ninguna jornada en curso ni ningún RNA todavía -- el cliente debe
+// tratar eso como "sin novedades", nunca como error.
+router.get("/sales/rna-del-dia/today", requireUser, async (req, res) => {
+    const house = req.query.house as string | undefined;
+    const externalSaleId = req.query.externalSaleId as string | undefined;
+
+    if (!house || !externalSaleId) {
+          res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+          return;
+    }
+
+    const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+    if (!sale) {
+          res.json({ saleName: null, today: null });
+          return;
+    }
+
+    const today = await getRnaDelDiaToday(sale.id, new Date());
+    res.json({ saleName: sale.name, today });
 });
