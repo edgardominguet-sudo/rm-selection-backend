@@ -52,6 +52,18 @@ import { config } from "./config";
  * ya existe para Saratoga, vía POST /sales) o se sube un CSV nuevo con
  * columnas de foto/video, esa venta empieza a beneficiarse de este barrido
  * (o del CSV) sin ningún cambio de código.
+ *
+ * ANÁLISIS AUTOMÁTICO DE FOTOS, DESACTIVABLE POR VENTA (2026-09-16, ver
+ * `Sale.autoAiAnalysisEnabled` en schema.prisma) — la sincronización de
+ * Media de este archivo (mediaJson) NUNCA se apaga: lo único que
+ * `autoAiAnalysisEnabled=false` corta es que los Hips de esa venta entren
+ * a `photoWorkItems` más abajo, es decir, cero llamadas a
+ * `autoAnalyzeNewCatalogPhotoIfNeeded` (y por lo tanto cero crédito de
+ * Anthropic) para esa venta puntual, hasta que se reactive. Análisis
+ * MANUAL ("Analizar" en la app → POST /hips/:hipId/analysis →
+ * rankingService.analyzeHipOnDemand) es un camino de código totalmente
+ * distinto que nunca pasa por este archivo — no se ve afectado por este
+ * campo bajo ninguna circunstancia.
  */
 
 /** Resumen de una venta puntual dentro de una corrida — lo que se guarda en MediaSweepRun.detailsJson. */
@@ -83,6 +95,20 @@ export interface MediaSweepSaleDetail {
    * barrido, y ahí sí puede tratarse de un problema de nuestro lado.
    */
   hipsWithoutMediaYet: number;
+  /**
+   * AGREGADO 2026-09-16 (a pedido explícito de Ramon: "DESACTIVAR ANÁLISIS
+   * IA AUTOMÁTICO PARA ESTA VENTA", por consumo excesivo de saldo) — true
+   * cuando `Sale.autoAiAnalysisEnabled` era `false` en el momento de esta
+   * corrida, así que NINGÚN Hip de esta venta se encoló para clasificación/
+   * análisis automático (ver `autoPhotoAnalysis` más abajo, que queda en
+   * cero a propósito, no porque no hubiera fotos pendientes). Media
+   * (mediaJson) se sigue sincronizando exactamente igual — este campo es
+   * solo para que quien lea MediaSweepRun.detailsJson entienda de un
+   * vistazo POR QUÉ el conteo de análisis quedó en cero, sin tener que
+   * adivinar entre "venta sin fotos nuevas" y "análisis automático
+   * desactivado a propósito para esta venta".
+   */
+  autoAiAnalysisDisabledForSale: boolean;
   /**
    * Resultado del análisis automático de fotos (autoPhotoAnalysis.ts)
    * para ESTA venta en ESTA corrida — pedido explícito de Ramon
@@ -369,6 +395,18 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             !opts.hipNumberRange ||
             (Number.isFinite(hipNumberAsInt) && hipNumberAsInt >= opts.hipNumberRange.min && hipNumberAsInt <= opts.hipNumberRange.max);
 
+          // GATE 2026-09-16 (pedido explícito de Ramon, ver comentario largo
+          // de `Sale.autoAiAnalysisEnabled` en schema.prisma): si esta venta
+          // tiene el análisis automático desactivado, el Hip NUNCA se agrega
+          // a `photoWorkItems` — cero llamadas a Anthropic para esta venta,
+          // sea cual sea `hipNumberRange` o cuántas fotos publicadas tenga.
+          // La sincronización de `mediaJson` de arriba (líneas 268-284) ya
+          // corrió ANTES de este punto y no se ve afectada en nada: Media
+          // sigue actualizándose normal, solo se corta la cola de análisis.
+          if (!sale.autoAiAnalysisEnabled) {
+            continue;
+          }
+
           if (withinRequestedRange && freshMedia.some((m) => m.kind === "photo" && !!m.url)) {
             photoWorkItems.push({
               hip: {
@@ -476,6 +514,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
           photosFound,
           videosFound,
           hipsWithoutMediaYet,
+          autoAiAnalysisDisabledForSale: !sale.autoAiAnalysisEnabled,
           autoPhotoAnalysis,
         });
 
@@ -498,6 +537,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             photosFound: 0,
             videosFound: 0,
             hipsWithoutMediaYet: 0,
+            autoAiAnalysisDisabledForSale: !sale.autoAiAnalysisEnabled,
             autoPhotoAnalysis: {
               photoHipsEvaluated: 0,
               applied: 0,

@@ -271,6 +271,30 @@ model Sale {
   // verificarla a simple vista desde /api/v1/alerts o el panel.
   announcementUrl    String?
   catalogAccess      SaleCatalogAccess @default(FULL)
+  // DESACTIVAR ANÁLISIS IA AUTOMÁTICO PARA ESTA VENTA (2026-09-16, a pedido
+  // explícito de Ramon: "consumo excesivo de saldo/créditos" durante una
+  // venta puntual en curso). Acota EXCLUSIVAMENTE el bloque de análisis
+  // automático de fotos dentro de runNightlyMediaSweep
+  // (mediaSweepService.ts — el único punto del código que llama a
+  // `autoAnalyzeNewCatalogPhotoIfNeeded`, confirmado por búsqueda completa
+  // del repo) — tanto en su disparo del cron de las 3am como en el
+  // disparo manual de diagnóstico (POST /sales/:saleId/media-sweep, ver
+  // routes.ts): con este campo en `false`, ese barrido sigue
+  // sincronizando `Hip.mediaJson` exactamente igual (fotos/video se
+  // siguen descargando y guardando sin ningún cambio), pero ningún Hip de
+  // esta venta se encola para clasificación/análisis automático — cero
+  // llamadas a Anthropic, cero crédito consumido, sin tocar ni el barrido
+  // de Media en sí ni `MediaSweepRun`.
+  // NO afecta en NADA al análisis MANUAL: el botón "Analizar"
+  // (POST /hips/:hipId/analysis → rankingService.analyzeHipOnDemand) es
+  // un camino de código completamente aparte que nunca consulta este
+  // campo — sigue disponible y funcionando exactamente igual, foto por
+  // foto, a pedido expreso del usuario, sea cual sea el valor acá.
+  // `@default(true)` a propósito: el análisis automático sigue siendo el
+  // comportamiento normal por defecto para cualquier venta nueva o
+  // existente — este campo NUNCA se apaga solo, hay que desactivarlo
+  // explícitamente venta por venta (ver PATCH /sales/:saleId/auto-ai-analysis).
+  autoAiAnalysisEnabled Boolean @default(true)
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 

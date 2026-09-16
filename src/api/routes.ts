@@ -1488,6 +1488,46 @@ router.get("/media-sweep/runs", requireUser, async (req, res) => {
   res.json(runs);
 });
 
+// MARK: - Análisis IA automático por venta, encendido/apagado (2026-09-16,
+// a pedido explícito de Ramon: "DESACTIVAR ANÁLISIS IA AUTOMÁTICO PARA
+// ESTA VENTA" por consumo excesivo de saldo/créditos). Ver el comentario
+// largo de `Sale.autoAiAnalysisEnabled` en schema.prisma y el de
+// mediaSweepService.ts (el único lugar que lo consulta) para el alcance
+// exacto — en una frase: apaga SOLO la cola de clasificación/análisis
+// automático de fotos de esta venta dentro del barrido de Media (cron de
+// las 3am + el endpoint manual de diagnóstico de arriba); Media
+// (fotos/video) y el botón "Analizar" manual siguen funcionando exactamente
+// igual, sin ningún cambio, prendido o apagado este campo.
+//
+// GET primero, para poder confirmar el estado actual de una venta sin
+// tener que adivinar ni leer la base de datos a mano.
+router.get("/sales/:saleId/auto-ai-analysis", requireUser, async (req, res) => {
+  const { saleId } = req.params;
+  const sale = await db.sale.findUnique({ where: { id: saleId }, select: { id: true, name: true, autoAiAnalysisEnabled: true } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  res.json({ saleId: sale.id, saleName: sale.name, autoAiAnalysisEnabled: sale.autoAiAnalysisEnabled });
+});
+
+router.patch("/sales/:saleId/auto-ai-analysis", requireUser, async (req, res) => {
+  const { saleId } = req.params;
+  const { enabled } = req.body as { enabled?: unknown };
+  if (typeof enabled !== "boolean") {
+    res.status(400).json({ error: 'Body debe incluir "enabled": true|false.' });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { id: saleId } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  const updated = await db.sale.update({ where: { id: saleId }, data: { autoAiAnalysisEnabled: enabled } });
+  console.log(`[auto-ai-analysis] "${updated.name}": análisis automático de fotos ${enabled ? "REACTIVADO" : "DESACTIVADO"} (Media sigue sin cambios).`);
+  res.json({ saleId: updated.id, saleName: updated.name, autoAiAnalysisEnabled: updated.autoAiAnalysisEnabled });
+});
+
 // BARRIDO DE RECÁLCULO POR CAMBIO DE CABALLO REFERENTE / MOTOR (2026-09-11,
 // ver referenceRecalcService.ts — instrucción 18 de Ramon). A diferencia de
 // /sales/:saleId/media-sweep (una sola venta, responde sincrónico), este
