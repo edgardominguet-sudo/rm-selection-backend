@@ -53,10 +53,20 @@ import { referenceViewHash } from "./referenceCalibration";
  * el comportamiento es EXACTAMENTE el de siempre (todas las ventas, todos
  * los Hip). Independiente de esto, y de forma PERMANENTE (no solo para
  * este pedido puntual): un Hip marcado OUT/Withdrawn por la casa de venta
- * (`Hip.saleResultJson.soldAsCode === "Y"`, ver `field_out` en
+ * (`Hip.saleResultJson.soldAsCode === "OUT"`, ver `field_out` en
  * saleHouses/keeneland.ts) NUNCA se manda a la IA — no tiene sentido
  * gastar cuota recalculando un caballo que ya se retiró de la venta, y
  * esto reduce costo/tiempo de CUALQUIER corrida futura, acotada o no.
+ *
+ * CORRECCIÓN 2026-09-16: `isOut()` comparaba contra `soldAsCode === "Y"` —
+ * el código que `saleHouses/keeneland.ts` usaba ANTES del fix de
+ * 2026-09-15 para "field_out". Ese fix cambió qué guarda `soldAsCode` (para
+ * arreglar el bug real de RNA/precio) pero nunca actualizó esta
+ * comparación, así que esta exclusión quedó rota en silencio desde
+ * entonces (ningún Hip volvía a matchear "Y"). Ahora que
+ * `saleHouses/keeneland.ts` vuelve a guardar el estado OUT/Withdrawn (como
+ * "OUT", para poder distinguirlo de "RNA" y mostrarlo en la UI — a pedido
+ * de Ramon), esta función se actualiza al mismo código.
  */
 
 const MAX_ERROR_SAMPLES_IN_MESSAGE = 20;
@@ -87,7 +97,7 @@ function hipNumberInRange(hipNumber: string, filter?: ReferenceRecalcFilter): bo
 /** `true` si la casa de venta marcó este Hip como retirado (OUT/Withdrawn) — ver comentario grande arriba. Nunca se manda a la IA. */
 function isOut(saleResultJson: unknown): boolean {
   const code = (saleResultJson as { soldAsCode?: string } | null)?.soldAsCode;
-  return code === "Y";
+  return code === "OUT";
 }
 
 export interface ReferenceRecalcSummary {
