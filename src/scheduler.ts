@@ -237,7 +237,7 @@ async function runNightlySyncCycle(): Promise<void> {
     try {
       const summary = await runNightlyMediaSweep({ trigger: "scheduled" });
       console.log(
-        `[nightly-sync][media] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
+        `[nightly-sync][media] runId=${summary.runId} Ventas revisadas: ${summary.salesChecked}, omitidas (sin catálogo en vivo): ${summary.salesSkipped}, pausadas (no son la venta activa): ${summary.salesPausedByActiveSaleFilter}, Hips revisados: ${summary.hipsReviewed}, Hips con Media nueva: ${summary.hipsWithNewMedia}, recursos nuevos: ${summary.resourcesFound}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`
       );
     } catch (err) {
       console.error("[nightly-sync][media] Error en el barrido de Media:", err);

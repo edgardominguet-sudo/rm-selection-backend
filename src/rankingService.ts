@@ -16,6 +16,7 @@ import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
+import { resolveActiveSaleForAutomation } from "./activeSaleService";
 
 /**
  * Fotos de un Hip que puede usar el motor de Análisis IA — Tarea "Análisis
@@ -1103,7 +1104,24 @@ async function flagInconclusiveIfCloseToSale(sale: Sale, now: Date): Promise<voi
  * precio de ventas en curso.
  */
 export async function syncCatalogsForActiveSales(): Promise<void> {
-  const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: "FULL" } });
+  // GATE 2026-09-17 (pedido explícito de Ramon: "BARRIDO AUTOMÁTICO DE
+  // MEDIA SOLO PARA LA VENTA ACTIVA" — la misma regla aplica acá, a la
+  // sincronización de catálogo/precios oficiales, no solo a Media: "no
+  // quiero procesos recorriendo cientos o miles de HIP pertenecientes a
+  // ventas que ya terminaron"). Antes recorría TODAS las ventas
+  // isActive+FULL; ahora se limita a la ÚNICA venta activa por fecha (ver
+  // activeSaleService.ts, mismo cálculo 100% dinámico que usa
+  // mediaSweepService.ts — nunca depende de una bandera manual). Ventas
+  // pausadas conservan su último catálogo/resultado tal cual — no se
+  // pierde nada, simplemente no se vuelve a re-chequear contra la casa de
+  // ventas todas las noches para una venta que ya terminó.
+  const active = await resolveActiveSaleForAutomation();
+  const sales = active ? [active] : [];
+  if (active) {
+    console.log(`[daily-sync] Venta activa determinada por fecha: "${active.name}" (${active.house}/${active.externalSaleId}) — la sincronización de catálogo/precios de esta corrida se limita EXCLUSIVAMENTE a esa venta.`);
+  } else {
+    console.warn("[daily-sync] No se pudo determinar ninguna venta activa por fecha — no hay catálogo que sincronizar en esta corrida.");
+  }
   const now = new Date();
   for (const sale of sales) {
     try {

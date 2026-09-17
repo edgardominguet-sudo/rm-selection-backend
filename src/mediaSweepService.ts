@@ -7,6 +7,7 @@ import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisOutcome } from "./analysis/autoPhotoAnalysis";
 import { runWithConcurrencyLimit } from "./util/concurrencyPool";
 import { config } from "./config";
+import { resolveActiveSaleForAutomation } from "./activeSaleService";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -147,6 +148,15 @@ export interface MediaSweepSummary {
   runId: string;
   salesChecked: number;
   salesSkipped: number;
+  /**
+   * AGREGADO 2026-09-17 (ver activeSaleService.ts) — solo tiene sentido
+   * cuando esta corrida vino sin `saleId` explícito (cron de las 3am o su
+   * recuperación): cuántas otras ventas `isActive=true` + `catalogAccess=
+   * FULL` existían y NO se tocaron en esta corrida porque no eran la
+   * única venta activa por fecha. `0` en una corrida manual con `saleId`
+   * (no aplica) o cuando de verdad no hay ninguna otra venta candidata.
+   */
+  salesPausedByActiveSaleFilter: number;
   hipsReviewed: number;
   hipsWithNewMedia: number;
   resourcesFound: number;
@@ -173,8 +183,14 @@ export function countNewResources(fresh: CatalogMediaItem[], stored: CatalogMedi
  *   diagnóstico). Se persiste tal cual en MediaSweepRun.trigger.
  * @param opts.saleId  Si se pasa, la corrida se acota a ESA sola venta
  *   (usado por el endpoint manual — nunca hace falta barrer todas las
- *   ventas activas para probar una sola). Si se omite, se procesan todas
- *   las ventas activas con catalogAccess=FULL (comportamiento del cron).
+ *   ventas activas para probar una sola; también permite probar/barrer a
+ *   pedido una venta HISTÓRICA que ya no es la activa). Si se omite
+ *   (comportamiento del cron de las 3am, y de su recuperación tras un
+ *   redeploy/restart), YA NO se procesan todas las ventas activas con
+ *   catalogAccess=FULL — desde 2026-09-17 (pedido explícito de Ramon,
+ *   "BARRIDO AUTOMÁTICO DE MEDIA SOLO PARA LA VENTA ACTIVA") se calcula
+ *   la ÚNICA venta activa por fecha (ver activeSaleService.ts) y la
+ *   corrida se limita exclusivamente a ella.
  * @param opts.hipNumberRange  ACOTA EL GASTO DE IA, no la sincronización
  *   de catálogo (2026-09-15, a pedido explícito de Ramon: "trabaja con
  *   los analisis de las fotos lateral dentro del rango establecido...
@@ -223,11 +239,32 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
   const creditHalt: { at: MediaSweepCreditHalt | null } = { at: null };
 
   try {
-    const sales = await db.sale.findMany({
-      where: opts.saleId
-        ? { id: opts.saleId }
-        : { isActive: true, catalogAccess: "FULL" },
-    });
+    // GATE 2026-09-17 (pedido explícito de Ramon: "BARRIDO AUTOMÁTICO DE
+    // MEDIA SOLO PARA LA VENTA ACTIVA") — con `saleId` explícito (endpoint
+    // manual de diagnóstico, ver routes.ts) se sigue pudiendo barrer
+    // CUALQUIER venta puntual, activa o histórica, a pedido — eso es
+    // justamente la vía "manual" que Ramon pidió conservar. Sin `saleId`
+    // (el cron de las 3am, `trigger: "scheduled"`, y su recuperación tras
+    // un redeploy/restart — ver scheduler.ts) SIEMPRE se recalcula la
+    // ÚNICA venta activa por fecha (ver activeSaleService.ts) y la corrida
+    // se limita EXCLUSIVAMENTE a esa venta — nunca "todas las isActive
+    // FULL" como antes. Esto es justo lo que impide que una recuperación
+    // de corrida perdida vuelva a barrer ventas viejas: no hay ningún
+    // camino de código que siga iterando "todas" salvo el manual explícito.
+    let sales: Awaited<ReturnType<typeof db.sale.findMany>> = [];
+    let activeSaleId: string | null = null;
+    if (opts.saleId) {
+      sales = await db.sale.findMany({ where: { id: opts.saleId } });
+    } else {
+      const active = await resolveActiveSaleForAutomation();
+      if (active) {
+        activeSaleId = active.id;
+        sales = [active];
+        console.log(`[media-sweep] Venta activa determinada por fecha: "${active.name}" (${active.house}/${active.externalSaleId}) — esta corrida se limita EXCLUSIVAMENTE a esa venta.`);
+      } else {
+        console.warn("[media-sweep] No se pudo determinar ninguna venta activa por fecha (ninguna isActive+FULL con startDate resuelto) — no hay nada que barrer en esta corrida.");
+      }
+    }
 
     for (const sale of sales) {
       // Si se pidió una venta puntual que no es FULL (ej. MANUAL_CSV, sin
@@ -561,6 +598,15 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       ? 0
       : await db.sale.count({ where: { isActive: true, catalogAccess: { not: "FULL" } } });
 
+    // Ver doc de `salesPausedByActiveSaleFilter` en MediaSweepSummary —
+    // cuenta las demás ventas isActive+FULL que quedaron pausadas por no
+    // ser la venta activa de esta corrida (0 en una corrida manual con
+    // saleId, donde el concepto no aplica).
+    const salesPausedByActiveSaleFilter =
+      opts.saleId || !activeSaleId
+        ? 0
+        : await db.sale.count({ where: { isActive: true, catalogAccess: "FULL", id: { not: activeSaleId } } });
+
     // AGREGADO 2026-09-15: mensaje específico y accionable cuando la corrida
     // se frenó por falta de saldo — a propósito NUNCA se mezcla con
     // `errors` (esos son fallos reales de re-chequeo de catálogo por venta,
@@ -619,6 +665,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       runId: run.id,
       salesChecked,
       salesSkipped,
+      salesPausedByActiveSaleFilter,
       hipsReviewed: hipsReviewedTotal,
       hipsWithNewMedia: hipsWithNewMediaTotal,
       resourcesFound: resourcesFoundTotal,

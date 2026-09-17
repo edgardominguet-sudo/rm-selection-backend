@@ -12,6 +12,7 @@ import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfThe
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
+import { resolveActiveSaleForAutomation } from "../activeSaleService";
 import {
   refreshSingleHipMediaFromLiveSource,
   SingleHipMediaRefreshError,
@@ -1486,6 +1487,29 @@ router.get("/media-sweep/runs", requireUser, async (req, res) => {
     take: limit,
   });
   res.json(runs);
+});
+
+// Transparencia sobre la venta activa por fecha (2026-09-17, ver
+// activeSaleService.ts — "BARRIDO AUTOMÁTICO DE MEDIA SOLO PARA LA VENTA
+// ACTIVA", pedido explícito de Ramon). Devuelve exactamente lo que el
+// cron de las 3am va a calcular la próxima vez que corra, más la lista
+// completa de candidatas (isActive+FULL con startDate resuelto) y las
+// que quedaron pausadas — para poder confirmar de un vistazo, sin leer
+// logs de Railway, cuál es "la única venta activa" en cualquier momento.
+router.get("/sales/active-for-automation", requireUser, async (req, res) => {
+  const active = await resolveActiveSaleForAutomation();
+  const candidates = await db.sale.findMany({
+    where: { isActive: true, catalogAccess: "FULL", startDate: { not: null } },
+    select: { id: true, name: true, house: true, externalSaleId: true, startDate: true, endDate: true, autoAiAnalysisEnabled: true },
+    orderBy: { startDate: "asc" },
+  });
+  res.json({
+    activeSaleId: active?.id ?? null,
+    activeSaleName: active?.name ?? null,
+    activeSaleHouse: active?.house ?? null,
+    candidates,
+    pausedForAutomation: candidates.filter((c) => c.id !== active?.id).map((c) => ({ id: c.id, name: c.name, house: c.house })),
+  });
 });
 
 // MARK: - Análisis IA automático por venta, encendido/apagado (2026-09-16,

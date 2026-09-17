@@ -290,11 +290,16 @@ model Sale {
   // un camino de código completamente aparte que nunca consulta este
   // campo — sigue disponible y funcionando exactamente igual, foto por
   // foto, a pedido expreso del usuario, sea cual sea el valor acá.
-  // `@default(true)` a propósito: el análisis automático sigue siendo el
-  // comportamiento normal por defecto para cualquier venta nueva o
-  // existente — este campo NUNCA se apaga solo, hay que desactivarlo
-  // explícitamente venta por venta (ver PATCH /sales/:saleId/auto-ai-analysis).
-  autoAiAnalysisEnabled Boolean @default(true)
+  // ACTUALIZADO 2026-09-17 (pedido explícito de Ramon: "ANÁLISIS DE IA —
+  // REGLA SEPARADA Y GLOBAL... Los análisis IA quedan 100% MANUALES para
+  // TODAS las ventas", sin excepción, ni siquiera la venta activa de
+  // Media). `@default(false)` desde este momento — ya NO es "apagado caso
+  // por caso", es la política global: ninguna venta nueva arranca con
+  // análisis automático encendido. El campo se conserva (no se borra la
+  // función, ver comentario largo arriba) exclusivamente como interruptor
+  // manual para el día que Ramon pida explícitamente reactivarlo para
+  // alguna venta puntual — nunca se enciende solo.
+  autoAiAnalysisEnabled Boolean @default(false)
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 
