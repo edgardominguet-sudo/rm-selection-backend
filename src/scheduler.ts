@@ -8,6 +8,7 @@ import {
   AnalysisBudget,
   cleanupExpiredRankingSnapshots,
 } from "./rankingService";
+import { resolveActiveSaleForAutomation } from "./activeSaleService";
 import { runSaleDiscovery } from "./saleDiscoveryService";
 import { runNightlyMediaSweep } from "./mediaSweepService";
 import { autoResolvePendingFasigTiptonSaleIds } from "./saleHouses/fasigTiptonIdAutoResolver";
@@ -23,13 +24,15 @@ let isRunning = false;
 /**
  * El scheduler corre en el mismo proceso que la API (un solo servicio en
  * Railway). Cada tick (cada 5 minutos — el intervalo más fino que puede
- * llegar a hacer falta, jornada en curso) recorre las ventas activas; cada
- * una decide por su cuenta (ver rankingService.processSale / pollingPolicy)
- * si le toca chequear catálogo y/o generar-actualizar el ranking del día.
+ * llegar a hacer falta, jornada en curso) procesa ÚNICAMENTE la venta
+ * activa por fecha (ver GATE 2026-09-24 más abajo, activeSaleService.ts):
+ * decide por su cuenta (ver rankingService.processSale / pollingPolicy) si
+ * le toca chequear Calendario de Ventas y/o generar-actualizar el ranking
+ * del día.
  *
- * Las ventas se procesan una por una (no en paralelo) a propósito: evita
- * mandar demasiadas requests simultáneas a la API de Anthropic cuando hay
- * varias jornadas por generar al mismo tiempo.
+ * Se procesa una sola venta por tick a propósito (nunca varias en
+ * paralelo): evita mandar demasiadas requests simultáneas a la API de
+ * Anthropic cuando hay varias jornadas por generar al mismo tiempo.
  */
 export function startScheduler(): void {
   const cronExpression = "*/5 * * * *";
@@ -60,14 +63,29 @@ async function runCycle(): Promise<void> {
 
   try {
     const organizations = await db.organization.findMany({ select: { id: true } });
-    // catalogAccess FULL o MANUAL_CSV — ambas pueden tener Hips cargados
-    // (FULL los trae sola vía API; MANUAL_CSV los recibe por
-    // POST /sales/:saleId/catalog/import) y por lo tanto algo para
-    // analizar/rankear. PENDING_ID (falta ID real) y UNAVAILABLE (sin
-    // ningún camino, ni manual) no tienen nada que sincronizar todavía; se
-    // filtran acá para no contarlas como "procesadas" en SchedulerRun. Ver
-    // también el guard equivalente en rankingService.processSale.
-    const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: { in: ["FULL", "MANUAL_CSV"] } } });
+    // GATE 2026-09-24 (pedido explícito de Ramon en plena venta de Keeneland
+    // September: "ahora solo estoy en la venta de Keeneland, bloquea toda
+    // descarga, conexion, o intento de algo diferente a esta venta. solo
+    // deja una operativa"). Antes este ciclo de 5 min recorría TODAS las
+    // ventas isActive con catalogAccess FULL/MANUAL_CSV -- incluidas
+    // ventas que no son la que Ramon está usando hoy. Eso mantenía vivo,
+    // entre otras cosas, el reintento indefinido de Calendario de Ventas
+    // (syncSaleDays dentro de processSale, más abajo) cada 5 minutos, para
+    // siempre, contra ventas sin scheduleYear/scheduleSlug resuelto (ej.
+    // "Eastern Fall Yearlings"/"Saratoga Fall Mixed": 0 jornadas resueltas
+    // en cada intento, toda la tarde). Ahora usa el mismo cálculo 100%
+    // dinámico por fecha que ya usan syncCatalogsForActiveSales (barrido
+    // nocturno) y mediaSweepService.ts (ver activeSaleService.ts) -- nunca
+    // depende de una bandera manual que alguien tenga que acordarse de
+    // apagar: el día que termine Keeneland September, este mismo cálculo
+    // pasa solo a la próxima venta, sin tocar nada acá.
+    const active = await resolveActiveSaleForAutomation();
+    const sales = active ? [active] : [];
+    if (active) {
+      console.log(`[scheduler] Venta activa determinada por fecha: "${active.name}" (${active.house}/${active.externalSaleId}) -- este ciclo se limita EXCLUSIVAMENTE a esa venta.`);
+    } else {
+      console.warn("[scheduler] No se pudo determinar ninguna venta activa por fecha -- no hay nada que procesar en este ciclo.");
+    }
     for (const sale of sales) {
       try {
         await processSale(sale, organizations, budget);

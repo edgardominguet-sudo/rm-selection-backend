@@ -135,10 +135,33 @@ export async function getRnaDelDia(saleId: string): Promise<RnaDelDiaResult> {
           select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
     });
 
+  // CORRECCIÓN 2026-09-24 (a pedido explícito de Ramon: "la lista de RNA
+  // no salía completa, solo algunos"): esto agrupaba por el INSTANTE
+  // EXACTO de `hip.sessionDate.getTime()`, no por día calendario ET. Todo
+  // el resto de la app (rankingService.ts, sessionDateSaleDays.ts — ver
+  // su comentario "agrupa por día calendario, no por instante exacto" —
+  // y las propias getRnaDelDiaToday/getRnaDelDiaForDay de este mismo
+  // archivo) asume que dos Hips de la MISMA jornada real pueden tener
+  // `sessionDate` con distinto instante exacto (distinta hora/minuto,
+  // incluso distinto milisegundo según cuándo se sincronizó cada uno) y
+  // por eso siempre agrupan/filtran por RANGO de día calendario ET
+  // ([medianoche ET, medianoche ET + 24h)), nunca por igualdad exacta.
+  // Esta función era la única que quedaba agrupando por igualdad exacta
+  // (`Map<number, ...>` con `getTime()` crudo como clave): un Hip cuyo
+  // sessionDate no coincidiera al milisegundo con el resto de su propia
+  // jornada cae en su PROPIO bucket separado, de un solo Hip — "hoy"
+  // termina mostrando solo los Hips que comparten el instante exacto más
+  // común de la jornada, y el resto de esa misma jornada se dispersa en
+  // "Días anteriores" como entradas sueltas (o directamente no cuenta
+  // como "en curso" y desaparece de "Hoy"). Ahora se agrupa por
+  // `startOfCalendarDay(hip.sessionDate)` (mismo helper que ya usa
+  // `isSessionInProgress` más abajo), así todos los Hips de una misma
+  // jornada real caen siempre en el mismo bucket sin importar la hora
+  // exacta de cada uno.
   const byDay = new Map<number, HipRow[]>();
     for (const hip of hips) {
           if (!isRnaResult(hip.saleResultJson)) continue;
-          const key = hip.sessionDate!.getTime();
+          const key = startOfCalendarDay(hip.sessionDate!).getTime();
           const bucket = byDay.get(key);
           if (bucket) bucket.push(hip);
           else byDay.set(key, [hip]);
@@ -152,8 +175,14 @@ export async function getRnaDelDia(saleId: string): Promise<RnaDelDiaResult> {
   // siga en curso ahora mismo es "hoy"; el resto (curse o no) cae en
   // "Días anteriores".
   const sortedDays = [...byDay.entries()].sort((a, b) => b[0] - a[0]);
-    for (const [time, rows] of sortedDays) {
-          const sessionDate = new Date(time);
+    for (const [, rows] of sortedDays) {
+          // `date` mostrada al cliente: el sessionDate REAL de un Hip de ese
+          // bucket (no el instante de medianoche ET usado solo como clave
+          // interna de agrupación) — mismo criterio que ya usan
+          // getRnaDelDiaToday/getRnaDelDiaForDay más abajo
+          // (`rnaRows[0]?.sessionDate`), para que el cliente vea siempre el
+          // mismo tipo de valor sin importar qué endpoint lo devolvió.
+          const sessionDate = rows[0].sessionDate!;
           if (!today && isSessionInProgress(sessionDate, now)) {
                   today = {
 date: sessionDate,
