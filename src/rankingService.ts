@@ -16,7 +16,7 @@ import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
-import { resolveActiveSaleForAutomation } from "./activeSaleService";
+import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "./activeSaleService";
 
 /**
  * Fotos de un Hip que puede usar el motor de Análisis IA — Tarea "Análisis
@@ -361,6 +361,19 @@ export async function ensureSaleDaysPopulated(sale: Sale, client: SaleHouseClien
  * usuario (eso no es "automático en segundo plano", es una acción manual).
  */
 export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } = {}): Promise<void> {
+  // GUARD (2026-09-26, pedido explícito de Ramon, defensa en profundidad):
+  // esta venta ya terminó (ver getSaleLifecycleStatus, activeSaleService.ts)
+  // -- no se sincroniza más contra la casa de ventas. Chequeo propio de esta
+  // función, no solo confiado a que el llamador (resolveActiveSaleForAutomation)
+  // ya la haya excluido -- Ramon pidió explícitamente que cada job valide su
+  // propio estado antes de trabajar. Los datos ya guardados se conservan tal
+  // cual, como historial.
+  const lifecycleStatus = getSaleLifecycleStatus(sale);
+  if (lifecycleStatus === "COMPLETED") {
+    console.log(`[catalog-sync] "${sale.name}" (${sale.house}) ya está COMPLETED -- no se sincroniza más. Datos existentes se conservan como historial.`);
+    return;
+  }
+
   const client = clientFor(sale.house);
 
   // "NEW CATALOG DETECTED" (a pedido, 2026-08-12): se compara la cantidad
@@ -1257,7 +1270,14 @@ export async function ensureSaleDaysForAllFullAccessSales(): Promise<void> {
       startDate: { not: null },
     },
   });
-  for (const sale of sales) {
+  // GUARD (2026-09-26, pedido explícito de Ramon, defensa en profundidad):
+  // esta función a propósito NO usa resolveActiveSaleForAutomation() (barre
+  // TODAS las ventas activas con catálogo, no solo la más próxima -- ver
+  // comentario de arriba), así que necesita su PROPIO chequeo de estado de
+  // ciclo de vida -- una venta COMPLETED no tiene sentido seguir chequeando
+  // contra la casa de ventas para su Calendario, que ya no va a cambiar.
+  const nonCompletedSales = sales.filter((sale) => getSaleLifecycleStatus(sale) !== "COMPLETED");
+  for (const sale of nonCompletedSales) {
     try {
       await ensureSaleDaysPopulated(sale, clientFor(sale.house));
     } catch (err) {
@@ -1342,8 +1362,16 @@ export async function syncLivePricesForActiveSessions(): Promise<LivePriceSyncSu
   const summary: LivePriceSyncSummary = { salesInProgress: 0, hipsUpdated: 0, errors: [] };
   const now = new Date();
   const sales = await db.sale.findMany({ where: { isActive: true, catalogAccess: "FULL" } });
+  // GUARD (2026-09-26, pedido explícito de Ramon, defensa en profundidad):
+  // igual que ensureSaleDaysForAllFullAccessSales, esta función tampoco usa
+  // resolveActiveSaleForAutomation() (puede tocar varias ventas en el mismo
+  // tick -- ver comentario de archivo) -- cinturón y tirantes sobre el
+  // chequeo de "jornada de hoy en curso" que ya hace el loop de abajo: una
+  // venta COMPLETED nunca debería tener una sessionDate "en curso" hoy, pero
+  // se excluye acá también en vez de confiar únicamente en esa otra lógica.
+  const nonCompletedSales = sales.filter((sale) => getSaleLifecycleStatus(sale, now) !== "COMPLETED");
 
-  for (const sale of sales) {
+  for (const sale of nonCompletedSales) {
     const sessionDates = await db.hip.findMany({
       where: { saleId: sale.id, sessionDate: { not: null } },
       distinct: ["sessionDate"],

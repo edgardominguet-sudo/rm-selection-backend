@@ -12,7 +12,7 @@ import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfThe
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
-import { resolveActiveSaleForAutomation } from "../activeSaleService";
+import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "../activeSaleService";
 import {
   refreshSingleHipMediaFromLiveSource,
   SingleHipMediaRefreshError,
@@ -88,6 +88,13 @@ router.get("/sales", async (_req, res) => {
     ...rest,
     endDate: endDate ?? rest.startDate,
     hipCount: _count.hips,
+    // Estado de ciclo de vida (2026-09-26, pedido explícito de Ramon) —
+    // calculado en el momento de responder, nunca guardado (ver
+    // getSaleLifecycleStatus, activeSaleService.ts) — con el endDate REAL
+    // (antes de la coalescencia de arriba) para que el cálculo sea idéntico
+    // al que ya usan los jobs automáticos. No requiere ningún cambio en la
+    // app hoy: aditivo, como el resto de los campos de este endpoint.
+    status: getSaleLifecycleStatus({ startDate: rest.startDate, endDate }),
   }));
   withHipCount.sort((a, b) => {
     if (a.startDate && b.startDate) return a.startDate.getTime() - b.startDate.getTime();
@@ -1414,6 +1421,25 @@ async function handleManualMediaSweep(req: Request, res: Response): Promise<void
     res.status(404).json({ error: "Venta no encontrada." });
     return;
   }
+
+  // GUARD (2026-09-26, pedido explícito de Ramon, defensa en profundidad):
+  // una venta ya COMPLETED (ver getSaleLifecycleStatus, activeSaleService.ts)
+  // no se barre más SIN que alguien lo pida a propósito -- a diferencia del
+  // cron automático (mediaSweepService.ts), esta ruta manual sigue
+  // permitiendo barrer una venta histórica cuando hace falta (ej. recuperar
+  // Media vieja), pero exige `force=true` explícito (query, para el alias
+  // GET, o body, para el POST normal) en vez de dejarlo pasar en silencio.
+  const force = req.query.force === "true" || (req.body as { force?: boolean } | undefined)?.force === true;
+  if (getSaleLifecycleStatus(sale) === "COMPLETED" && !force) {
+    res.status(400).json({
+      error: `"${sale.name}" ya está COMPLETED (venta terminada, tratada como historial) -- no se barre automáticamente. Si necesitás forzar este barrido igual, repetí la petición con ?force=true (GET) o { "force": true } en el body (POST).`,
+    });
+    return;
+  }
+  if (force && getSaleLifecycleStatus(sale) === "COMPLETED") {
+    console.log(`[media-sweep] Override manual: "${sale.name}" ya está COMPLETED pero se fuerza el barrido a pedido explícito de un operador (force=true).`);
+  }
+
   // Rango opcional de Hip (2026-09-15, a pedido explícito de Ramon: "trabaja
   // con los analisis de las fotos lateral dentro del rango establecido...
   // 1976 hasta el Hip 4650") — ver @param opts.hipNumberRange en

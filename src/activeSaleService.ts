@@ -1,5 +1,6 @@
 import { db } from "./db";
 import type { Sale } from "@prisma/client";
+import { startOfCalendarDay } from "./util/easternCalendarDay";
 
 /**
  * VENTA ÚNICA "ACTIVA PARA AUTOMATIZACIÓN" (2026-09-17, a pedido explícito
@@ -55,6 +56,47 @@ import type { Sale } from "@prisma/client";
  * startDate resuelto) — el llamador debe tratarlo como "no hay nada que
  * barrer en esta corrida", nunca como error.
  */
+export type SaleLifecycleStatus = "UPCOMING" | "ACTIVE" | "COMPLETED";
+
+// Mismo margen de retención que RANKING_RETENTION_HOURS_AFTER_SESSION
+// (rankingService.ts) / SESSION_RETENTION_HOURS_AFTER_END
+// (rnaOfTheDayService.ts) — duplicado a propósito, mismo criterio que esos
+// dos: este archivo no importa de rankingService.ts para no crear un ciclo
+// (rankingService.ts YA importa resolveActiveSaleForAutomation desde acá).
+const SALE_COMPLETION_RETENTION_HOURS = 2;
+
+/**
+ * Estado de ciclo de vida de una venta -- UPCOMING (todavía no arrancó),
+ * ACTIVE (en curso), COMPLETED (ya terminó). Puramente derivado de
+ * startDate/endDate, igual que el resto de esta clase -- no es un campo
+ * guardado, así que nunca queda desincronizado. Usa el MISMO criterio de
+ * "fin de jornada" que ya usa sessionExpiresAt en rankingService.ts /
+ * rnaOfTheDayService.ts (fin del día calendario ET del último día de venta,
+ * más el mismo margen de 2h), para que una venta no se declare COMPLETED a
+ * la medianoche exacta de su último día si esa jornada sigue técnicamente
+ * en curso.
+ *
+ * Agregado 2026-09-26 a pedido explícito de Ramon: los jobs automáticos
+ * (catálogo, Media, IA, Ranking, RNA, resultados/scratches) NUNCA deben
+ * seguir trabajando sobre una venta ya terminada, ni siquiera si
+ * accidentalmente queda seleccionada como "la más cercana" -- ver uso en
+ * resolveActiveSaleForAutomation(), syncCatalog(),
+ * ensureSaleDaysForAllFullAccessSales(), syncLivePricesForActiveSessions y
+ * mediaSweepService.ts.
+ */
+export function getSaleLifecycleStatus(
+  sale: { startDate: Date | null; endDate: Date | null },
+  now: Date = new Date()
+): SaleLifecycleStatus {
+  if (!sale.startDate) return "UPCOMING"; // todavía sin fecha -- nunca se considera terminada
+  const end = sale.endDate ?? sale.startDate;
+  const lastDayEnd = new Date(startOfCalendarDay(end).getTime() + 24 * 60 * 60 * 1000);
+  const completionThreshold = new Date(lastDayEnd.getTime() + SALE_COMPLETION_RETENTION_HOURS * 60 * 60 * 1000);
+  if (now >= completionThreshold) return "COMPLETED";
+  if (now < sale.startDate) return "UPCOMING";
+  return "ACTIVE";
+}
+
 export async function resolveActiveSaleForAutomation(): Promise<Sale | null> {
   const candidates = await db.sale.findMany({
     where: { isActive: true, catalogAccess: "FULL", startDate: { not: null } },
@@ -66,6 +108,14 @@ export async function resolveActiveSaleForAutomation(): Promise<Sale | null> {
   let best: Sale | null = null;
   let bestDistance = Infinity;
   for (const sale of candidates) {
+    // EXCLUSIÓN DURA 2026-09-26 (pedido explícito de Ramon, defensa en
+    // profundidad): una venta COMPLETED nunca puede ganar la selección por
+    // distancia, ni siquiera si es la candidata "más cercana" (ej. todas las
+    // demás son futuras muy lejanas, o hay un error de carga de datos en
+    // endDate). En la práctica el cálculo de distancia de abajo casi nunca
+    // elegiría una venta terminada mientras haya una en curso/futura, pero
+    // "casi nunca" no es una garantía -- esto la vuelve imposible.
+    if (getSaleLifecycleStatus(sale, new Date(now)) === "COMPLETED") continue;
     const start = sale.startDate!.getTime();
     const end = (sale.endDate ?? sale.startDate!).getTime();
     let distance: number;
