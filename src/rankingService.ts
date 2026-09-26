@@ -300,6 +300,49 @@ async function syncSaleDaysFromStoredHips(sale: Sale): Promise<void> {
 }
 
 /**
+ * Calendario de Ventas (SaleDay) de una venta con catálogo disponible
+ * (FULL o MANUAL_CSV) — idempotente: solo pega a la fuente (API real vía
+ * syncSaleDays para FULL, Session Date ya importada vía
+ * syncSaleDaysFromStoredHips para MANUAL_CSV) si esta venta todavía no
+ * tiene NINGÚN SaleDay guardado (existingSaleDayCount === 0); si ya tiene
+ * calendario resuelto, es un no-op barato (una sola query de conteo).
+ *
+ * EXTRAÍDO de processSale() (2026-09-26, misma lógica, sin cambio de
+ * comportamiento) para poder llamarse también desde
+ * ensureSaleDaysForAllFullAccessSales() más abajo — a pedido explícito de
+ * Ramon: el Calendario de Ventas debe funcionar "igual que Keeneland" para
+ * cualquier venta con catalogAccess FULL/MANUAL_CSV, incluso ANTES de que
+ * esa venta sea la única "venta activa" por fecha (ver GATE 2026-09-24 y
+ * resolveActiveSaleForAutomation en activeSaleService.ts) — esa
+ * restricción de "una sola venta" es correcta para Media/Análisis IA
+ * (evita golpear de más casas de ventas y gastar de más en Anthropic),
+ * pero el Calendario de Ventas es información pública, barata de traer e
+ * idempotente, y los usuarios navegan el calendario de ventas futuras de
+ * antemano (ej. OBS October mientras Keeneland September sigue siendo la
+ * venta activa).
+ */
+export async function ensureSaleDaysPopulated(sale: Sale, client: SaleHouseClient): Promise<void> {
+  if (sale.catalogAccess !== "FULL" && sale.catalogAccess !== "MANUAL_CSV") return;
+  try {
+    const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
+    if (existingSaleDayCount === 0) {
+      if (sale.catalogAccess === "FULL") {
+        await syncSaleDays(sale, client);
+      } else {
+        // MANUAL_CSV (ej. OBS, o Fasig-Tipton importado a mano sin ID de
+        // API real todavía) — ver syncSaleDaysFromStoredHips arriba: no
+        // hay API que consultar, así que se reintenta en cada corrida
+        // igual que el camino FULL, hasta que algún import CSV traiga
+        // Session Date real. Sigue siendo "ESPERA", nunca inventa.
+        await syncSaleDaysFromStoredHips(sale);
+      }
+    }
+  } catch (err) {
+    console.error(`[scheduler] Error resolviendo Calendario de Ventas de ${sale.name}:`, err);
+  }
+}
+
+/**
  * Sincroniza el catálogo completo de una venta contra la casa de ventas
  * correspondiente y guarda/actualiza cada Hip vía upsertNormalizedHips:
  * datos de catálogo, media, resultado de venta oficial (precio/comprador/
@@ -1182,6 +1225,48 @@ export async function syncCatalogsForActiveSales(): Promise<void> {
 }
 
 /**
+ * Calendario de Ventas (SaleDay) para TODAS las ventas con catálogo
+ * disponible (FULL o MANUAL_CSV) — a propósito NO se limita a la única
+ * "venta activa" por fecha (resolveActiveSaleForAutomation), a diferencia
+ * de syncCatalogsForActiveSales de arriba y de Media/Análisis IA. Pedido
+ * explícito de Ramon (2026-09-26): el Calendario de Ventas debe funcionar
+ * "igual que Keeneland" para cualquier venta con catalogAccess=FULL e
+ * Hips cargados, incluso ANTES de que esa venta sea la más próxima por
+ * fecha — los usuarios navegan el calendario de ventas futuras de
+ * antemano (ej. OBS October mientras Keeneland September sigue en curso).
+ *
+ * Seguro de correr para todas las ventas activas con catálogo porque
+ * ensureSaleDaysPopulated() es barata e idempotente (un solo conteo por
+ * venta; solo pega a la casa de ventas si esa venta todavía no tiene
+ * NINGÚN SaleDay guardado) — no es el mismo costo que re-descargar
+ * catálogo/precios completos o volver a analizar Hips con IA, que sí
+ * siguen restringidos a la venta activa. Esta función NO toca Media, ni
+ * Análisis IA, ni resolveActiveSaleForAutomation, ni el ciclo de 5
+ * minutos — esos siguen exactamente como estaban (GATE 2026-09-24).
+ *
+ * Cada venta va en su propio try/catch (mismo criterio que
+ * syncCatalogsForActiveSales arriba): un fallo puntual (ej. la API de una
+ * casa de ventas caída) nunca debe impedir que se resuelva el calendario
+ * de las demás ventas de esta corrida.
+ */
+export async function ensureSaleDaysForAllFullAccessSales(): Promise<void> {
+  const sales = await db.sale.findMany({
+    where: {
+      isActive: true,
+      catalogAccess: { in: ["FULL", "MANUAL_CSV"] },
+      startDate: { not: null },
+    },
+  });
+  for (const sale of sales) {
+    try {
+      await ensureSaleDaysPopulated(sale, clientFor(sale.house));
+    } catch (err) {
+      console.error(`[sale-days] Error asegurando Calendario de Ventas de "${sale.name}":`, err);
+    }
+  }
+}
+
+/**
  * Precio en vivo (2026-08-17, a pedido explícito del propietario): "lo
  * único que debe ser en tiempo real cada 10 minutos es el precio de venta,
  * en la ventana de Decisiones, mientras dicha venta esté en proceso, única
@@ -1338,25 +1423,10 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
   // arrancar (ver scheduler.ts), cualquier venta que ya tenga catálogo pero
   // todavía no tenga calendario lo resuelve sola en el siguiente redeploy,
   // sin esperar ningún intervalo largo.
-  if (sale.catalogAccess === "FULL" || sale.catalogAccess === "MANUAL_CSV") {
-    try {
-      const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
-      if (existingSaleDayCount === 0) {
-        if (sale.catalogAccess === "FULL") {
-          await syncSaleDays(sale, clientFor(sale.house));
-        } else {
-          // MANUAL_CSV (ej. OBS, o Fasig-Tipton importado a mano sin ID de
-          // API real todavía) — ver syncSaleDaysFromStoredHips arriba: no
-          // hay API que consultar, así que se reintenta en cada ciclo del
-          // scheduler igual que el camino FULL, hasta que algún import CSV
-          // traiga Session Date real. Sigue siendo "ESPERA", nunca inventa.
-          await syncSaleDaysFromStoredHips(sale);
-        }
-      }
-    } catch (err) {
-      console.error(`[scheduler] Error resolviendo Calendario de Ventas de ${sale.name}:`, err);
-    }
-  }
+  // Lógica extraída a ensureSaleDaysPopulated() (2026-09-26, ver ese
+  // comentario más arriba) — mismo comportamiento exacto, ahora también
+  // reutilizable desde ensureSaleDaysForAllFullAccessSales().
+  await ensureSaleDaysPopulated(sale, clientFor(sale.house));
 
   const leadMs = config.rankingLeadHours * 60 * 60 * 1000;
   const sessionDates = await db.hip.findMany({

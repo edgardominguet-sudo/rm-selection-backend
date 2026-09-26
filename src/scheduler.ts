@@ -4,6 +4,7 @@ import { config } from "./config";
 import {
   processSale,
   syncCatalogsForActiveSales,
+  ensureSaleDaysForAllFullAccessSales,
   syncLivePricesForActiveSessions,
   AnalysisBudget,
   cleanupExpiredRankingSnapshots,
@@ -47,6 +48,18 @@ export function startScheduler(): void {
   // cron — así un redeploy no deja a la app sin datos frescos hasta el
   // próximo múltiplo de 5 minutos.
   void runCycle();
+
+  // CORRECCIÓN 2026-09-26 (a pedido explícito de Ramon: el Calendario de
+  // Ventas debe funcionar "igual que Keeneland" para cualquier venta FULL/
+  // MANUAL_CSV, incluso ANTES de que sea la única "venta activa" por
+  // fecha — ver ensureSaleDaysForAllFullAccessSales en rankingService.ts).
+  // Mismo criterio que el runCycle() inmediato de arriba: una venta recién
+  // activada (ej. OBS October) no debe esperar hasta el job nocturno de
+  // las 3am (más abajo) para tener su calendario disponible — corre una
+  // vez ya mismo al arrancar el servidor, además de su corrida nocturna
+  // regular. No interfiere con el ciclo de 5 min de arriba: no toca
+  // resolveActiveSaleForAutomation, Media ni Análisis IA.
+  void ensureSaleDaysForAllFullAccessSales();
 }
 
 async function runCycle(): Promise<void> {
@@ -250,6 +263,21 @@ async function runNightlySyncCycle(): Promise<void> {
       console.log("[nightly-sync][catalog] Sincronización de catálogo/precios completa.");
     } catch (err) {
       console.error("[nightly-sync][catalog] Error sincronizando catálogos/precios:", err);
+    }
+
+    try {
+      // CORRECCIÓN 2026-09-26 (a pedido explícito de Ramon): a diferencia
+      // de syncCatalogsForActiveSales arriba (restringida a la única
+      // "venta activa" por fecha), el Calendario de Ventas debe quedar
+      // resuelto para TODA venta FULL/MANUAL_CSV — ver
+      // ensureSaleDaysForAllFullAccessSales en rankingService.ts. Va en su
+      // propio try/catch, como el resto de los pasos de este job: un
+      // fallo acá nunca debe impedir que corra el barrido de Media de
+      // abajo.
+      await ensureSaleDaysForAllFullAccessSales();
+      console.log("[nightly-sync][sale-days] Calendario de Ventas asegurado para toda venta activa con catálogo.");
+    } catch (err) {
+      console.error("[nightly-sync][sale-days] Error asegurando Calendario de Ventas:", err);
     }
 
     try {
