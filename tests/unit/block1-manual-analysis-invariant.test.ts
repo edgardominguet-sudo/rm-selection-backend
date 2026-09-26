@@ -60,7 +60,14 @@ describe("Block 1 — el análisis manual (POST /hips/:hipId/analysis) siempre d
   test("analyzeHipOnDemand nunca fabrica un resultado cuando no hay foto — lanza NoPhotosError en vez de inventar un score", () => {
     const analyzeFnStart = rankingServiceSrc.indexOf("export async function analyzeHipOnDemand");
     expect(analyzeFnStart).toBeGreaterThanOrEqual(0);
-    const fnSrc = rankingServiceSrc.slice(analyzeFnStart, analyzeFnStart + 4000);
+    // Cuerpo COMPLETO de la función (hasta la siguiente declaración
+    // top-level), no una ventana fija de caracteres: una ventana fija se
+    // rompe en falso apenas alguien agrega un comentario largo al inicio
+    // de la función (pasó el 2026-09-26 con el modo lateral única).
+    const nextTopLevel = rankingServiceSrc.slice(analyzeFnStart + 1).search(/\n(export |async function |function )/);
+    const fnSrc = nextTopLevel === -1
+      ? rankingServiceSrc.slice(analyzeFnStart)
+      : rankingServiceSrc.slice(analyzeFnStart, analyzeFnStart + 1 + nextTopLevel);
     expect(fnSrc).toMatch(/throw new NoPhotosError/);
   });
 });
