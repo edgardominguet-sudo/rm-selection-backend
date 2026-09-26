@@ -71,7 +71,33 @@ export class OBSDiscoveryClient implements SaleDiscoveryClient {
       // publicación del blog como aproximación (podría estar publicado
       // meses antes de la venta, o ser un post posterior sobre resultados).
       const description = extractTag(itemXml, "description") ?? "";
-      const range = findDateRange(stripHtmlTags(title)) ?? findDateRange(stripHtmlTags(description));
+      let range = findDateRange(stripHtmlTags(title)) ?? findDateRange(stripHtmlTags(description));
+
+      if (!range) {
+        // ULTIMO RECURSO (2026-09-26, causa raiz real de "OBS October no
+        // aparece" -- parte 2, descubierta al correr la prueba manual
+        // controlada de discovery): el <description> que entrega el feed
+        // RSS de WordPress viene TRUNCADO por WordPress mismo justo antes
+        // de que aparezca el rango de dias real (ej. el texto real termina
+        // en "...The two-day sale is set for Tuesday and Wednesday,&#8230;"
+        // -- corta ahi, nunca llegan los numeros "Oct. 6-7"). Ni el titulo
+        // ni la descripcion del feed traen la fecha completa para este
+        // formato de anuncio. Como ultimo recurso, se trae la pagina
+        // publica completa del anuncio (el mismo <link> del item -- HTML
+        // estatico servido por el propio WordPress, sin necesitar
+        // JavaScript, verificado) y se busca la fecha DENTRO del cuerpo
+        // real del articulo (contenedor "entry-content", acotado hasta el
+        // primer marcador de cierre conocido o un tope de seguridad) --
+        // nunca en la pagina entera, porque el HTML completo trae antes
+        // del cuerpo la fecha de PUBLICACION del post (verificado: aparece
+        // antes de "entry-content" en el HTML) que un scan sin acotar
+        // agarraria por error en vez de la fecha real de la venta. Se
+        // acepta esta unica llamada extra por anuncio -- el descubrimiento
+        // corre con poca frecuencia (ver saleDiscoveryService.ts) y solo
+        // llega hasta aca cuando titulo+descripcion no alcanzaron.
+        range = await findDateRangeFromAnnouncementPage(link.trim());
+      }
+
       if (!range) continue;
       const startDate = range.start;
 
@@ -91,6 +117,51 @@ export class OBSDiscoveryClient implements SaleDiscoveryClient {
 
     return results;
   }
+}
+
+/**
+ * Ultimo recurso cuando ni el titulo ni la descripcion del feed RSS traen
+ * una fecha parseable (ver comentario mas arriba, 2026-09-26): trae la
+ * pagina publica del anuncio y busca la fecha dentro del cuerpo real del
+ * articulo, nunca en la pagina entera. Mismo criterio de "nunca inventar
+ * una fecha" que el resto del archivo: cualquier fallo (red, marcador de
+ * contenido no encontrado, sin match) devuelve null y el llamador descarta
+ * el anuncio, nunca aproxima con la fecha de publicacion del post.
+ */
+async function findDateRangeFromAnnouncementPage(url: string): Promise<{ start: Date; end: Date } | null> {
+  let html: string;
+  try {
+    const response = await fetch(url, { headers: { Accept: "text/html" } });
+    if (!response.ok) return null;
+    html = await response.text();
+  } catch {
+    return null;
+  }
+
+  // "entry-content" es el contenedor estandar de WordPress para el cuerpo
+  // real de un post (verificado en el HTML real de obssales.com, incluye
+  // itemprop="mainEntityOfPage") -- todo lo que viene ANTES (header, menu,
+  // metadata del post incluida su fecha de PUBLICACION) queda afuera del
+  // rango buscado a proposito.
+  const startIdx = html.indexOf("entry-content");
+  if (startIdx < 0) return null;
+
+  // Cortar en el primer marcador de "fin del cuerpo del post" que aparezca
+  // (tags de WordPress, compartir en redes, comentarios, posts
+  // relacionados) para no arrastrar fechas de contenido no relacionado que
+  // venga despues en la misma pagina. Si el tema no trae ninguno de estos
+  // marcadores, un tope de longitud fijo cumple la misma funcion de forma
+  // segura -- nunca se escanea la pagina completa.
+  const endMarkers = ["entry-footer", "post-tags", "sharedaddy", "comments-area", "jp-relatedposts", "related-posts"];
+  const MAX_BODY_LENGTH = 8000;
+  let endIdx = Math.min(html.length, startIdx + MAX_BODY_LENGTH);
+  for (const marker of endMarkers) {
+    const idx = html.indexOf(marker, startIdx);
+    if (idx > startIdx && idx < endIdx) endIdx = idx;
+  }
+
+  const body = stripHtmlTags(html.slice(startIdx, endIdx));
+  return findDateRange(body);
 }
 
 function extractTag(xml: string, tag: string): string | null {
