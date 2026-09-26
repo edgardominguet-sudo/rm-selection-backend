@@ -508,7 +508,35 @@ export async function analyzeHipOnDemand(
   // Análisis IA (2026-08-13): SOLO las fotos que el usuario tomó desde la
   // pantalla Análisis (IA) de este Hip — nunca el catálogo (hip.mediaJson)
   // ni Media general. Ver resolveAIAnalysisMedia.
-  const media = await resolveAIAnalysisMedia(hip.id, organizationId);
+  const rawMedia = await resolveAIAnalysisMedia(hip.id, organizationId);
+  // MODO LATERAL ÚNICA (2026-09-26, decisión explícita de Ramon --
+  // condiciones 1-3: "Solo la lateral debe participar en los nuevos
+  // análisis IA", "el score debe calcularse exclusivamente a partir de
+  // esa fotografía", "las otras dos vistas deben permanecer inactivas y
+  // no consumir recursos"). Espejo EXACTO del flag
+  // rmSingleLateralAnalysisMode del cliente iOS (HipDetailView.swift) --
+  // se filtra acá, antes de cualquier otra cosa, para que FRONTAL y
+  // POSTERIOR queden completamente congeladas: ninguna foto de esas
+  // vistas vuelve a pasar por extractLandmarksFromPhoto (no gasta cuota
+  // de Anthropic -- condición 3) y ninguna fila NUEVA de AnalysisResult
+  // (ver tx.analysisResult.create más abajo -- CADA análisis crea una
+  // fila nueva, versionada; el historial de filas viejas con 3 vistas NO
+  // se toca ni se borra) vuelve a promediar un score frontal/posterior
+  // heredado, aunque ese Hip tuviera análisis histórico de 3 vistas --
+  // se recalcula como "sin foto válida" para esas 2 vistas, tal como
+  // exige `dirtyViews`/`groupAIAnalysisMediaByView` más abajo al ya no
+  // encontrarlas en este array. Preserva 100% los datos/puntajes
+  // originales (condición expresa de Ramon): nada se sobreescribe, solo
+  // deja de arrastrarse hacia adelante. Auditoría 2026-09-26: de 1666
+  // Hips con análisis vigente, apenas 2 tenían un score influido por
+  // frontal/posterior antes de este cambio -- alcance mínimo, sin
+  // impacto masivo. Para reactivar las 3 vistas en una futura versión:
+  // volver este flag a false ACÁ y el mismo flag en el cliente -- no
+  // hace falta ningún otro cambio ("no reconstrucción innecesaria").
+  const RM_SINGLE_LATERAL_ANALYSIS_MODE = true;
+  const media = RM_SINGLE_LATERAL_ANALYSIS_MODE
+    ? rawMedia.filter((m) => m.conformationView === "lateral")
+    : rawMedia;
   if (media.length === 0) {
     throw new NoPhotosError(
       "Todavía no hay ninguna foto tomada desde Análisis (IA) para este Hip."
