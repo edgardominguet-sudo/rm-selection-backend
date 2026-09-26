@@ -38,20 +38,79 @@ export function findFirstDateRange(plainText: string): Date | null {
  * Y" para ninguna venta que el servidor descubra sola. Mismo criterio de
  * "nunca inventar": si no hay rango legible, devuelve null.
  */
-export function findDateRange(plainText: string): { start: Date; end: Date } | null {
-  const regex = /([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?,?\s+(\d{4})/;
-  const match = regex.exec(plainText);
-  if (!match) return null;
-  const monthIndex = MONTHS[match[1].toLowerCase()];
-  const startDay = parseInt(match[2], 10);
-  const endDay = match[3] ? parseInt(match[3], 10) : startDay;
-  const year = parseInt(match[4], 10);
+function buildDateRange(monthStr: string, startDayStr: string, endDayStr: string | undefined, yearStr: string): { start: Date; end: Date } | null {
+  const monthIndex = MONTHS[monthStr.toLowerCase()];
+  const startDay = parseInt(startDayStr, 10);
+  const endDay = endDayStr ? parseInt(endDayStr, 10) : startDay;
+  const year = parseInt(yearStr, 10);
   if (monthIndex === undefined || isNaN(startDay) || isNaN(year)) return null;
   // Mediodía hora del este de EE.UU. (evita corrimientos de día por huso
   // horario) — mismo criterio que el resto del backend.
   const start = new Date(Date.UTC(year, monthIndex, startDay, 16, 0, 0));
   const end = new Date(Date.UTC(year, monthIndex, isNaN(endDay) ? startDay : endDay, 16, 0, 0));
   return { start, end };
+}
+
+/**
+ * Año de 4 dígitos (20xx) más CERCANO (antes o después, el que quede a
+ * menos caracteres de distancia) a la posición de un fragmento "Mes
+ * Día[-Día]" ya encontrado en el mismo texto — usado por el camino de
+ * respaldo de abajo. Nunca inventa el año: si no hay ningún 20xx en todo
+ * el texto, no hay nada que emparejar.
+ */
+function nearestYear(text: string, matchIndex: number, matchLength: number): number | null {
+  const yearRegex = /\b(20\d{2})\b/g;
+  let best: { year: number; distance: number } | null = null;
+  let yearMatch: RegExpExecArray | null;
+  while ((yearMatch = yearRegex.exec(text)) !== null) {
+    const yearPos = yearMatch.index;
+    const distance =
+      yearPos < matchIndex ? matchIndex - (yearPos + yearMatch[0].length) : yearPos - (matchIndex + matchLength);
+    if (!best || distance < best.distance) {
+      best = { year: parseInt(yearMatch[1], 10), distance };
+    }
+  }
+  return best ? best.year : null;
+}
+
+export function findDateRange(plainText: string): { start: Date; end: Date } | null {
+  // Camino principal: "Mes Día[-Día], Año" contiguo (ej. "Sept. 14 - 26,
+  // 2026") — el más confiable, sin ambigüedad de a qué año pertenece la
+  // fecha. Se prueba primero SIEMPRE; el camino de respaldo de abajo nunca
+  // cambia un resultado que este ya resuelve.
+  const strict = /([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?,?\s+(\d{4})/;
+  const strictMatch = strict.exec(plainText);
+  if (strictMatch) {
+    return buildDateRange(strictMatch[1], strictMatch[2], strictMatch[3], strictMatch[4]);
+  }
+
+  // Camino de respaldo (2026-09-26, causa raíz real de "OBS October no
+  // aparece"): el anuncio de OBS trae el rango de días SIN el año pegado
+  // ("...2026 October Yearling Sale... two-day sale is set for Tuesday and
+  // Wednesday, Oct. 6-7. Supplemental entries...") — el año queda en otra
+  // oración del mismo texto, no inmediatamente después del rango de días,
+  // así que el patrón estricto de arriba nunca matchea y el anuncio se
+  // descartaba en silencio (nunca daba error, simplemente `found: 0` para
+  // OBS todos los días). Acorde con el criterio de "nunca inventar una
+  // fecha" (ver comentario de archivo): busca "Mes Día[-Día]" SIN año
+  // pegado, y lo empareja con el año de 4 dígitos (20xx) más CERCANO en
+  // ese mismo texto — nunca con "el primero que aparezca" a secas, para no
+  // agarrar por error un año de otra oración sin relación (ej. el año de
+  // nacimiento de un graduado mencionado en el mismo párrafo). Recorre
+  // TODOS los matches de "palabra + número" del texto (no solo el
+  // primero) hasta encontrar uno cuya palabra sea realmente un mes válido,
+  // para no trabarse con un falso positivo tipo "Company's 27" antes de
+  // llegar al mes real.
+  const loose = /([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?\b/g;
+  let looseMatch: RegExpExecArray | null;
+  while ((looseMatch = loose.exec(plainText)) !== null) {
+    if (MONTHS[looseMatch[1].toLowerCase()] === undefined) continue;
+    const year = nearestYear(plainText, looseMatch.index, looseMatch[0].length);
+    if (year === null) continue;
+    const range = buildDateRange(looseMatch[1], looseMatch[2], looseMatch[3], String(year));
+    if (range) return range;
+  }
+  return null;
 }
 
 export function stripHtmlTags(html: string): string {
