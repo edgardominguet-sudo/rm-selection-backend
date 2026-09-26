@@ -70,7 +70,6 @@ interface RawHip {
     is_hip_out?: boolean;
     is_hip_sold?: boolean;
     is_rna?: boolean;
-    is_bt?: boolean;
   } | null;
 }
 
@@ -108,16 +107,20 @@ function buildSaleResult(entry: RawHip): SaleResultData | undefined {
   const buyerName = entry.buyer_name?.trim();
   const isOut = dp?.is_hip_out === true || entry.in_out_status === "O";
   const isRna = dp?.is_rna === true;
-  // "Bought back" (BT): el propio consignatario recompra su Hip en la
-  // subasta -- en la práctica, el mismo resultado que un RNA (no se vendió
-  // a un tercero). classifyResultCode no distingue un código "BT" aparte,
-  // así que se mapea al mismo balde que RNA en vez de perderlo en "OTHER".
-  const isBoughtBack = dp?.is_bt === true;
+  // NOTA (2026-09-26): el catálogo de OBS también trae un campo `is_bt`
+  // ("is_bt_y_na") -- descartado a propósito acá. Verificado contra los
+  // 378 Hips reales de OBS October ANTES de que la venta ocurra: 15 Hips
+  // ya traen is_bt=true mientras los 378 siguen "is_hip_not_through_ring_
+  // yet=true" (ninguno pasó por el ring, ninguno vendido/RNA/retirado
+  // todavía) -- así que `is_bt` NO puede significar "bought back"
+  // (resultado de venta), es un dato de catálogo previo a la subasta cuyo
+  // significado real no está confirmado. Mismo criterio de "nunca
+  // inventar" que el resto del backend: se ignora para el resultado de
+  // venta en vez de adivinarle un significado.
 
   let purchaser: string | undefined;
   if (isOut) purchaser = "OUT";
   else if (isRna) purchaser = "RNA";
-  else if (isBoughtBack) purchaser = "RNA";
   else if (buyerName) purchaser = buyerName;
 
   const priceRaw = entry.hammer_price != null ? String(entry.hammer_price) : undefined;
