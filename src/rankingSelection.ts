@@ -1,58 +1,78 @@
-// Ranking del Día — reglas de SELECCIÓN y ORDEN (2026-09-26, pedido
-// explícito de Ramon: "TOP 10 REAL BASADO EXCLUSIVAMENTE EN ANÁLISIS IA").
+// Ranking del Día — FUENTE ÚNICA DE VERDAD (2026-09-26, decisiones
+// confirmadas por Ramon: "TOP 10 REAL BASADO EXCLUSIVAMENTE EN ANÁLISIS
+// IA" + "DECISIONES CONFIRMADAS – RANKING DEL DÍA").
 //
-// Módulo puro, sin base de datos: recibe los Hips de UNA jornada de UNA
-// venta con su análisis vigente y devuelve el Top a guardar. Es la única
-// fuente de verdad de qué entra al ranking y en qué orden — la usa
-// rebuildRankingSnapshot (rankingService.ts), que es el único lugar que
-// escribe el RankingSnapshot que lee GET /ranking. Separado en su propio
-// archivo para poder probarlo con tests unitarios sin Postgres.
+// Todo lo que decide el Ranking del Día vive acá y solo acá:
+//   - score vigente y estado de análisis válido .... rankingScoreFromAnalysis
+//   - venta y fecha correspondientes ............... selectRankingTop (scope)
+//                                                    + rankingGenerationAllowed
+//   - orden y tamaño ............................... selectRankingTop
+// rankingService.ts (rebuildRankingSnapshot / processSale) solo lee de la
+// base y guarda lo que estas funciones devuelven. Módulo puro, sin base de
+// datos, para poder probar cada regla con tests unitarios.
 //
 // Reglas:
-//   1) Solo entra un Hip con un análisis de IA REALMENTE completado:
-//      source = AI (nunca un puntaje cargado a mano), con la vista que
-//      evalúa el método vigente marcada como disponible por el propio
-//      motor (landmarksJson.<vista>.available === true) y un score
-//      numérico real en (0, 10]. Pendiente, fallido, incompleto, sin
-//      vista válida o score 0 => no entra. Nunca se completa con valores
-//      provisionales, estimados, heredados ni por defecto.
+//   1) Solo entra un Hip con un análisis de IA VÁLIDO y COMPLETADO, y
+//      siempre el VIGENTE (CurrentHipAnalysis): source = AI (nunca un
+//      puntaje manual), con la vista que evalúa el método vigente marcada
+//      como disponible por el propio motor (landmarksJson.<vista>.available
+//      === true) y un score numérico real en (0, 10]. Sin análisis,
+//      pendiente, fallido, incompleto o score 0 => no entra. Nunca scores
+//      inventados, provisionales ni históricos ya reemplazados: el ranking
+//      se recalcula de cero en cada corrida (no hay "ranking congelado").
 //   2) El score es el MISMO que el usuario ve en la ficha del Hip: en modo
-//      "solo lateral" es el promedio del bloque lateral (igual que
-//      `viewAverage(.lateral)` en HipDetailView.swift), nunca un promedio
-//      con frontal/posterior viejos. Con el modo apagado, overallScore.
-//   3) Orden: score de mayor a menor. Solo si dos scores son EXACTAMENTE
-//      iguales se desempata por quién completó su análisis primero
-//      (analyzedAt) y, como último recurso, por id interno — criterios
-//      neutros que nunca miran favoritos, precio, pedigree ni número de
-//      Hip, y hacen que el orden sea siempre el mismo con los mismos datos.
-//   4) Se corta en RANKING_TOP_SIZE. Si hay menos Hips válidos, se
-//      devuelven menos — nunca se rellena.
+//      "solo lateral" el promedio del bloque lateral (igual que
+//      `viewAverage(.lateral)` en HipDetailView.swift).
+//   3) Orden: score de mayor a menor. Empate EXACTO: número de Hip de
+//      menor a mayor (decisión de Ramon), determinista y permanente.
+//   4) Máximo RANKING_TOP_SIZE (10). Con menos Hips válidos se muestran
+//      menos — nunca se rellena.
+//   5) Solo Hips de LA venta y LA jornada (día calendario ET) del ranking.
+//      Un ranking solo se genera para la venta activa, dentro de su ventana
+//      (desde RANKING_LEAD_HOURS antes de la jornada hasta 2h después de
+//      terminado ese día) y nunca para una venta terminada.
 import { blockAverages, classify, ConformationScores } from "./analysis/conformationScores";
 import { RM_SINGLE_LATERAL_ANALYSIS_MODE } from "./analysis/analysisMode";
 
 /** Tamaño máximo del Ranking del Día — regla de producto fija (no configurable por variable de entorno). */
 export const RANKING_TOP_SIZE = 10;
 
+/** Margen después de terminado el día de la jornada durante el cual su ranking sigue vigente (luego se borra). */
+export const RANKING_RETENTION_HOURS_AFTER_SESSION = 2;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export interface RankingAnalysisInput {
   source: string;
   overallScore: number;
   conformationScoresJson: unknown;
   landmarksJson: unknown;
-  analyzedAt: Date;
 }
 
-export interface RankingCandidateInput<H, A extends RankingAnalysisInput = RankingAnalysisInput> {
+export interface RankingHipInput {
+  hipNumber: string;
+  saleId: string;
+  sessionDate: Date | null;
+}
+
+export interface RankingCandidateInput<H extends RankingHipInput, A extends RankingAnalysisInput = RankingAnalysisInput> {
   hipId: string;
   hip: H;
   analysis: A | null | undefined;
 }
 
-export interface RankedHip<H, A extends RankingAnalysisInput = RankingAnalysisInput> {
+export interface RankedHip<H extends RankingHipInput, A extends RankingAnalysisInput = RankingAnalysisInput> {
   hipId: string;
   hip: H;
   analysis: A;
   score: number;
   classification: string;
+}
+
+/** Venta + jornada a la que pertenece un ranking. `dayStart` es el inicio del día calendario ET. */
+export interface RankingScope {
+  saleId: string;
+  dayStart: Date;
 }
 
 function viewWasEvaluated(landmarksJson: unknown, view: string): boolean {
@@ -62,8 +82,8 @@ function viewWasEvaluated(landmarksJson: unknown, view: string): boolean {
 }
 
 /**
- * Score IA válido para el Ranking del Día, o null si este análisis no
- * califica (ver reglas 1 y 2 arriba).
+ * Score IA vigente y válido para el Ranking del Día, o null si este
+ * análisis no califica (reglas 1 y 2).
  */
 export function rankingScoreFromAnalysis(analysis: RankingAnalysisInput | null | undefined): number | null {
   if (!analysis) return null;
@@ -92,19 +112,47 @@ export function rankingScoreFromAnalysis(analysis: RankingAnalysisInput | null |
 }
 
 /**
- * Selecciona y ordena el Top del Ranking del Día a partir de los Hips de
- * UNA jornada de UNA venta (el llamador ya filtró por saleId + día).
- * Devuelve también cuántos Hips de la jornada tienen un análisis IA
- * válido en total (puede ser mayor que el Top).
+ * Desempate por número de Hip, de menor a mayor. Compara la parte numérica
+ * como número ("99" < "100") y, si coincide, el texto completo (ej. "12"
+ * < "12A") — siempre el mismo resultado para los mismos Hips.
  */
-export function selectRankingTop<H, A extends RankingAnalysisInput = RankingAnalysisInput>(
+export function compareHipNumbers(a: string, b: string): number {
+  const na = parseInt(a, 10);
+  const nb = parseInt(b, 10);
+  const aNum = Number.isFinite(na);
+  const bNum = Number.isFinite(nb);
+  if (aNum && bNum && na !== nb) return na - nb;
+  if (aNum !== bNum) return aNum ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** true si el Hip pertenece a la venta y jornada (día calendario) del ranking. */
+export function hipBelongsToScope(hip: RankingHipInput, scope: RankingScope): boolean {
+  if (hip.saleId !== scope.saleId || !hip.sessionDate) return false;
+  const t = hip.sessionDate.getTime();
+  return t >= scope.dayStart.getTime() && t < scope.dayStart.getTime() + DAY_MS;
+}
+
+/**
+ * Selecciona y ordena el Top del Ranking del Día de UNA venta y UNA
+ * jornada. Cualquier Hip de otra venta u otro día que llegue en
+ * `candidates` se descarta acá (regla 5), aunque el llamador ya filtre en
+ * la consulta. Devuelve también cuántos Hips de la jornada tienen un
+ * análisis IA válido en total (puede ser mayor que el Top).
+ */
+export function selectRankingTop<H extends RankingHipInput, A extends RankingAnalysisInput = RankingAnalysisInput>(
   candidates: ReadonlyArray<RankingCandidateInput<H, A>>,
+  scope: RankingScope,
   limit: number = RANKING_TOP_SIZE
 ): { top: RankedHip<H, A>[]; eligibleCount: number } {
   const eligible: RankedHip<H, A>[] = [];
+  const seen = new Set<string>();
   for (const candidate of candidates) {
+    if (seen.has(candidate.hipId)) continue;
+    if (!hipBelongsToScope(candidate.hip, scope)) continue;
     const score = rankingScoreFromAnalysis(candidate.analysis);
     if (score === null) continue;
+    seen.add(candidate.hipId);
     eligible.push({
       hipId: candidate.hipId,
       hip: candidate.hip,
@@ -113,11 +161,36 @@ export function selectRankingTop<H, A extends RankingAnalysisInput = RankingAnal
       classification: classify(score),
     });
   }
-  eligible.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    const byTime = a.analysis.analyzedAt.getTime() - b.analysis.analyzedAt.getTime();
-    if (byTime !== 0) return byTime;
-    return a.hipId < b.hipId ? -1 : a.hipId > b.hipId ? 1 : 0;
-  });
+  eligible.sort((a, b) => (b.score !== a.score ? b.score - a.score : compareHipNumbers(a.hip.hipNumber, b.hip.hipNumber)));
   return { top: eligible.slice(0, Math.max(0, limit)), eligibleCount: eligible.length };
+}
+
+/** Momento a partir del cual el ranking de una jornada vence (fin de ese día + margen). */
+export function rankingExpiresAt(dayStart: Date): Date {
+  return new Date(dayStart.getTime() + DAY_MS + RANKING_RETENTION_HOURS_AFTER_SESSION * 60 * 60 * 1000);
+}
+
+/**
+ * ¿Se puede generar/actualizar AHORA el ranking de esta jornada? Única
+ * regla de "venta y fecha correspondientes" para generar (regla 5):
+ *   - la venta no está terminada (COMPLETED -> queda como historial);
+ *   - es la venta activa para la automatización (nunca otra venta);
+ *   - ya se abrió la ventana: faltan RANKING_LEAD_HOURS o menos para el
+ *     inicio de la jornada (`sessionStart`);
+ *   - la jornada todavía no venció (fin del día + margen).
+ */
+export function rankingGenerationAllowed(input: {
+  saleIsCompleted: boolean;
+  saleIsActiveForAutomation: boolean;
+  sessionStart: Date;
+  dayStart: Date;
+  now: Date;
+  leadHours: number;
+}): boolean {
+  if (input.saleIsCompleted) return false;
+  if (!input.saleIsActiveForAutomation) return false;
+  const now = input.now.getTime();
+  if (now < input.sessionStart.getTime() - input.leadHours * 60 * 60 * 1000) return false;
+  if (now >= rankingExpiresAt(input.dayStart).getTime()) return false;
+  return true;
 }

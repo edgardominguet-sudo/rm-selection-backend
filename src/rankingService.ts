@@ -17,7 +17,7 @@ import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "./activeSaleService";
-import { selectRankingTop } from "./rankingSelection";
+import { selectRankingTop, rankingGenerationAllowed, rankingExpiresAt, RANKING_RETENTION_HOURS_AFTER_SESSION } from "./rankingSelection";
 import { RM_SINGLE_LATERAL_ANALYSIS_MODE } from "./analysis/analysisMode";
 
 /**
@@ -74,12 +74,12 @@ function groupAIAnalysisMediaByView(media: CatalogMediaItem[]): Partial<Record<V
 // pollingPolicy.ts) — "terminada la jornada" se toma como el final del día
 // calendario de esa sesión (medianoche), igual criterio que ya usa el
 // resto de este archivo (dayStart/dayEnd). El margen de 2h se suma después.
-const RANKING_RETENTION_HOURS_AFTER_SESSION = 2;
+// El margen (RANKING_RETENTION_HOURS_AFTER_SESSION) y el cálculo viven en
+// rankingSelection.ts, fuente única de las reglas del Ranking del Día.
 
-/** Momento a partir del cual el Ranking del Día de una jornada se considera vencido (fin de esa jornada + margen) y debe dejar de regenerarse / borrarse. */
+/** Momento a partir del cual una jornada se considera vencida (fin de ese día calendario + margen). */
 function sessionExpiresAt(sessionDate: Date): Date {
-  const dayEnd = new Date(startOfCalendarDay(sessionDate).getTime() + 24 * 60 * 60 * 1000);
-  return new Date(dayEnd.getTime() + RANKING_RETENTION_HOURS_AFTER_SESSION * 60 * 60 * 1000);
+  return rankingExpiresAt(startOfCalendarDay(sessionDate));
 }
 
 export interface UpsertSummary {
@@ -911,39 +911,40 @@ function stableStringify(value: unknown): string {
 }
 
 async function rebuildRankingSnapshot(saleId: string, organizationId: string, dayStart: Date, totalHipsToday: number, triggerReason: string): Promise<void> {
-  // VENTA TERMINADA / JORNADA VENCIDA (2026-09-26, pedido explícito de
-  // Ramon: "una venta terminada debe permanecer como historial -- no
-  // ejecutar procesos nuevos sobre ventas terminadas para generar el
-  // ranking"). Chequeo propio de esta función -- es el ÚNICO lugar que
-  // escribe RankingSnapshot, y tiene dos llamadores (el ciclo de 5 min y
-  // el recálculo inmediato tras un "Analizar" manual, que puede ser de un
-  // Hip de CUALQUIER venta). Sin esto, analizar a mano un Hip de una venta
-  // ya terminada volvía a generar un ranking para esa jornada vieja.
+  // FUENTE ÚNICA DE VERDAD (2026-09-26, decisiones confirmadas por
+  // Ramon): este es el ÚNICO lugar que escribe RankingSnapshot, y TODAS
+  // las reglas (venta/fecha correspondientes, análisis válido, score
+  // vigente, orden y tamaño) salen de rankingSelection.ts -- acá solo se
+  // lee la base y se guarda el resultado. Dos llamadores: el ciclo de 5
+  // min (processSale) y el recálculo inmediato tras un "Analizar" manual
+  // (refreshRankingSnapshotForHip), que puede ser de un Hip de CUALQUIER
+  // venta -- por eso la autorización para generar se decide acá adentro,
+  // no en cada llamador.
+  //
+  // El ranking se arma SIEMPRE de cero con el análisis VIGENTE de cada Hip
+  // (no existe más el "ranking congelado" del 2026-09-15): si un Hip se
+  // reanaliza y sube, entra; si baja, puede salir. Nunca llama a la IA.
   const sale = await db.sale.findUnique({ where: { id: saleId } });
   if (!sale) return;
-  if (getSaleLifecycleStatus(sale) === "COMPLETED") return;
-  if (Date.now() >= sessionExpiresAt(dayStart).getTime()) return;
 
-  // FUENTE DE DATOS (2026-09-26, "TOP 10 REAL BASADO EXCLUSIVAMENTE EN
-  // ANÁLISIS IA", pedido explícito de Ramon): el ranking se arma SIEMPRE
-  // de cero, en cada corrida, a partir del análisis IA VIGENTE de cada
-  // Hip de ESTA venta y ESTA jornada (día calendario ET) -- nunca mezcla
-  // ventas ni días (filtro por saleId + rango del día acá abajo). Qué
-  // entra, con qué score y en qué orden lo decide únicamente
-  // selectRankingTop (rankingSelection.ts): solo análisis IA completados
-  // con score válido, de mayor a menor, máximo 10, sin rellenar.
-  //
-  // Reemplaza a la regla anterior de "ranking congelado" (2026-09-15),
-  // que conservaba para siempre el score con el que cada Hip había
-  // entrado por primera vez aunque su análisis vigente hubiera cambiado
-  // -- un score heredado, que ya no se permite: el orden sale solo del
-  // score IA real de hoy. Esta función nunca llama a la IA: solo lee
-  // análisis ya guardados.
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const hips = await db.hip.findMany({
     where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
-    select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, saleResultJson: true },
+    select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, saleResultJson: true, saleId: true, sessionDate: true },
   });
+  if (hips.length === 0) return;
+
+  const sessionStart = new Date(Math.min(...hips.map((h) => h.sessionDate!.getTime())));
+  const activeSale = await resolveActiveSaleForAutomation();
+  const allowed = rankingGenerationAllowed({
+    saleIsCompleted: getSaleLifecycleStatus(sale) === "COMPLETED",
+    saleIsActiveForAutomation: activeSale?.id === saleId,
+    sessionStart,
+    dayStart,
+    now: new Date(),
+    leadHours: config.rankingLeadHours,
+  });
+  if (!allowed) return;
 
   const pointers = await db.currentHipAnalysis.findMany({
     where: { organizationId, hipId: { in: hips.map((h) => h.id) } },
@@ -952,7 +953,8 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   const analysisByHipId = new Map(pointers.map((p) => [p.hipId, p.analysisResult]));
 
   const { top, eligibleCount } = selectRankingTop(
-    hips.map((hip) => ({ hipId: hip.id, hip, analysis: analysisByHipId.get(hip.id) ?? null }))
+    hips.map((hip) => ({ hipId: hip.id, hip, analysis: analysisByHipId.get(hip.id) ?? null })),
+    { saleId, dayStart }
   );
 
   // Miniatura de la foto lateral del MISMO análisis que dio el score.
@@ -1384,29 +1386,26 @@ export async function processSale(sale: Sale, organizations: { id: string }[], b
   // reutilizable desde ensureSaleDaysForAllFullAccessSales().
   await ensureSaleDaysPopulated(sale, clientFor(sale.house));
 
-  const leadMs = config.rankingLeadHours * 60 * 60 * 1000;
   const sessionDates = await db.hip.findMany({
     where: { saleId: sale.id, sessionDate: { not: null } },
     distinct: ["sessionDate"],
     select: { sessionDate: true },
   });
+  // Una entrada por JORNADA (día calendario ET), no por instante exacto de
+  // sessionDate -- mismo criterio de día que usa todo el Ranking del Día.
+  const sessionDays = [...new Set(sessionDates.filter((s) => s.sessionDate).map((s) => startOfCalendarDay(s.sessionDate!).getTime()))].map(
+    (t) => new Date(t)
+  );
 
   // Ventas × organizaciones activas: a esta escala (una sola organización
-  // hoy) un doble loop simple alcanza. El día que haya muchas
-  // organizaciones, conviene filtrar acá primero "qué organizaciones
-  // siguen esta venta" en vez de recorrerlas todas — ver ARCHITECTURE.md.
+  // hoy) un doble loop simple alcanza — ver ARCHITECTURE.md. Si
+  // corresponde o no generar el ranking de cada jornada (venta activa,
+  // ventana de 12h antes, jornada no vencida, venta no terminada) lo
+  // decide rebuildRankingSnapshot con rankingGenerationAllowed
+  // (rankingSelection.ts) -- una sola regla, sin duplicarla acá.
   for (const organization of organizations) {
-    for (const { sessionDate } of sessionDates) {
-      if (!sessionDate) continue;
-      const withinLeadWindow = now.getTime() >= sessionDate.getTime() - leadMs;
-      // Jornada ya terminada (+ margen de 2h): no volver a generar su
-      // Ranking del Día — si ya se borró (ver cleanupExpiredRankingSnapshots)
-      // debe quedar borrado, no resucitar en el próximo tick.
-      const expired = now.getTime() >= sessionExpiresAt(sessionDate).getTime();
-      if (!withinLeadWindow || expired) continue;
-      // analyzeAndRankSession ya no analiza nada (ver su comentario) —
-      // no necesita/recibe el presupuesto de análisis del ciclo.
-      await analyzeAndRankSession(sale.id, organization.id, sessionDate);
+    for (const dayStart of sessionDays) {
+      await analyzeAndRankSession(sale.id, organization.id, dayStart);
     }
   }
 }
