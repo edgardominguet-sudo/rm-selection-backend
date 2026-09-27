@@ -59,22 +59,30 @@ export function startScheduler(): void {
   // vez ya mismo al arrancar el servidor, además de su corrida nocturna
   // regular. No interfiere con el ciclo de 5 min de arriba: no toca
   // resolveActiveSaleForAutomation, Media ni Análisis IA.
-  void ensureSaleDaysForAllFullAccessSales();
+  ensureSaleDaysForAllFullAccessSales().catch((err) => {
+    console.error("[scheduler][sale-days] Error asegurando Calendario de Ventas al arrancar:", err);
+  });
 }
 
-async function runCycle(): Promise<void> {
+export async function runCycle(): Promise<void> {
   if (isRunning) {
     console.warn("[scheduler] El ciclo anterior todavía está corriendo — se salta este tick.");
     return;
   }
   isRunning = true;
 
-  const run = await db.schedulerRun.create({ data: {} });
+  // CORRECCIÓN 2026-09-26 (manejo de errores): el registro del ciclo
+  // (SchedulerRun) se crea DENTRO del try -- antes se creaba antes, y si esa
+  // primera consulta fallaba (ej. base de datos sin responder) `isRunning`
+  // quedaba en true para siempre y el ciclo de 5 min no volvía a correr
+  // nunca más. Ahora `isRunning` se libera siempre en el finally.
+  let runId: string | null = null;
   const budget: AnalysisBudget = { remaining: config.maxAnalysesPerCycle };
   let salesProcessed = 0;
   let firstError: string | null = null;
 
   try {
+    runId = (await db.schedulerRun.create({ data: {} })).id;
     const organizations = await db.organization.findMany({ select: { id: true } });
     // GATE 2026-09-24 (pedido explícito de Ramon en plena venta de Keeneland
     // September: "ahora solo estoy en la venta de Keeneland, bloquea toda
@@ -120,17 +128,28 @@ async function runCycle(): Promise<void> {
     } catch (err) {
       console.error("[scheduler] Error borrando Ranking del Día vencido:", err);
     }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[scheduler] Error inesperado en el ciclo:", err);
+    firstError = firstError ?? message;
   } finally {
-    await db.schedulerRun.update({
-      where: { id: run.id },
-      data: {
-        finishedAt: new Date(),
-        salesProcessed,
-        analysesRun: config.maxAnalysesPerCycle - budget.remaining,
-        errorMessage: firstError,
-      },
-    });
-    isRunning = false;
+    try {
+      if (runId) {
+        await db.schedulerRun.update({
+          where: { id: runId },
+          data: {
+            finishedAt: new Date(),
+            salesProcessed,
+            analysesRun: config.maxAnalysesPerCycle - budget.remaining,
+            errorMessage: firstError,
+          },
+        });
+      }
+    } catch (err) {
+      console.error("[scheduler] No se pudo registrar el cierre del ciclo:", err);
+    } finally {
+      isRunning = false;
+    }
   }
 }
 

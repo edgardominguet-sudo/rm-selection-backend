@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { withAsyncErrors } from "./asyncRouter";
 
 /**
  * DIAGNOSTICO TEMPORAL - Pedigree flash bug (2026-08-26, a pedido de
@@ -39,7 +40,7 @@ const MAX_ENTRIES = 8000;
 const buffer: DiagLogEntry[] = [];
 let nextSeq = 1;
 
-export const diagRouter = Router();
+export const diagRouter = withAsyncErrors(Router()); // ver asyncRouter.ts
 
 diagRouter.post("/pedigree-log", (req, res) => {
   const body = req.body ?? {};

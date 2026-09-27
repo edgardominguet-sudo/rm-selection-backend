@@ -10,11 +10,15 @@ import express from "express";
 import cors from "cors";
 import { requireApiKey } from "../../src/api/auth";
 import { router } from "../../src/api/routes";
+import { withAsyncErrors } from "../../src/api/asyncRouter";
+import { apiErrorHandler } from "../../src/api/errorHandler";
 
 export function buildTestApp() {
-  const app = express();
+  // Misma composición que src/index.ts: captura de errores async + manejador central.
+  const app = withAsyncErrors(express());
   app.use(cors());
   app.use(express.json({ limit: "2mb" }));
   app.use("/api/v1", requireApiKey, router);
+  app.use(apiErrorHandler);
   return app;
 }

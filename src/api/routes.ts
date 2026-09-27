@@ -1,5 +1,7 @@
 import { randomUUID } from "crypto";
 import { Router, Request, Response } from "express";
+import { withAsyncErrors } from "./asyncRouter";
+import { HttpError } from "./errorHandler";
 import { db } from "../db";
 import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
@@ -34,7 +36,23 @@ import {
   deleteObject,
   ObjectStorageNotConfiguredError,
 } from "../storage/r2Client";
-export const router = Router();
+// withAsyncErrors (2026-09-26): cualquier error de cualquier ruta de este
+// router llega al manejador central (errorHandler.ts) en vez de tumbar el
+// proceso — ver asyncRouter.ts.
+export const router = withAsyncErrors(Router());
+
+/**
+ * Parámetro `since` de las rutas de sincronización delta (2026-09-26).
+ * Ausente -> lista completa. Una fecha inválida se rechaza con 400 en vez
+ * de llegar a la base de datos (antes eso tumbaba el servidor).
+ */
+function parseSinceParam(value: unknown): Date | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string") throw new HttpError(400, "Parámetro 'since' inválido: debe ser una sola fecha ISO 8601.", "INVALID_SINCE");
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new HttpError(400, "Parámetro 'since' inválido: debe ser una fecha ISO 8601.", "INVALID_SINCE");
+  return date;
+}
 
 /**
  * Resuelve un Hip a partir de los mismos identificadores que ya conoce la
@@ -661,7 +679,7 @@ function withHipIdentity<T extends { hip: { hipNumber: string; sale: { house: st
 // sincronización delta: el dispositivo pide "qué cambió" en vez de bajar
 // todo cada vez.
 router.get("/me/decisions", requireUser, async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const since = parseSinceParam(req.query.since);
   const decisions = await db.userDecision.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
@@ -710,7 +728,7 @@ router.delete("/me/decisions/:hipId", requireUser, async (req, res) => {
 // manda el PKDrawing completo serializado en base64 en cada guardado (no
 // hace falta granularidad de trazo por trazo).
 router.get("/me/pedigree-annotations", requireUser, async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const since = parseSinceParam(req.query.since);
   const rows = await db.pedigreeAnnotation.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
@@ -742,7 +760,7 @@ router.delete("/me/pedigree-annotations/:hipId", requireUser, async (req, res) =
 });
 
 router.get("/me/observations", requireUser, async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const since = parseSinceParam(req.query.since);
   const observations = await db.hipObservation.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
@@ -894,7 +912,7 @@ router.put("/me/media/:id/confirm", requireUser, async (req, res) => {
 // nada real para leer en otro dispositivo) más los tombstones, para que un
 // dispositivo que canceló una subida a mitad de camino se entere del borrado.
 router.get("/me/media", requireUser, async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const since = parseSinceParam(req.query.since);
   const hipId = req.query.hipId as string | undefined;
   const assets = await db.mediaAsset.findMany({
     where: {
@@ -944,7 +962,7 @@ router.delete("/me/media/:id", requireUser, async (req, res) => {
 // UserDecision/HipObservation. El archivo en sí es un MediaAsset (kind
 // VET_REPORT); este registro es la metadata + notas.
 router.get("/me/vet-reports", requireUser, async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const since = parseSinceParam(req.query.since);
   const reports = await db.vetReport.findMany({
     where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
@@ -1129,7 +1147,7 @@ router.post("/reference-horse/photos", requireUser, async (req, res) => {
 // /me/decisions y /me/observations: la app pide "qué hay nuevo desde tal
 // momento" en vez de bajar todo cada vez.
 router.get("/alerts", async (req, res) => {
-  const since = req.query.since ? new Date(req.query.since as string) : undefined;
+  const since = parseSinceParam(req.query.since);
   const alerts = await db.saleAlert.findMany({
     where: since ? { createdAt: { gt: since } } : undefined,
     orderBy: { createdAt: "desc" },

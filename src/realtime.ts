@@ -77,7 +77,17 @@ export function attachRealtime(server: HttpServer): void {
       socket.close(4001, "Falta apiKey");
       return;
     }
-    const user = await db.user.findUnique({ where: { apiKey } });
+    // Manejo de errores (2026-09-26): si la base de datos falla al validar
+    // la clave, se cierra ESTA conexión con un código de error de servidor
+    // (el cliente reintenta solo) en vez de tumbar el proceso entero.
+    let user: Awaited<ReturnType<typeof db.user.findUnique>>;
+    try {
+      user = await db.user.findUnique({ where: { apiKey } });
+    } catch (err) {
+      console.error("[realtime] Error validando la clave de una conexión:", err);
+      socket.close(1011, "Error del servidor");
+      return;
+    }
     if (!user) {
       socket.close(4001, "apiKey inválida");
       return;

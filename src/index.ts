@@ -16,8 +16,17 @@ import { CLASSIFICATION_THRESHOLDS } from "./analysis/conformationScores";
 import { extractFasigTiptonSaleId } from "./saleHouses/fasigTiptonIdAutoResolver";
 import { diagRouter } from "./api/diagRoutes";
 import { attachRealtime } from "./realtime";
+import { withAsyncErrors } from "./api/asyncRouter";
+import { apiErrorHandler } from "./api/errorHandler";
+import { installProcessSafetyNet } from "./processSafety";
 
-const app = express();
+// Red de seguridad del proceso (2026-09-26) — ver processSafety.ts.
+installProcessSafetyNet();
+
+// withAsyncErrors (2026-09-26): las rutas y middlewares registrados en la
+// app (incluida la autenticación requireApiKey) derivan sus errores al
+// manejador central en vez de tumbar el proceso — ver asyncRouter.ts.
+const app = withAsyncErrors(express());
 // CORRECCIÓN DE RAÍZ (2026-09-02, "SINCRONIZACIÓN REAL iPHONE ↔️ iPAD" —
 // bug real reportado por Ramon: favoritos/notas/fotos tomados en un
 // dispositivo no aparecían en el otro). Causa raíz encontrada con
@@ -290,6 +299,11 @@ const noStoreMiddleware: express.RequestHandler = (_req, res, next) => {
 };
 app.use("/api/v1/diag", requireApiKey, noStoreMiddleware, diagRouter);
 app.use("/api/v1", requireApiKey, noStoreMiddleware, router);
+
+// Manejador de errores CENTRAL (2026-09-26) — siempre al final, después de
+// todas las rutas: todo error responde un JSON con su código HTTP, nunca
+// una petición colgada ni el servidor caído. Ver errorHandler.ts.
+app.use(apiErrorHandler);
 
 const server = app.listen(config.port, () => {
   console.log(`[server] RM Selection backend escuchando en el puerto ${config.port}`);
