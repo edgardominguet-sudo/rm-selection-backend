@@ -1096,6 +1096,10 @@ model RankingSnapshot {
   // [{ rank, hipNumber, overallScore, classification }], ya ordenado.
   entriesJson    Json
   totalHipsToday Int
+  // Cuántos Hips de esta jornada tienen un análisis IA válido para el
+  // ranking (ver rankingSelection.ts) -- puede ser mayor que las entradas
+  // del Top 10. Lo muestra la app ("N analizados por la IA").
+  analyzedHipsToday Int @default(0)
 
   generatedAt    DateTime @default(now())
   updatedAt      DateTime @updatedAt

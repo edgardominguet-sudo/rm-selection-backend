@@ -142,6 +142,7 @@ router.get("/ranking", requireUser, async (req, res) => {
       status: "sale_not_registered",
       entries: [],
       totalHipsToday: 0,
+      analyzedHipsToday: 0,
       generatedAt: null,
       updatedAt: null,
     });
@@ -172,6 +173,7 @@ router.get("/ranking", requireUser, async (req, res) => {
       status: hasAnySessionDateResolved > 0 ? "not_generated_yet" : "schedule_unavailable",
       entries: [],
       totalHipsToday: 0,
+      analyzedHipsToday: 0,
       generatedAt: null,
       updatedAt: null,
     });
@@ -206,6 +208,10 @@ router.get("/ranking", requireUser, async (req, res) => {
     status: "ready",
     entries,
     totalHipsToday: snapshot.totalHipsToday,
+    // Hips de la jornada con análisis IA válido (2026-09-26) -- puede ser
+    // mayor que `entries` (Top 10). Aditivo: versiones viejas de la app lo
+    // ignoran.
+    analyzedHipsToday: snapshot.analyzedHipsToday,
     generatedAt: snapshot.generatedAt,
     updatedAt: snapshot.updatedAt,
   });

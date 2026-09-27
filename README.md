@@ -32,7 +32,6 @@ En el servicio del backend → pestaña "Variables", cargá:
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` (o dejalo vacío para usar ese valor por defecto) |
 | `APP_API_KEY` | Inventá un string largo al azar — es la clave que la app de iOS va a mandar para poder consultarte la API. Guardala, la vas a necesitar en el próximo paso del lado de la app. |
 | `RANKING_LEAD_HOURS` | `12` |
-| `TOP_RANKING_SIZE` | `20` |
 | `DISCOVERY_INTERVAL_CRON` | Opcional — cada cuánto se chequean las páginas públicas de anuncios de Fasig-Tipton/Keeneland/OBS en busca de ventas nuevas. Por defecto `0 */6 * * *` (cada 6 horas) — no hace falta tocarlo. |
 
 `DATABASE_URL` y `PORT` los pone Railway solo, no hace falta cargarlos.

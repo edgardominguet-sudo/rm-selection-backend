@@ -17,6 +17,8 @@ import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "./activeSaleService";
+import { selectRankingTop } from "./rankingSelection";
+import { RM_SINGLE_LATERAL_ANALYSIS_MODE } from "./analysis/analysisMode";
 
 /**
  * Fotos de un Hip que puede usar el motor de Análisis IA — Tarea "Análisis
@@ -589,7 +591,8 @@ export async function analyzeHipOnDemand(
   // impacto masivo. Para reactivar las 3 vistas en una futura versión:
   // volver este flag a false ACÁ y el mismo flag en el cliente -- no
   // hace falta ningún otro cambio ("no reconstrucción innecesaria").
-  const RM_SINGLE_LATERAL_ANALYSIS_MODE = true;
+  // El flag vive ahora en analysis/analysisMode.ts (mismo valor), para que
+  // el Ranking del Día use exactamente el mismo criterio.
   const media = RM_SINGLE_LATERAL_ANALYSIS_MODE
     ? rawMedia.filter((m) => m.conformationView === "lateral")
     : rawMedia;
@@ -873,7 +876,7 @@ export async function analyzeHipOnDemand(
  * de guardar un análisis real, ver más abajo).
  *
  * Ranking del Día (2026-09-14, "IMPLEMENTAR — RANKING DEL DÍA / RM
- * SELECTION", pedido explícito de Ramon): cada entrada del Top 5 trae,
+ * SELECTION", pedido explícito de Ramon): cada entrada del Top trae,
  * además del score, Sire/Dam y una miniatura de la foto lateral — se
  * agregan acá para que GET /ranking (routes.ts) no tenga que volver a
  * tocar la base. La miniatura se guarda como `lateralPhotoStorageKey`
@@ -884,7 +887,7 @@ export async function analyzeHipOnDemand(
  * GET /ranking, mismo criterio que resolveAIAnalysisMedia más arriba en
  * este archivo.
  *
- * Detección de cambios: si el Top 5 resultante es idéntico al que ya
+ * Detección de cambios: si el Top resultante es idéntico al que ya
  * estaba guardado (mismo orden, mismos scores, misma miniatura), no
  * reescribe nada — evita crear una fila de RankingSnapshotVersion nueva
  * en cada tick del scheduler de 5 minutos cuando en realidad no cambió
@@ -908,6 +911,34 @@ function stableStringify(value: unknown): string {
 }
 
 async function rebuildRankingSnapshot(saleId: string, organizationId: string, dayStart: Date, totalHipsToday: number, triggerReason: string): Promise<void> {
+  // VENTA TERMINADA / JORNADA VENCIDA (2026-09-26, pedido explícito de
+  // Ramon: "una venta terminada debe permanecer como historial -- no
+  // ejecutar procesos nuevos sobre ventas terminadas para generar el
+  // ranking"). Chequeo propio de esta función -- es el ÚNICO lugar que
+  // escribe RankingSnapshot, y tiene dos llamadores (el ciclo de 5 min y
+  // el recálculo inmediato tras un "Analizar" manual, que puede ser de un
+  // Hip de CUALQUIER venta). Sin esto, analizar a mano un Hip de una venta
+  // ya terminada volvía a generar un ranking para esa jornada vieja.
+  const sale = await db.sale.findUnique({ where: { id: saleId } });
+  if (!sale) return;
+  if (getSaleLifecycleStatus(sale) === "COMPLETED") return;
+  if (Date.now() >= sessionExpiresAt(dayStart).getTime()) return;
+
+  // FUENTE DE DATOS (2026-09-26, "TOP 10 REAL BASADO EXCLUSIVAMENTE EN
+  // ANÁLISIS IA", pedido explícito de Ramon): el ranking se arma SIEMPRE
+  // de cero, en cada corrida, a partir del análisis IA VIGENTE de cada
+  // Hip de ESTA venta y ESTA jornada (día calendario ET) -- nunca mezcla
+  // ventas ni días (filtro por saleId + rango del día acá abajo). Qué
+  // entra, con qué score y en qué orden lo decide únicamente
+  // selectRankingTop (rankingSelection.ts): solo análisis IA completados
+  // con score válido, de mayor a menor, máximo 10, sin rellenar.
+  //
+  // Reemplaza a la regla anterior de "ranking congelado" (2026-09-15),
+  // que conservaba para siempre el score con el que cada Hip había
+  // entrado por primera vez aunque su análisis vigente hubiera cambiado
+  // -- un score heredado, que ya no se permite: el orden sale solo del
+  // score IA real de hoy. Esta función nunca llama a la IA: solo lee
+  // análisis ya guardados.
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const hips = await db.hip.findMany({
     where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
@@ -920,81 +951,15 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   });
   const analysisByHipId = new Map(pointers.map((p) => [p.hipId, p.analysisResult]));
 
-  // RANKING CONGELADO POR REANÁLISIS + MERITOCRACIA PARA HIPS NUEVOS
-  // (2026-09-15, a pedido explícito de Ramon, en dos mensajes seguidos):
-  // "una vez que tu determines el ranking del dia... el que yo los abra
-  // uno por uno, no debe cambiar la posicion que tu le diste en el Top 20
-  // ni mucho menos desaparecer... lo que tu agrupaste y clasificaste en
-  // el ranking asi debe quedar" y, acto seguido, matizado con: "si en la
-  // mañana sacaste un top 20... y en el transcurso del dia suben otra
-  // foto que no analisaste mas temprano, la app deberia darle a ese nuevo
-  // hip analizado, si obtuvo un gran numero en el score, su posicion
-  // dentro del ranking y sacar al numero 20".
-  //
-  // Regla final (las dos cosas a la vez):
-  //   1) Un Hip YA CONGELADO en el ranking nunca pierde su lugar por SU
-  //      PROPIO reanálisis -- se usa siempre su score y datos tal como
-  //      quedaron guardados la primera vez que entró, nunca el valor
-  //      actual de CurrentHipAnalysis (que puede haber cambiado de ahí en
-  //      más por un botón "Analizar", el barrido nocturno o un recálculo
-  //      de referente).
-  //   2) Un Hip que se analiza por PRIMERA VEZ en el día SÍ compite por un
-  //      lugar con ese score fresco: si supera al más débil de los ya
-  //      congelados, entra en su posición real por score y desplaza al
-  //      que hasta ese momento ocupaba el último puesto del Top N.
-  // Osea: nunca se reordena ni se saca una entrada por reanálisis de ELLA
-  // MISMA; sí se puede reordenar/sacar por la LLEGADA de una entrada
-  // nueva mejor puntuada. Se lee el snapshot ya guardado de esta jornada
-  // ANTES de recalcular nada.
-  const existing = await db.rankingSnapshot.findUnique({
-    where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
-  });
-  const lockedEntries = ((existing?.entriesJson as unknown as Array<Record<string, unknown>> | null) ?? []).slice();
-  const hipIdByHipNumber = new Map<string, string>(hips.map((h) => [h.hipNumber, h.id]));
-  // Usado más abajo para refrescar saleResult de las entradas YA
-  // congeladas -- ver comentario "CORRECCIÓN 2026-09-16" en la
-  // construcción de `entries`.
-  const hipById = new Map<string, (typeof hips)[number]>(hips.map((h) => [h.id, h]));
-  const lockedHipIds = new Set(
-    lockedEntries
-      .map((e) => (typeof e.hipId === "string" ? e.hipId : hipIdByHipNumber.get(e.hipNumber as string)))
-      .filter((id): id is string => !!id)
+  const { top, eligibleCount } = selectRankingTop(
+    hips.map((hip) => ({ hipId: hip.id, hip, analysis: analysisByHipId.get(hip.id) ?? null }))
   );
 
-  // Candidatos: Hips con análisis que TODAVÍA no están congelados en el
-  // ranking -- es decir, compitiendo por un lugar por primera vez hoy.
-  // Los ya congelados NUNCA entran acá, así que su reanálisis (si lo hay)
-  // jamás puede afectar el orden ni sacarlos.
-  const candidates = hips
-    .map((hip) => ({ hip, analysis: analysisByHipId.get(hip.id) }))
-    .filter(
-      (entry): entry is { hip: (typeof hips)[number]; analysis: NonNullable<typeof entry.analysis> } =>
-        !!entry.analysis && !lockedHipIds.has(entry.hip.id)
-    );
-
-  // Fusión por score: cada entrada congelada aporta su score YA GUARDADO
-  // (nunca el actual), cada candidato aporta su score fresco. Se ordena
-  // todo junto y se corta a topRankingSize -- así un candidato mejor que
-  // el último congelado entra en su lugar real y desplaza al más débil,
-  // sin tocar el orden relativo de las congeladas entre sí (Array.sort es
-  // estable, y las congeladas ya venían ordenadas por score entre ellas).
-  type MergedLocked = { source: "locked"; score: number; entry: Record<string, unknown> };
-  type MergedNew = { source: "new"; score: number; hip: (typeof hips)[number]; analysis: NonNullable<(typeof candidates)[number]["analysis"]> };
-  const merged: Array<MergedLocked | MergedNew> = [
-    ...lockedEntries.map((entry): MergedLocked => ({ source: "locked", score: Number(entry.overallScore), entry })),
-    ...candidates.map((c): MergedNew => ({ source: "new", score: c.analysis.overallScore, hip: c.hip, analysis: c.analysis })),
-  ];
-  merged.sort((a, b) => b.score - a.score);
-  const survivors = merged.slice(0, config.topRankingSize);
-  const survivingNew = survivors.filter((item): item is MergedNew => item.source === "new");
-
-  // Miniatura de la foto lateral — solo hace falta resolverla para los
-  // candidatos NUEVOS que sobrevivieron al corte; los congelados
-  // mantienen la miniatura que ya tenían guardada.
+  // Miniatura de la foto lateral del MISMO análisis que dio el score.
   const lateralAssetIdByHipId = new Map(
-    survivingNew.map((entry) => [
-      entry.hip.id,
-      (entry.analysis.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null)?.lateral ?? null,
+    top.map((item) => [
+      item.hipId,
+      (item.analysis.viewSourceAssetIdsJson as Partial<Record<ViewName, string>> | null)?.lateral ?? null,
     ])
   );
   const lateralAssetIds = [...lateralAssetIdByHipId.values()].filter((id): id is string => !!id);
@@ -1006,87 +971,50 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
     : [];
   const storageKeyByAssetId = new Map(lateralAssets.map((a) => [a.id, a.storageKey]));
 
-  const entries = survivors.map((item, index) => {
-    if (item.source === "locked") {
-      // Se copia tal cual, solo se actualiza el número de puesto (rank) --
-      // el resto de los campos de MÉRITO (score, clasificación, foto)
-      // quedan exactamente como se guardaron cuando esta entrada se
-      // congeló, sin importar qué pasó con el Hip real desde entonces.
-      //
-      // CORRECCIÓN 2026-09-16 (bug reportado por Ramon: "en el ranking del
-      // dia solo se ven algunos precios y no todos, si esa venta del dia
-      // ya termino, si estan OUT debe decirlo"): saleResult es la
-      // EXCEPCIÓN a lo anterior -- no es mérito de ranking, es el
-      // desenlace real de la subasta, que llega en cualquier momento
-      // DESPUÉS de que el Hip ya se haya congelado en el Top N por su
-      // score (el caso normal: el ranking se arma 12h antes de que abra
-      // la venta, mucho antes de que ningún Hip pase por el ring). Antes
-      // esta rama copiaba item.entry TAL CUAL, así que una entrada
-      // congelada quedaba con el saleResult (null, o lo que tuviera) del
-      // momento exacto en que se congeló, PARA SIEMPRE -- de ahí "solo se
-      // ven algunos precios" (solo entraban con precio/RNA ya resuelto los
-      // Hips que llegaban al ranking por PRIMERA VEZ después de ya haberse
-      // vendido). Ahora se refresca siempre con el valor ACTUAL de
-      // Hip.saleResultJson, igual que ya se hacía para las entradas
-      // nuevas más abajo -- así el precio y el estado RNA aparecen para
-      // TODOS los Hips en cuanto la casa de ventas publica el resultado,
-      // sin importar cuándo se congelaron en el ranking.
-      const lockedHipId =
-        typeof item.entry.hipId === "string" ? item.entry.hipId : hipIdByHipNumber.get(item.entry.hipNumber as string);
-      const liveHip = lockedHipId ? hipById.get(lockedHipId) : undefined;
-      return {
-        ...item.entry,
-        rank: index + 1,
-        saleResult: liveHip ? liveHip.saleResultJson ?? null : item.entry.saleResult ?? null,
-      };
-    }
-    const lateralAssetId = lateralAssetIdByHipId.get(item.hip.id) ?? null;
+  const entries = top.map((item, index) => {
+    const lateralAssetId = lateralAssetIdByHipId.get(item.hipId) ?? null;
     return {
       rank: index + 1,
-      hipId: item.hip.id,
+      hipId: item.hipId,
       hipNumber: item.hip.hipNumber,
       horseName: item.hip.horseName,
       sire: item.hip.sire,
       dam: item.hip.dam,
-      overallScore: item.analysis.overallScore,
-      classification: item.analysis.classification,
+      // Score y clasificación salen del mismo número que ve el usuario en
+      // la ficha del Hip (ver rankingScoreFromAnalysis).
+      overallScore: item.score,
+      classification: item.classification,
       lateralPhotoStorageKey: lateralAssetId ? storageKeyByAssetId.get(lateralAssetId) ?? null : null,
-      // CORRECCIÓN 2026-09-15 (a pedido explícito de Ramon: "quiero ver el
-      // precio de los hip que se venden en el dia en tiempo real durante
-      // la venta"): el Ranking del Día mostraba Sire/Dam y miniatura pero
-      // NUNCA el resultado de venta -- el snapshot no lo guardaba. Se
-      // guarda tal cual viene de Hip.saleResultJson (mismo shape que ya
-      // usa el catálogo normal -- ver BackendCatalogSaleResultEntry en el
-      // cliente iOS) para que GET /ranking lo pueda exponer sin ningún
-      // cálculo nuevo. Solo se calcula para entradas NUEVAS que recién
-      // entran esta corrida -- una entrada ya congelada conserva el
-      // resultado de venta que tenía en el momento de congelarse (ver
-      // comentario de RANKING CONGELADO arriba).
+      // Resultado de venta real (precio/RNA/OUT) tal como está HOY en
+      // Hip.saleResultJson -- no es mérito de ranking, solo se muestra
+      // (2026-09-15/16, pedidos explícitos de Ramon).
       saleResult: item.hip.saleResultJson ?? null,
     };
   });
+
   // Comparación insensible al orden de claves: Postgres guarda entriesJson
   // como jsonb, que NO preserva el orden de inserción de un objeto al
-  // volver a leerlo — un JSON.stringify directo compararía distinto
-  // aunque el contenido sea idéntico, y esta detección de cambios nunca
-  // "pegaría" (dejaría de aportar nada, sin romper nada — solo generaría
-  // más historial del necesario). stableStringify ordena las claves antes
-  // de comparar, así que sí detecta correctamente "no cambió nada".
+  // volver a leerlo. stableStringify ordena las claves antes de comparar,
+  // así un tick de 5 min sin cambios reales no escribe nada ni genera
+  // historial.
+  const existing = await db.rankingSnapshot.findUnique({
+    where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
+  });
   const unchanged =
     !!existing &&
     existing.totalHipsToday === totalHipsToday &&
+    existing.analyzedHipsToday === eligibleCount &&
     stableStringify(existing.entriesJson) === stableStringify(entries);
   if (unchanged) return;
 
   await db.$transaction([
     db.rankingSnapshot.upsert({
       where: { organizationId_saleId_sessionDate: { organizationId, saleId, sessionDate: dayStart } },
-      create: { organizationId, saleId, sessionDate: dayStart, entriesJson: entries as unknown as object, totalHipsToday },
-      update: { entriesJson: entries as unknown as object, totalHipsToday, updatedAt: new Date() },
+      create: { organizationId, saleId, sessionDate: dayStart, entriesJson: entries as unknown as object, totalHipsToday, analyzedHipsToday: eligibleCount },
+      update: { entriesJson: entries as unknown as object, totalHipsToday, analyzedHipsToday: eligibleCount, updatedAt: new Date() },
     }),
-    // Historial: una fila nueva en cada recálculo, nunca se sobrescribe —
-    // deja lista la base para mostrar más adelante "cómo cambió el Top 5
-    // a lo largo del día" (ver ARCHITECTURE.md sección 1b).
+    // Historial: una fila nueva en cada recálculo, nunca se sobrescribe
+    // (ver ARCHITECTURE.md sección 1b).
     db.rankingSnapshotVersion.create({
       data: { organizationId, saleId, sessionDate: dayStart, entriesJson: entries as unknown as object, totalHipsToday, triggerReason },
     }),
