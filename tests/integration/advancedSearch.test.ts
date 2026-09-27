@@ -228,6 +228,17 @@ describe("Advanced Search (base real)", () => {
     expect(res.body.values).toEqual([`Consignor${tag}`]);
   });
 
+  test("refresco manual de Media en una venta FINALIZADA: no consulta la casa de ventas ni escribe nada", async () => {
+    const before = await snapshotDatabase();
+    const res = await request(app)
+      .post("/api/v1/sales/hips/media-refresh")
+      .set("x-api-key", ctx.apiKey)
+      .send({ house: "FASIG_TIPTON", externalSaleId: `srch-h-${tag}`, hipNumber: "7" })
+      .expect(200);
+    expect(res.body).toMatchObject({ ok: false, reason: "sale_completed" });
+    expect(await snapshotDatabase()).toEqual(before);
+  });
+
   test("buscar (incluida la venta histórica) es SOLO LECTURA: ninguna tabla de la base cambia", async () => {
     const before = await snapshotDatabase();
     await search({ saleIds: [historicalSaleId] });

@@ -3,6 +3,7 @@ import { clientFor } from "./saleHouses/registry";
 import { mediaFingerprint } from "./analysis/mediaFingerprint";
 import { countNewResources } from "./mediaSweepService";
 import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
+import { getSaleLifecycleStatus } from "./activeSaleService";
 
 /**
  * Refresco MANUAL de Media para UN SOLO Hip puntual (2026-09-16, a pedido
@@ -70,18 +71,39 @@ export interface SingleHipMediaRefreshNotPublished {
   message: string;
 }
 
+/**
+ * Venta FINALIZADA (2026-09-27, regla de historial de Ramon: "una consulta
+ * histórica es SOLO LECTURA... no puede provocar búsqueda de nuevos
+ * videos/fotografías ni actualización automática de Media"). Mismo
+ * criterio único de ciclo de vida que el barrido de las 3am
+ * (`getSaleLifecycleStatus`, ver mediaSweepService.ts) — nunca se consulta
+ * la fuente en vivo de la casa de ventas ni se escribe nada.
+ */
+export interface SingleHipMediaRefreshHistorical {
+  ok: false;
+  reason: "sale_completed";
+  message: string;
+}
+
 export class SingleHipMediaRefreshError extends Error {}
 
 export async function refreshSingleHipMediaFromLiveSource(opts: {
   house: string;
   externalSaleId: string;
   hipNumber: string;
-}): Promise<SingleHipMediaRefreshResult | SingleHipMediaRefreshNotPublished> {
+}): Promise<SingleHipMediaRefreshResult | SingleHipMediaRefreshNotPublished | SingleHipMediaRefreshHistorical> {
   const sale = await db.sale.findUnique({
     where: { house_externalSaleId: { house: opts.house as never, externalSaleId: opts.externalSaleId } },
   });
   if (!sale) {
     throw new SingleHipMediaRefreshError(`Venta ${opts.house}/${opts.externalSaleId} no encontrada.`);
+  }
+  if (getSaleLifecycleStatus(sale) === "COMPLETED") {
+    return {
+      ok: false,
+      reason: "sale_completed",
+      message: `${sale.name}: venta finalizada — el historial es de solo lectura.`,
+    };
   }
   if (sale.catalogAccess !== "FULL") {
     // Mismo criterio que runNightlyMediaSweep para una venta MANUAL_CSV:
