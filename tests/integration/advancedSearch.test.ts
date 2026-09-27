@@ -1,7 +1,7 @@
-// Advanced Search de punta a punta contra una base Postgres real
-// (2026-09-27): venta activa + venta histórica, HIP analizados y sin
-// analizar, favoritos, libros/sesiones, resultados de venta. Verifica
-// también que buscar es SOLO LECTURA: ninguna tabla cambia.
+// Search por venta (2026-09-27) de punta a punta contra Postgres real:
+// selectores con los valores de UNA venta, filtros combinados (Sire, Dam,
+// Grand Sire, Broodmare Sire, Date of Birth, Sex, Color, Consignor),
+// aislamiento entre ventas, detalle de resultados y SOLO LECTURA.
 import request from "supertest";
 import { randomUUID } from "node:crypto";
 import { buildTestApp } from "./testApp";
@@ -12,13 +12,17 @@ const app = buildTestApp();
 jest.setTimeout(60000);
 
 let ctx: Awaited<ReturnType<typeof createTestOrgAndUser>>;
-let activeSaleId: string;
-let historicalSaleId: string;
-const tag = randomUUID().slice(0, 8); // aísla los datos de este test
-
-const now = Date.now();
-const activeDay = new Date(now + 2 * 60 * 60 * 1000);
-const pastDay = new Date(now - 400 * 24 * 60 * 60 * 1000);
+let saleId: string;
+let otherSaleId: string;
+const tag = randomUUID().slice(0, 8);
+const house = "OBS";
+const externalSaleId = `obs-oct-${tag}`;
+const otherExternalSaleId = `srch-h-${tag}`;
+const upcomingDay = new Date(Date.now() + 9 * 24 * 60 * 60 * 1000);
+const pastDay = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
+const SIRE_A = `Into Mischief ${tag}`;
+const SIRE_B = `Gun Runner ${tag}`;
+const GRANDSIRE_A = `Harlan's Holiday ${tag}`;
 
 async function addHip(saleId: string, hipNumber: string, data: Record<string, unknown>, analysis?: { score: number; source?: "AI" | "MANUAL"; lateral?: boolean }, favorite?: string) {
   const hip = await db.hip.create({
@@ -47,8 +51,7 @@ async function addHip(saleId: string, hipNumber: string, data: Record<string, un
 }
 
 async function search(body: object) {
-  const res = await request(app).post("/api/v1/search").set("x-api-key", ctx.apiKey).send({ saleIds: [activeSaleId, historicalSaleId], ...body });
-  return res;
+  return request(app).post("/api/v1/search").set("x-api-key", ctx.apiKey).send({ house, externalSaleId, ...body });
 }
 const hips = (res: request.Response) => res.body.results.map((r: { hipNumber: string }) => r.hipNumber);
 
@@ -59,9 +62,9 @@ const hips = (res: request.Response) => res.body.results.map((r: { hipNumber: st
  * porque otros archivos de test escriben en paralelo en la misma base.
  */
 async function snapshotDatabase() {
-  const hipIds = (await db.hip.findMany({ where: { saleId: { in: [activeSaleId, historicalSaleId] } }, select: { id: true } })).map((h) => h.id);
+  const hipIds = (await db.hip.findMany({ where: { saleId: { in: [saleId, otherSaleId] } }, select: { id: true } })).map((h) => h.id);
   const scope: Record<string, string[]> = {
-    saleId: [activeSaleId, historicalSaleId],
+    saleId: [saleId, otherSaleId],
     hipId: hipIds,
     organizationId: [ctx.organization.id],
     userId: [ctx.user.id],
@@ -83,170 +86,143 @@ async function snapshotDatabase() {
 
 beforeAll(async () => {
   ctx = await createTestOrgAndUser();
-  const active = await db.sale.create({
-    data: { house: "KEENELAND", name: `Search Active ${tag}`, externalSaleId: `srch-a-${tag}`, startDate: activeDay, endDate: activeDay, catalogAccess: "FULL" },
+  const sale = await db.sale.create({
+    data: { house: "OBS", name: `October Yearling ${tag}`, externalSaleId, startDate: upcomingDay, endDate: upcomingDay, catalogAccess: "FULL" },
   });
-  const historical = await db.sale.create({
-    data: { house: "FASIG_TIPTON", name: `Search Historic ${tag}`, externalSaleId: `srch-h-${tag}`, startDate: pastDay, endDate: pastDay, catalogAccess: "FULL" },
+  const other = await db.sale.create({
+    data: { house: "FASIG_TIPTON", name: `Search Historic ${tag}`, externalSaleId: otherExternalSaleId, startDate: pastDay, endDate: pastDay, catalogAccess: "FULL" },
   });
-  activeSaleId = active.id;
-  historicalSaleId = historical.id;
-  await db.saleDay.create({ data: { saleId: activeSaleId, date: activeDay, book: "1", sessionNumber: 1, source: "test" } });
+  saleId = sale.id;
+  otherSaleId = other.id;
 
-  // Venta activa
-  await addHip(activeSaleId, "101", { sex: "C", color: "B", sessionDate: activeDay, horseName: "Colt Excelente" }, { score: 9.2 }, "Comprar");
-  await addHip(activeSaleId, "102", { sex: "F", color: "Chestnut", sessionDate: activeDay, saleResultJson: { priceRaw: "250000.00", purchaser: "Buyer X" } }, { score: 7.8 });
-  await addHip(activeSaleId, "103", { sex: "C", color: "Dark Bay or Brown", sessionDate: activeDay, saleResultJson: { purchaser: "R.N.A. (19,000)", soldAsCode: "RNA" } });
-  await addHip(activeSaleId, "104", { sex: "C", color: "DB/BR", sessionDate: activeDay }, { score: 9.9, source: "MANUAL" });
-  await addHip(activeSaleId, "105", { sex: "C", color: "B", sessionDate: activeDay, sire: `OtherSire${tag}` }, { score: 8.7 }, "Revisar");
-  // Venta histórica
-  await addHip(historicalSaleId, "7", { sex: "C", color: "Bay", sessionDate: pastDay, saleResultJson: { priceRaw: "400000.00", purchaser: "Old Buyer" }, foalingDate: new Date("2024-02-01T00:00:00Z") }, { score: 8.8 });
-  await addHip(historicalSaleId, "8", { sex: "F", color: "GR/RO", consignor: `CONSIGNOR${tag.toUpperCase()}`, sessionDate: pastDay, saleResultJson: { soldAsCode: "OUT" } });
+  // Padre de cada padrillo (Grand Sire) — solo SIRE_A tiene dato cargado.
+  await db.$executeRawUnsafe(`INSERT INTO "Stallion" (id, name, "sireName", "updatedAt") VALUES ($1, $2, $3, now())`, `st-a-${tag}`, SIRE_A.toUpperCase(), GRANDSIRE_A);
+  await db.$executeRawUnsafe(`INSERT INTO "Stallion" (id, name, "updatedAt") VALUES ($1, $2, now())`, `st-b-${tag}`, SIRE_B.toUpperCase());
+
+  const d = (s: string) => new Date(`${s}T00:00:00Z`);
+  await addHip(saleId, "1", { sire: SIRE_A, dam: "Ice Maiden", damSire: "Tapit", consignor: "Vinery Sales", sex: "C", color: "B", foalingDate: d("2025-01-20") }, { score: 9.1 }, "Comprar");
+  await addHip(saleId, "2", { sire: SIRE_A.toUpperCase(), dam: "Racing Stripes", damSire: "TAPIT", consignor: "VINERY SALES", sex: "F", color: "Chestnut", foalingDate: d("2025-03-05") });
+  await addHip(saleId, "10", { sire: SIRE_B, dam: "Queen Caroline", damSire: "Medaglia d'Oro", consignor: "Hidden Brook", sex: "C", color: "Dark Bay or Brown", foalingDate: d("2025-04-30"), saleResultJson: { priceRaw: "0.00", purchaser: "OUT", soldAsCode: "Y" } }, { score: 7.2 });
+  await addHip(saleId, "3", { sire: SIRE_B, dam: "Sea View", damSire: null, consignor: "Hidden Brook", sex: "G", color: "GR/RO", foalingDate: null });
+  // Otra venta: nunca debe aparecer ni en los selectores ni en los resultados.
+  await addHip(otherSaleId, "1", { sire: SIRE_A, dam: "Other Dam", consignor: "Vinery Sales", sex: "C", color: "Bay", foalingDate: d("2025-02-01") });
 });
 
 afterAll(async () => {
-  await cleanupTestData({ saleId: activeSaleId });
-  await cleanupTestData({ saleId: historicalSaleId, organizationId: ctx.organization.id });
+  await db.$executeRawUnsafe(`DELETE FROM "Stallion" WHERE id IN ($1, $2)`, `st-a-${tag}`, `st-b-${tag}`);
+  await cleanupTestData({ saleId });
+  await cleanupTestData({ saleId: otherSaleId, organizationId: ctx.organization.id });
 });
 
-describe("Advanced Search (base real)", () => {
-  test("Quick Search por HIP", async () => {
-    const res = await search({ q: "103" });
+describe("Search por venta (base real)", () => {
+  test("selectores: solo los valores de ESTA venta, agrupados sin distinguir mayúsculas", async () => {
+    const res = await request(app).get(`/api/v1/search/filters?house=${house}&externalSaleId=${externalSaleId}`).set("x-api-key", ctx.apiKey).expect(200);
+    const f = res.body;
+    expect(f.sale).toMatchObject({ id: saleId, house: "OBS", status: "UPCOMING", hipCount: 4 });
+    expect(f.sires).toEqual([
+      { value: SIRE_B, count: 2 },
+      { value: SIRE_A, count: 2 },
+    ]);
+    expect(f.dams.map((v: { value: string }) => v.value)).toEqual(["Ice Maiden", "Queen Caroline", "Racing Stripes", "Sea View"]);
+    expect(f.dams.find((v: { value: string }) => v.value === "Other Dam")).toBeUndefined();
+    expect(f.broodmareSires).toEqual([
+      { value: "Medaglia d'Oro", count: 1 },
+      { value: "Tapit", count: 2 },
+    ]);
+    expect(f.consignors).toEqual([
+      { value: "Hidden Brook", count: 2 },
+      { value: "Vinery Sales", count: 2 },
+    ]);
+    expect(f.grandsires).toEqual([{ value: GRANDSIRE_A, count: 2 }]);
+    expect(f.sexes.map((v: { value: string }) => v.value).sort()).toEqual(["C", "F", "G"]);
+    expect(f.colors).toEqual([
+      { value: "Bay", count: 1 },
+      { value: "Dark Bay/Brown", count: 1 },
+      { value: "Chestnut", count: 1 },
+      { value: "Gray/Roan", count: 1 },
+    ]);
+    expect(f.dateOfBirth).toEqual({ min: "2025-01-20", max: "2025-04-30", withData: 3 });
+  });
+
+  test("venta inexistente -> 404; faltan parámetros -> 400", async () => {
+    await request(app).get(`/api/v1/search/filters?house=OBS&externalSaleId=nope-${tag}`).set("x-api-key", ctx.apiKey).expect(404);
+    await request(app).get(`/api/v1/search/filters?house=OBS`).set("x-api-key", ctx.apiKey).expect(400);
+  });
+
+  test("sin filtros: toda la venta, en orden de HIP numérico, sin mezclar otras ventas", async () => {
+    const res = await search({});
     expect(res.status).toBe(200);
-    expect(hips(res)).toEqual(["103"]);
+    expect(hips(res)).toEqual(["1", "2", "3", "10"]);
+    expect(res.body.total).toBe(4);
   });
 
-  test("Quick Search con un número busca SOLO por HIP exacto (no 'contiene' en textos)", async () => {
-    // "Dam 101", "Dam 102"... contienen "10", pero "10" no es ningún HIP.
-    expect(hips(await search({ saleIds: [activeSaleId, historicalSaleId], q: "10" }))).toEqual([]);
-    expect(hips(await search({ saleIds: [activeSaleId, historicalSaleId], q: "7" }))).toEqual(["7"]);
+  test("Sire (sin distinguir mayúsculas) y Broodmare Sire", async () => {
+    expect(hips(await search({ sires: [SIRE_A] }))).toEqual(["1", "2"]);
+    expect(hips(await search({ broodmareSires: ["tapit"] }))).toEqual(["1", "2"]);
   });
 
-  test("Quick Search por Sire (no distingue mayúsculas)", async () => {
-    const res = await search({ q: `othersire${tag}` });
-    expect(hips(res)).toEqual(["105"]);
+  test("Grand Sire: a través del padre del Sire (Stallion.sireName)", async () => {
+    expect(hips(await search({ grandsires: [GRANDSIRE_A] }))).toEqual(["1", "2"]);
+    expect(hips(await search({ grandsires: [`Nadie ${tag}`] }))).toEqual([]);
   });
 
-  test("múltiples filtros combinados: Keeneland + año + Colt + Sire + AI Score ≥ 8.5 + Mis Favoritos", async () => {
-    const year = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric" }).format(activeDay));
-    const res = await search({ houses: ["KEENELAND"], years: [year], sexes: ["C"], sire: `Sire${tag}`, aiScoreMin: 8.5, favoritesOnly: true });
-    expect(hips(res)).toEqual(["101", "105"]);
+  test("Dam, Consignor, Sex y Color", async () => {
+    expect(hips(await search({ dams: ["Queen Caroline"] }))).toEqual(["10"]);
+    expect(hips(await search({ consignors: ["hidden brook"] }))).toEqual(["3", "10"]);
+    expect(hips(await search({ sexes: ["C"] }))).toEqual(["1", "10"]);
+    expect(hips(await search({ colors: ["Dark Bay/Brown", "Gray/Roan"] }))).toEqual(["3", "10"]);
   });
 
-  test("búsqueda dentro de la venta activa y dentro de una venta histórica", async () => {
-    const active = await search({ saleIds: [activeSaleId] });
-    expect(hips(active)).toEqual(["101", "102", "103", "104", "105"]);
-    expect(active.body.results[0].sale.status).not.toBe("COMPLETED");
-    const historic = await search({ saleIds: [historicalSaleId] });
-    expect(hips(historic)).toEqual(["7", "8"]);
-    expect(historic.body.results[0].sale.status).toBe("COMPLETED");
-    expect(historic.body.results[0].birthYear).toBe(2024);
+  test("Date of Birth desde/hasta (incluye ambos extremos; sin fecha nunca entra)", async () => {
+    expect(hips(await search({ dobFrom: "2025-01-20", dobTo: "2025-03-05" }))).toEqual(["1", "2"]);
+    expect(hips(await search({ dobFrom: "2025-03-01" }))).toEqual(["2", "10"]);
+    expect(hips(await search({ dobTo: "2025-01-19" }))).toEqual([]);
   });
 
-  test("HIP sin análisis IA -> 'Not analyzed' (sin score); puntaje manual o lateral no evaluada tampoco cuentan", async () => {
-    const res = await search({ saleIds: [activeSaleId] });
+  test("filtros combinados (AND)", async () => {
+    expect(hips(await search({ sires: [SIRE_A, SIRE_B], sexes: ["C"], consignors: ["Vinery Sales"] }))).toEqual(["1"]);
+  });
+
+  test("detalle de cada resultado: venta, AI Score o 'Not analyzed', favorito, resultado", async () => {
+    const res = await search({});
     const byHip = Object.fromEntries(res.body.results.map((r: { hipNumber: string }) => [r.hipNumber, r]));
-    expect(byHip["103"]).toMatchObject({ aiScore: null, aiClass: "NOT_ANALYZED" });
-    expect(byHip["104"]).toMatchObject({ aiScore: null, aiClass: "NOT_ANALYZED" });
-    expect(byHip["101"]).toMatchObject({ aiScore: 9.2, aiClass: "EXCELENTE" });
-    expect(byHip["102"]).toMatchObject({ aiScore: 7.8, aiClass: "BIEN" });
+    expect(byHip["1"]).toMatchObject({ aiScore: 9.1, aiClass: "EXCELENTE", isFavorite: true, favoriteDecision: "Comprar", color: "Bay", key: `OBS::${externalSaleId}::1` });
+    expect(byHip["2"]).toMatchObject({ aiScore: null, aiClass: "NOT_ANALYZED", isFavorite: false });
+    expect(byHip["10"].saleResult).toMatchObject({ status: "OUT", price: null });
+    expect(byHip["1"].sale).toMatchObject({ house: "OBS", externalSaleId, status: "UPCOMING" });
   });
 
-  test("resultados: favorito, venta, fecha, consignor, resultado de venta y color normalizado", async () => {
-    const res = await search({ q: "101" });
-    const r = res.body.results[0];
-    expect(r).toMatchObject({ isFavorite: true, favoriteDecision: "Comprar", consignor: `Consignor${tag}`, color: "Bay", book: "1", sessionNumber: 1, key: `KEENELAND::srch-a-${tag}::101` });
-    expect(new Date(r.sessionDate).getTime()).toBe(activeDay.getTime());
-    const rna = (await search({ q: "103" })).body.results[0];
-    expect(rna.saleResult).toMatchObject({ status: "RNA", price: null });
-    const sold = (await search({ q: "102" })).body.results[0];
-    expect(sold.saleResult).toMatchObject({ status: "SOLD", price: 250000 });
+  test("paginación", async () => {
+    const p1 = await search({ pageSize: 3 });
+    const p2 = await search({ pageSize: 3, page: 2 });
+    expect(hips(p1)).toEqual(["1", "2", "3"]);
+    expect(hips(p2)).toEqual(["10"]);
+    expect(p1.body.totalPages).toBe(2);
   });
 
-  test("ordenamiento por HIP (asc/desc), por AI Score y por Precio", async () => {
-    expect(hips(await search({ sort: { field: "HIP", direction: "ASC" } }))).toEqual(["7", "8", "101", "102", "103", "104", "105"]);
-    expect(hips(await search({ sort: { field: "HIP", direction: "DESC" } }))).toEqual(["105", "104", "103", "102", "101", "8", "7"]);
-    const byScore = hips(await search({ sort: { field: "AI_SCORE", direction: "DESC" } }));
-    expect(byScore.slice(0, 4)).toEqual(["101", "7", "105", "102"]);
-    expect(hips(await search({ sort: { field: "PRICE", direction: "DESC" } })).slice(0, 2)).toEqual(["7", "102"]);
-  });
-
-  test("filtros de venta: RNA, vendido con rango de precio, OUT", async () => {
-    expect(hips(await search({ saleStatuses: ["RNA"] }))).toEqual(["103"]);
-    expect(hips(await search({ saleStatuses: ["SOLD"], priceMin: 300000 }))).toEqual(["7"]);
-    expect(hips(await search({ saleStatuses: ["OUT"] }))).toEqual(["8"]);
-  });
-
-  test("libro y sesión (Calendario de Ventas guardado)", async () => {
-    expect(hips(await search({ books: ["1"] }))).toEqual(["101", "102", "103", "104", "105"]);
-    expect(hips(await search({ sessions: [2] }))).toEqual([]);
-  });
-
-  test("color normalizado y clases IA", async () => {
-    expect(hips(await search({ colors: ["Dark Bay/Brown"] }))).toEqual(["103", "104"]);
-    expect(hips(await search({ aiClasses: ["EXCELENTE"] }))).toEqual(["7", "101", "105"]);
-    expect(hips(await search({ aiClasses: ["NOT_ANALYZED"] }))).toEqual(["8", "103", "104"]);
-  });
-
-  test("Revisado ✓ / No revisado con las claves del dispositivo", async () => {
-    const keys = [`KEENELAND::srch-a-${tag}::102`, `FASIG_TIPTON::srch-h-${tag}::7`];
-    expect(hips(await search({ reviewed: "REVIEWED", reviewedKeys: keys }))).toEqual(["7", "102"]);
-    expect(hips(await search({ reviewed: "NOT_REVIEWED", reviewedKeys: keys }))).toEqual(["8", "101", "103", "104", "105"]);
-  });
-
-  test("paginación: total y páginas correctos, sin cargar todo de una vez", async () => {
-    const p1 = await search({ pageSize: 3, page: 1 });
-    const p3 = await search({ pageSize: 3, page: 3 });
-    expect(p1.body).toMatchObject({ total: 7, totalPages: 3, page: 1 });
-    expect(hips(p1)).toHaveLength(3);
-    expect(hips(p3)).toEqual(["105"]);
-  });
-
-  test("pedido inválido -> 400 controlado", async () => {
-    const res = await search({ aiScoreMin: 20 });
+  test("pedido inválido -> 400 con mensaje", async () => {
+    const res = await search({ sexes: ["X"] });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("INVALID_SEARCH");
   });
 
-  test("opciones de filtros: ventas con su estado, libros/sesiones y campos no disponibles", async () => {
-    const res = await request(app).get("/api/v1/search/options").set("x-api-key", ctx.apiKey).expect(200);
-    const historic = res.body.sales.find((s: { id: string }) => s.id === historicalSaleId);
-    const active = res.body.sales.find((s: { id: string }) => s.id === activeSaleId);
-    expect(historic).toMatchObject({ status: "COMPLETED", hipCount: 2 });
-    expect(active.days).toEqual([expect.objectContaining({ book: "1", sessionNumber: 1 })]);
-    expect(res.body.unavailableFields).toEqual(expect.arrayContaining(["grandsire", "stateFoaled", "breedersCupEligible"]));
-    expect(res.body.colors).toEqual(expect.arrayContaining(["Bay", "Chestnut"]));
-  });
-
-  test("sugerencias de Sire (valores reales guardados)", async () => {
-    const res = await request(app).get(`/api/v1/search/suggest?field=sire&q=othersire${tag}`).set("x-api-key", ctx.apiKey).expect(200);
-    expect(res.body.values).toEqual([`OtherSire${tag}`]);
-  });
-
-  test("sugerencias sin duplicados por mayúsculas: muestra la variante escrita en mixto", async () => {
-    const res = await request(app).get(`/api/v1/search/suggest?field=consignor&q=consignor${tag}`).set("x-api-key", ctx.apiKey).expect(200);
-    expect(res.body.values).toEqual([`Consignor${tag}`]);
-  });
-
   test("refresco manual de Media en una venta FINALIZADA: no consulta la casa de ventas ni escribe nada", async () => {
+    await addHip(otherSaleId, "7", { sex: "C", color: "Bay" });
     const before = await snapshotDatabase();
     const res = await request(app)
       .post("/api/v1/sales/hips/media-refresh")
       .set("x-api-key", ctx.apiKey)
-      .send({ house: "FASIG_TIPTON", externalSaleId: `srch-h-${tag}`, hipNumber: "7" })
+      .send({ house: "FASIG_TIPTON", externalSaleId: otherExternalSaleId, hipNumber: "7" })
       .expect(200);
     expect(res.body).toMatchObject({ ok: false, reason: "sale_completed" });
     expect(await snapshotDatabase()).toEqual(before);
   });
 
-  test("buscar (incluida la venta histórica) es SOLO LECTURA: ninguna tabla de la base cambia", async () => {
+  test("buscar es SOLO LECTURA: ninguna tabla de la base cambia", async () => {
     const before = await snapshotDatabase();
-    await search({ saleIds: [historicalSaleId] });
-    await search({ q: "7", sort: { field: "AI_SCORE", direction: "DESC" } });
-    await search({ houses: ["FASIG_TIPTON"], favoritesOnly: true });
-    await request(app).get("/api/v1/search/options").set("x-api-key", ctx.apiKey).expect(200);
-    await request(app).get(`/api/v1/search/suggest?field=dam&q=Dam`).set("x-api-key", ctx.apiKey).expect(200);
-    const after = await snapshotDatabase();
-    expect(after).toEqual(before);
+    await request(app).get(`/api/v1/search/filters?house=${house}&externalSaleId=${externalSaleId}`).set("x-api-key", ctx.apiKey).expect(200);
+    await search({ sires: [SIRE_A], grandsires: [GRANDSIRE_A], dobFrom: "2025-01-01" });
+    await search({ colors: ["Bay"], page: 2 });
+    expect(await snapshotDatabase()).toEqual(before);
   });
 });

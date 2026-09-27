@@ -1,65 +1,93 @@
-// Advanced Search — reglas puras (2026-09-27): validación, campos
-// derivados, filtros combinados, orden y paginación. Ver src/search/searchLogic.ts.
+// Search por venta — reglas puras (2026-09-27): validación del pedido
+// (solo los filtros de la nueva ventana) y reglas de negocio reutilizadas de
+// la versión anterior. Ver src/search/searchLogic.ts.
 import {
-  parseSearchRequest,
+  parseSaleSearchRequest,
   normalizeColor,
   saleStatusOf,
   salePriceOf,
   aiScoreOf,
   aiClassOf,
-  birthYearOf,
   hipKey,
-  applyDerivedFilters,
-  sortCandidates,
+  nameKey,
+  compareHips,
   paginate,
-  SearchCandidate,
   SEARCH_DEFAULT_PAGE_SIZE,
 } from "../../src/search/searchLogic";
 import { HttpError } from "../../src/api/errorHandler";
 
-function cand(over: Partial<SearchCandidate>): SearchCandidate {
-  return {
-    hipId: over.hipNumber ? `id-${over.hipNumber}` : "id",
-    key: "KEENELAND::12::1",
-    hipNumber: "1",
-    saleId: "s1",
-    sessionDate: new Date("2026-09-20T16:00:00Z"),
-    color: "Bay",
-    birthYear: 2025,
-    saleStatus: "NO_RESULT",
-    price: null,
-    aiScore: null,
-    aiClass: "NOT_ANALYZED",
-    isFavorite: false,
-    ...over,
-  };
+const base = { house: "OBS", externalSaleId: "obs-oct-2026" };
+
+function expect400(body: unknown) {
+  try {
+    parseSaleSearchRequest(body);
+  } catch (e) {
+    expect(e).toBeInstanceOf(HttpError);
+    expect((e as HttpError).status).toBe(400);
+    return;
+  }
+  throw new Error("se esperaba HttpError 400");
 }
 
-describe("parseSearchRequest — validación", () => {
-  test("pedido vacío: HIP ascendente, página 1, 50 por página", () => {
-    const r = parseSearchRequest({});
-    expect(r.sort).toEqual({ field: "HIP", direction: "ASC" });
-    expect(r.page).toBe(1);
-    expect(r.pageSize).toBe(SEARCH_DEFAULT_PAGE_SIZE);
+describe("parseSaleSearchRequest — validación", () => {
+  test("solo venta: página 1, 50 por página, sin filtros", () => {
+    const r = parseSaleSearchRequest(base);
+    expect(r).toEqual({ ...base, page: 1, pageSize: SEARCH_DEFAULT_PAGE_SIZE, sires: undefined, dams: undefined, grandsires: undefined, broodmareSires: undefined, consignors: undefined, sexes: undefined, colors: undefined, dobFrom: undefined, dobTo: undefined });
   });
-  test("recorta textos y descarta vacíos", () => {
-    const r = parseSearchRequest({ q: "  Tapit ", sire: "   " });
-    expect(r.q).toBe("Tapit");
-    expect(r.sire).toBeUndefined();
+
+  test("la venta es obligatoria", () => {
+    expect400({});
+    expect400({ house: "OBS" });
+    expect400({ externalSaleId: "x" });
   });
-  test.each([
-    [{ houses: ["SOTHEBYS"] }],
-    [{ aiScoreMin: 11 }],
-    [{ aiScoreMin: 9, aiScoreMax: 8 }],
-    [{ priceMin: -1 }],
-    [{ sort: { field: "NAME" } }],
-    [{ saleDateFrom: "27/09/2026" }],
-    [{ pageSize: 1000 }],
-    [{ colors: ["Purple"] }],
-    [{ reviewed: "REVIEWED" }], // sin reviewedKeys
-    [{ q: 123 }],
-  ])("rechaza datos inválidos con 400: %j", (body) => {
-    expect(() => parseSearchRequest(body)).toThrow(HttpError);
+
+  test("listas: recorta, quita duplicados y descarta listas vacías", () => {
+    const r = parseSaleSearchRequest({ ...base, sires: [" Into Mischief ", "Into Mischief", "Gun Runner"], dams: [] });
+    expect(r.sires).toEqual(["Into Mischief", "Gun Runner"]);
+    expect(r.dams).toBeUndefined();
+  });
+
+  test("sexo y color solo aceptan valores conocidos", () => {
+    expect(parseSaleSearchRequest({ ...base, sexes: ["C", "F"], colors: ["Bay", "Gray/Roan"] })).toMatchObject({ sexes: ["C", "F"], colors: ["Bay", "Gray/Roan"] });
+    expect400({ ...base, sexes: ["X"] });
+    expect400({ ...base, colors: ["Palomino"] });
+  });
+
+  test("fecha de nacimiento: AAAA-MM-DD y rango ordenado", () => {
+    expect(parseSaleSearchRequest({ ...base, dobFrom: "2025-01-15", dobTo: "2025-05-31" })).toMatchObject({ dobFrom: "2025-01-15", dobTo: "2025-05-31" });
+    expect400({ ...base, dobFrom: "15/01/2025" });
+    expect400({ ...base, dobFrom: "2025-06-01", dobTo: "2025-01-01" });
+  });
+
+  test("filtros viejos de la versión anterior ya no existen (se ignoran, no rompen)", () => {
+    const r = parseSaleSearchRequest({ ...base, q: "Gun", aiScoreMin: 8, favoritesOnly: true });
+    expect(r).not.toHaveProperty("q");
+    expect(r).not.toHaveProperty("aiScoreMin");
+  });
+
+  test("tipos inválidos -> 400", () => {
+    expect400({ ...base, sires: "Into Mischief" });
+    expect400({ ...base, sires: [123] });
+    expect400({ ...base, page: 0 });
+    expect400({ ...base, pageSize: 1000 });
+  });
+});
+
+describe("nombres y orden", () => {
+  test("clave de nombre: mayúsculas y espacios normalizados (misma regla que el SQL)", () => {
+    expect(nameKey("  Into   Mischief ")).toBe("INTO MISCHIEF");
+    expect(nameKey("INTO MISCHIEF")).toBe(nameKey("Into Mischief"));
+  });
+
+  test("HIP en orden numérico (9 < 25 < 100 < 1000)", () => {
+    expect(["1000", "25", "9", "100"].sort(compareHips)).toEqual(["9", "25", "100", "1000"]);
+  });
+
+  test("paginación", () => {
+    const items = Array.from({ length: 120 }, (_, i) => i);
+    expect(paginate(items, 1, 50)).toHaveLength(50);
+    expect(paginate(items, 3, 50)).toEqual(items.slice(100));
+    expect(paginate(items, 4, 50)).toEqual([]);
   });
 });
 
@@ -95,11 +123,6 @@ describe("campos derivados", () => {
     expect(salePriceOf({ purchaser: "R.N.A. (19,000)", soldAsCode: "RNA" })).toBeNull();
     expect(salePriceOf({ soldAsCode: "OUT" })).toBeNull();
   });
-  test("año de nacimiento: fecha completa primero, año del catálogo como respaldo", () => {
-    expect(birthYearOf(new Date("2025-03-02T00:00:00Z"), 2024)).toBe(2025);
-    expect(birthYearOf(null, 2025)).toBe(2025);
-    expect(birthYearOf(null, null)).toBeNull();
-  });
   test("HIP nunca analizado -> sin score y 'Not analyzed' (nunca se infiere)", () => {
     expect(aiScoreOf(null)).toBeNull();
     expect(aiClassOf(null)).toBe("NOT_ANALYZED");
@@ -123,60 +146,3 @@ describe("campos derivados", () => {
   });
 });
 
-describe("filtros combinados (AND)", () => {
-  const base = [
-    cand({ hipNumber: "1", aiScore: 9.1, aiClass: "EXCELENTE", isFavorite: true, color: "Bay", key: "K::1::1" }),
-    cand({ hipNumber: "2", aiScore: 7.5, aiClass: "BIEN", isFavorite: true, color: "Chestnut", key: "K::1::2" }),
-    cand({ hipNumber: "3", aiScore: null, aiClass: "NOT_ANALYZED", isFavorite: false, key: "K::1::3", saleStatus: "RNA" }),
-    cand({ hipNumber: "4", aiScore: 8.6, aiClass: "EXCELENTE", isFavorite: false, key: "K::1::4", saleStatus: "SOLD", price: 250000 }),
-  ];
-  const f = (body: object) => applyDerivedFilters(base, parseSearchRequest(body)).map((c) => c.hipNumber);
-
-  test("AI Score ≥ 8.5 + Mis Favoritos -> solo los que cumplen las dos", () => {
-    expect(f({ aiScoreMin: 8.5, favoritesOnly: true })).toEqual(["1"]);
-  });
-  test("un rango de score nunca incluye HIP sin analizar", () => {
-    expect(f({ aiScoreMin: 0 })).toEqual(["1", "2", "4"]);
-  });
-  test("clase 'Not analyzed' se puede pedir explícitamente", () => {
-    expect(f({ aiClasses: ["NOT_ANALYZED"] })).toEqual(["3"]);
-  });
-  test("RNA / vendido + rango de precio", () => {
-    expect(f({ saleStatuses: ["RNA"] })).toEqual(["3"]);
-    expect(f({ priceMin: 200000, priceMax: 300000 })).toEqual(["4"]);
-  });
-  test("color + rango de HIP", () => {
-    expect(f({ colors: ["Bay"], hipFrom: 1, hipTo: 3 })).toEqual(["1", "3"]);
-    expect(f({ colors: ["Chestnut"] })).toEqual(["2"]);
-  });
-  test("Revisado ✓ / No revisado con las claves de este dispositivo", () => {
-    expect(f({ reviewed: "REVIEWED", reviewedKeys: ["K::1::2", "K::1::4"] })).toEqual(["2", "4"]);
-    expect(f({ reviewed: "NOT_REVIEWED", reviewedKeys: ["K::1::2", "K::1::4"] })).toEqual(["1", "3"]);
-  });
-});
-
-describe("orden y paginación", () => {
-  const list = [
-    cand({ hipNumber: "100", aiScore: 8, price: 50000 }),
-    cand({ hipNumber: "9", aiScore: null, price: null }),
-    cand({ hipNumber: "25", aiScore: 9.5, price: 400000 }),
-    cand({ hipNumber: "1000", aiScore: 7, price: null }),
-  ];
-  const order = (field: "HIP" | "AI_SCORE" | "PRICE", direction: "ASC" | "DESC") => sortCandidates(list, { field, direction }).map((c) => c.hipNumber);
-
-  test("HIP numérico (9 < 25 < 100 < 1000), ascendente y descendente", () => {
-    expect(order("HIP", "ASC")).toEqual(["9", "25", "100", "1000"]);
-    expect(order("HIP", "DESC")).toEqual(["1000", "100", "25", "9"]);
-  });
-  test("AI Score: los no analizados siempre al final", () => {
-    expect(order("AI_SCORE", "DESC")).toEqual(["25", "100", "1000", "9"]);
-    expect(order("AI_SCORE", "ASC")).toEqual(["1000", "100", "25", "9"]);
-  });
-  test("Precio: sin precio siempre al final", () => {
-    expect(order("PRICE", "DESC")).toEqual(["25", "100", "9", "1000"]);
-  });
-  test("paginación", () => {
-    expect(paginate([1, 2, 3, 4, 5], 2, 2)).toEqual([3, 4]);
-    expect(paginate([1, 2, 3], 3, 2)).toEqual([]);
-  });
-});

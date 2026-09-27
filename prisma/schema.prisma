@@ -1383,6 +1383,11 @@ model Stallion {
   // comentario arriba: varios padrillos investigados cambiaron de granja o
   // de país entre 2024 y 2026).
   currentFarm         String?
+  // Padre de este padrillo (2026-09-27, Search por venta): permite el filtro
+  // "Grand Sire" de un Hip = sireName del Stallion que es su Sire. Ninguna
+  // casa de ventas lo publica en el catálogo — se carga aparte desde una
+  // fuente verificable. Nullable: sin dato, el filtro no ofrece ese valor.
+  sireName            String?
 
   @@index([firstYearlingsYear])
 }
