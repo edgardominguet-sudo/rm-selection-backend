@@ -2,6 +2,8 @@ import { randomUUID } from "crypto";
 import { Router, Request, Response } from "express";
 import { withAsyncErrors } from "./asyncRouter";
 import { HttpError } from "./errorHandler";
+import { parseSearchRequest } from "../search/searchLogic";
+import { runSearch, getSearchOptions, suggestValues, SUGGEST_FIELDS, SuggestField } from "../search/searchService";
 import { db } from "../db";
 import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
@@ -142,6 +144,35 @@ router.get("/sales", async (_req, res) => {
  * La app de iOS ya manda `x-api-key` en cada request, así que esto no
  * requiere ningún cambio del lado de iOS.
  */
+// MARK: - Advanced Search (2026-09-27, pedido explícito de Ramon)
+//
+// SOLO LECTURA: consulta lo que ya está guardado (venta activa, próximas e
+// historial). Nunca descarga, analiza, barre ni escribe nada — consultar
+// una venta terminada no reactiva ningún proceso. Ver src/search/.
+router.post("/search", requireUser, async (req, res) => {
+  const request = parseSearchRequest(req.body);
+  const response = await runSearch({ organizationId: req.user!.organizationId, userId: req.user!.id }, request);
+  res.json(response);
+});
+
+router.get("/search/options", requireUser, async (_req, res) => {
+  res.json(await getSearchOptions());
+});
+
+router.get("/search/suggest", requireUser, async (req, res) => {
+  const field = req.query.field;
+  if (typeof field !== "string" || !(SUGGEST_FIELDS as readonly string[]).includes(field)) {
+    throw new HttpError(400, `'field' debe ser uno de: ${SUGGEST_FIELDS.join(", ")}.`, "INVALID_SEARCH");
+  }
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q.length < 2 || q.length > 100) {
+    res.json({ values: [] });
+    return;
+  }
+  const saleIds = typeof req.query.saleIds === "string" && req.query.saleIds ? req.query.saleIds.split(",").slice(0, 50) : undefined;
+  res.json({ values: await suggestValues(field as SuggestField, q, saleIds) });
+});
+
 router.get("/ranking", requireUser, async (req, res) => {
   const house = req.query.house as string | undefined;
   const externalSaleId = req.query.externalSaleId as string | undefined;
