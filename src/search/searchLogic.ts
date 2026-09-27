@@ -222,11 +222,18 @@ export interface SaleResultInput {
 export function saleStatusOf(result: SaleResultInput | null | undefined): SaleStatus {
   if (!result) return "NO_RESULT";
   const code = (result.soldAsCode ?? "").trim().toUpperCase();
-  const price = (result.priceRaw ?? "").trim();
+  const purchaser = (result.purchaser ?? "").trim().toUpperCase();
+  // Un precio "0.00" no es una venta: Fasig-Tipton publica así los retiros
+  // (priceRaw "0.00", purchaser "OUT", soldAsCode "Y" — 111 Hips reales).
+  const priceNumber = Number((result.priceRaw ?? "").replace(/[$,\s]/g, ""));
+  const hasPrice = (result.priceRaw ?? "").trim() !== "" && Number.isFinite(priceNumber) && priceNumber > 0;
+  const withdrawn = ["OUT", "SCRATCHED", "WD", "WITHDRAWN"];
   if (code === "RNA") return "RNA";
+  if (code === "PS" && hasPrice) return "SOLD";
+  if (withdrawn.includes(code) && !hasPrice) return "OUT";
+  if (hasPrice) return "SOLD";
+  if (withdrawn.includes(purchaser)) return "OUT";
   if (code === "PS") return "SOLD";
-  if (["OUT", "SCRATCHED", "WD", "WITHDRAWN"].includes(code) && !price) return "OUT";
-  if (price) return "SOLD";
   return "NO_RESULT";
 }
 

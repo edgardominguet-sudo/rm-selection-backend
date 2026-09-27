@@ -81,6 +81,10 @@ describe("campos derivados", () => {
   test("resultado de venta: misma regla que SaleResult.outcome de la app", () => {
     expect(saleStatusOf({ priceRaw: "300000.00", purchaser: "Lael Stable" })).toBe("SOLD");
     expect(saleStatusOf({ purchaser: "R.N.A. (19,000)", soldAsCode: "RNA" })).toBe("RNA");
+    // Retiro publicado por Fasig-Tipton como precio 0 + comprador "OUT": no es venta ni "$0".
+    expect(saleStatusOf({ priceRaw: "0.00", purchaser: "OUT", soldAsCode: "Y" })).toBe("OUT");
+    expect(salePriceOf({ priceRaw: "0.00", purchaser: "OUT", soldAsCode: "Y" })).toBeNull();
+    expect(saleStatusOf({ priceRaw: "0.00", soldAsCode: "Y" })).toBe("NO_RESULT");
     expect(saleStatusOf({ soldAsCode: "OUT" })).toBe("OUT");
     expect(saleStatusOf({ soldAsCode: "PS", priceRaw: "5000" })).toBe("SOLD");
     expect(saleStatusOf({ soldAsCode: "W" })).toBe("NO_RESULT");
