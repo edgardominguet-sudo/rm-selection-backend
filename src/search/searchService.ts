@@ -58,14 +58,20 @@ async function buildHipWhere(req: SearchRequest, userId: string): Promise<Prisma
 
   if (req.q) {
     const q = req.q;
-    const or: Prisma.HipWhereInput[] = [
-      { sire: contains(q) },
-      { dam: contains(q) },
-      { horseName: contains(q) },
-      { consignor: contains(q) },
-    ];
-    if (/^\d+$/.test(q)) or.unshift({ hipNumber: q });
-    and.push({ OR: or });
+    if (/^\d+$/.test(q)) {
+      // Un número puro es un HIP: coincidencia exacta y nada más (antes
+      // también buscaba "contiene" en textos y "1" traía casi 2000 Hips).
+      and.push({ hipNumber: q });
+    } else {
+      and.push({
+        OR: [
+          { sire: contains(q) },
+          { dam: contains(q) },
+          { horseName: contains(q) },
+          { consignor: contains(q) },
+        ],
+      });
+    }
   }
   if (req.sire) and.push({ sire: contains(req.sire) });
   if (req.dam) and.push({ dam: contains(req.dam) });
@@ -364,9 +370,12 @@ export async function suggestValues(field: SuggestField, q: string, saleIds?: st
   const pattern = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
   const bySale = saleIds && saleIds.length > 0;
   const sql =
-    `SELECT ${column} AS v, count(*) AS n FROM "Hip" WHERE ${column} ILIKE $1` +
+    // Agrupa sin distinguir mayúsculas ("Into Mischief" = "INTO MISCHIEF",
+    // según la casa de ventas) y muestra la variante escrita en mixto.
+    `SELECT (array_agg(btrim(${column}) ORDER BY (btrim(${column}) = upper(btrim(${column}))), btrim(${column})))[1] AS v, count(*) AS n` +
+    ` FROM "Hip" WHERE ${column} ILIKE $1` +
     (bySale ? ` AND "saleId" = ANY($2::text[])` : "") +
-    ` GROUP BY ${column} ORDER BY n DESC, v ASC LIMIT 15`;
+    ` GROUP BY lower(btrim(${column})) ORDER BY n DESC, v ASC LIMIT 15`;
   const rows = bySale
     ? await db.$queryRawUnsafe<Array<{ v: string }>>(sql, pattern, saleIds)
     : await db.$queryRawUnsafe<Array<{ v: string }>>(sql, pattern);

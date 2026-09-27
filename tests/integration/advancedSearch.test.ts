@@ -101,7 +101,7 @@ beforeAll(async () => {
   await addHip(activeSaleId, "105", { sex: "C", color: "B", sessionDate: activeDay, sire: `OtherSire${tag}` }, { score: 8.7 }, "Revisar");
   // Venta histórica
   await addHip(historicalSaleId, "7", { sex: "C", color: "Bay", sessionDate: pastDay, saleResultJson: { priceRaw: "400000.00", purchaser: "Old Buyer" }, foalingDate: new Date("2024-02-01T00:00:00Z") }, { score: 8.8 });
-  await addHip(historicalSaleId, "8", { sex: "F", color: "GR/RO", sessionDate: pastDay, saleResultJson: { soldAsCode: "OUT" } });
+  await addHip(historicalSaleId, "8", { sex: "F", color: "GR/RO", consignor: `CONSIGNOR${tag.toUpperCase()}`, sessionDate: pastDay, saleResultJson: { soldAsCode: "OUT" } });
 });
 
 afterAll(async () => {
@@ -114,6 +114,12 @@ describe("Advanced Search (base real)", () => {
     const res = await search({ q: "103" });
     expect(res.status).toBe(200);
     expect(hips(res)).toEqual(["103"]);
+  });
+
+  test("Quick Search con un número busca SOLO por HIP exacto (no 'contiene' en textos)", async () => {
+    // "Dam 101", "Dam 102"... contienen "10", pero "10" no es ningún HIP.
+    expect(hips(await search({ saleIds: [activeSaleId, historicalSaleId], q: "10" }))).toEqual([]);
+    expect(hips(await search({ saleIds: [activeSaleId, historicalSaleId], q: "7" }))).toEqual(["7"]);
   });
 
   test("Quick Search por Sire (no distingue mayúsculas)", async () => {
@@ -138,7 +144,7 @@ describe("Advanced Search (base real)", () => {
   });
 
   test("HIP sin análisis IA -> 'Not analyzed' (sin score); puntaje manual o lateral no evaluada tampoco cuentan", async () => {
-    const res = await search({ saleIds: [activeSaleId], q: "10" });
+    const res = await search({ saleIds: [activeSaleId] });
     const byHip = Object.fromEntries(res.body.results.map((r: { hipNumber: string }) => [r.hipNumber, r]));
     expect(byHip["103"]).toMatchObject({ aiScore: null, aiClass: "NOT_ANALYZED" });
     expect(byHip["104"]).toMatchObject({ aiScore: null, aiClass: "NOT_ANALYZED" });
@@ -215,6 +221,11 @@ describe("Advanced Search (base real)", () => {
   test("sugerencias de Sire (valores reales guardados)", async () => {
     const res = await request(app).get(`/api/v1/search/suggest?field=sire&q=othersire${tag}`).set("x-api-key", ctx.apiKey).expect(200);
     expect(res.body.values).toEqual([`OtherSire${tag}`]);
+  });
+
+  test("sugerencias sin duplicados por mayúsculas: muestra la variante escrita en mixto", async () => {
+    const res = await request(app).get(`/api/v1/search/suggest?field=consignor&q=consignor${tag}`).set("x-api-key", ctx.apiKey).expect(200);
+    expect(res.body.values).toEqual([`Consignor${tag}`]);
   });
 
   test("buscar (incluida la venta histórica) es SOLO LECTURA: ninguna tabla de la base cambia", async () => {
