@@ -64,16 +64,38 @@ describe("PUT/GET/DELETE /me/decisions/:hipId", () => {
     expect(get.body).toHaveLength(0);
   });
 
-  test("borrar una decisión es un tombstone (deletedAt), no un borrado físico — desaparece de la lista normal", async () => {
+  // CORREGIDO 2026-09-26: este test esperaba una lista vacía después de
+  // borrar, pero la sincronización necesita que el borrado VIAJE a los
+  // otros dispositivos: el servidor devuelve la fila marcada como borrada
+  // (tombstone, deletedAt) y cada dispositivo la quita localmente
+  // (SyncEngine.pullDecisions). Si no llegara, el otro dispositivo seguiría
+  // mostrando la decisión para siempre.
+  test("borrar una decisión es un tombstone (deletedAt), no un borrado físico — llega MARCADA COMO BORRADA en la lista completa y en la de cambios", async () => {
     await request(app)
       .put(`/api/v1/me/decisions/${hipCtx.hip.id}`)
       .set("x-api-key", ctx.apiKey)
       .send({ finalCall: "Comprar" })
       .expect(200);
+    const beforeDelete = new Date();
+    await new Promise((r) => setTimeout(r, 15));
     await request(app).delete(`/api/v1/me/decisions/${hipCtx.hip.id}`).set("x-api-key", ctx.apiKey).expect(200);
 
+    // Lista completa (sin `since`): la fila sigue, pero marcada como borrada.
     const get = await request(app).get("/api/v1/me/decisions").set("x-api-key", ctx.apiKey).expect(200);
-    expect(get.body).toHaveLength(0);
+    expect(get.body).toHaveLength(1);
+    expect(get.body[0].hipId).toBe(hipCtx.hip.id);
+    expect(get.body[0].deletedAt).not.toBeNull();
+
+    // Consulta de cambios (`since`): el borrado es un cambio y tiene que llegar.
+    const getSince = await request(app)
+      .get(`/api/v1/me/decisions?since=${beforeDelete.toISOString()}`)
+      .set("x-api-key", ctx.apiKey)
+      .expect(200);
+    expect(getSince.body).toHaveLength(1);
+    expect(getSince.body[0].deletedAt).not.toBeNull();
+
+    // Nunca vuelve como activa: ninguna fila activa para este Hip.
+    expect(get.body.filter((d: { deletedAt: string | null }) => d.deletedAt === null)).toHaveLength(0);
   });
 
   test("re-guardar una decisión después de borrarla la revive (deletedAt vuelve a null)", async () => {

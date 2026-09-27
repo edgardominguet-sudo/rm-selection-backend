@@ -4,6 +4,7 @@
 // para borrados) pero cada una con su propia forma de "upsert idempotente"
 // (ver comentarios reales en routes.ts).
 import request from "supertest";
+import { randomUUID } from "node:crypto";
 import { buildTestApp } from "./testApp";
 import { createTestOrgAndUser, createTestSaleAndHip, cleanupTestData } from "./fixtures";
 
@@ -55,7 +56,14 @@ describe("Notes: /me/observations", () => {
     expect(get.body).toHaveLength(1);
   });
 
-  test("borrar una observación (tombstone) hace que desaparezca de la lista normal, con `since` también", async () => {
+  // CORREGIDO 2026-09-26: este test esperaba una lista vacía después de
+  // borrar, pero la sincronización necesita que el borrado VIAJE a los
+  // otros dispositivos: el servidor devuelve la nota marcada como borrada
+  // (tombstone, deletedAt) y cada dispositivo la quita localmente
+  // (SyncEngine.pullObservations). También en la lista completa: la app la
+  // pide sin `since` cuando reinicia su cursor, y ahí también tiene que
+  // enterarse de lo borrado.
+  test("borrar una observación (tombstone): llega MARCADA COMO BORRADA en la lista completa y en la de cambios, nunca como activa", async () => {
     const before = new Date();
     const post = await request(app)
       .post("/api/v1/me/observations")
@@ -65,14 +73,46 @@ describe("Notes: /me/observations", () => {
     await request(app).delete(`/api/v1/me/observations/${post.body.id}`).set("x-api-key", ctx.apiKey).expect(200);
 
     const get = await request(app).get("/api/v1/me/observations").set("x-api-key", ctx.apiKey).expect(200);
-    expect(get.body).toHaveLength(0);
+    expect(get.body).toHaveLength(1);
+    expect(get.body[0].id).toBe(post.body.id);
+    expect(get.body[0].deletedAt).not.toBeNull();
 
-    // `since` (usado para sincronización incremental) también debe reflejar 0 filas activas.
     const getSince = await request(app)
       .get(`/api/v1/me/observations?since=${before.toISOString()}`)
       .set("x-api-key", ctx.apiKey)
       .expect(200);
-    expect(getSince.body).toHaveLength(0);
+    expect(getSince.body).toHaveLength(1);
+    expect(getSince.body[0].id).toBe(post.body.id);
+    expect(getSince.body[0].deletedAt).not.toBeNull();
+
+    const active = (rows: Array<{ deletedAt: string | null }>) => rows.filter((r) => r.deletedAt === null);
+    expect(active(get.body)).toHaveLength(0);
+    expect(active(getSince.body)).toHaveLength(0);
+  });
+
+  // NUEVO 2026-09-26: una subida atrasada de una nota ya borrada (ej. un
+  // reintento de sincronización que quedó en cola en otro dispositivo) no
+  // puede revivirla — el upsert por id nunca limpia deletedAt (routes.ts).
+  test("una subida/reenvío atrasado de una nota ya borrada NO la revive", async () => {
+    const noteId = randomUUID();
+    await request(app)
+      .post("/api/v1/me/observations")
+      .set("x-api-key", ctx.apiKey)
+      .send({ id: noteId, hipId: hipCtx.hip.id, text: "Nota original." })
+      .expect(200);
+    await request(app).delete(`/api/v1/me/observations/${noteId}`).set("x-api-key", ctx.apiKey).expect(200);
+
+    // Llega tarde el mismo POST (mismo id) que había quedado en cola.
+    await request(app)
+      .post("/api/v1/me/observations")
+      .set("x-api-key", ctx.apiKey)
+      .send({ id: noteId, hipId: hipCtx.hip.id, text: "Nota original." })
+      .expect(200);
+
+    const get = await request(app).get("/api/v1/me/observations").set("x-api-key", ctx.apiKey).expect(200);
+    const rows = get.body.filter((r: { id: string }) => r.id === noteId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deletedAt).not.toBeNull();
   });
 });
 
@@ -105,10 +145,27 @@ describe("Pedigree: /me/pedigree-annotations", () => {
       .set("x-api-key", ctx.apiKey)
       .send({ drawingData })
       .expect(200);
+    const beforeDelete = new Date();
+    await new Promise((r) => setTimeout(r, 15));
     await request(app).delete(`/api/v1/me/pedigree-annotations/${hipCtx.hip.id}`).set("x-api-key", ctx.apiKey).expect(200);
 
+    // CORREGIDO 2026-09-26: el borrado tiene que llegar a los otros
+    // dispositivos (SyncEngine.pullPedigreeAnnotations quita el dibujo
+    // local) — llega MARCADO COMO BORRADO y SIN el dibujo, tanto en la
+    // lista completa como en la de cambios.
     const get = await request(app).get("/api/v1/me/pedigree-annotations").set("x-api-key", ctx.apiKey).expect(200);
-    expect(get.body).toHaveLength(0);
+    expect(get.body).toHaveLength(1);
+    expect(get.body[0].hipId).toBe(hipCtx.hip.id);
+    expect(get.body[0].deletedAt).not.toBeNull();
+    expect(get.body[0].drawingData).toBeNull();
+
+    const getSince = await request(app)
+      .get(`/api/v1/me/pedigree-annotations?since=${beforeDelete.toISOString()}`)
+      .set("x-api-key", ctx.apiKey)
+      .expect(200);
+    expect(getSince.body).toHaveLength(1);
+    expect(getSince.body[0].deletedAt).not.toBeNull();
+    expect(getSince.body[0].drawingData).toBeNull();
   });
 });
 
@@ -139,9 +196,24 @@ describe("Vet Report: /me/vet-reports", () => {
       .expect(200);
     expect(put.body.notes).toBe("Actualizado: leve hallazgo en corvejón izquierdo.");
 
+    const beforeDelete = new Date();
+    await new Promise((r) => setTimeout(r, 15));
     await request(app).delete(`/api/v1/me/vet-reports/${post.body.id}`).set("x-api-key", ctx.apiKey).expect(200);
+
+    // CORREGIDO 2026-09-26: igual que Notas/Decisiones/Pedigree, el
+    // borrado llega MARCADO COMO BORRADO (tombstone) para que los otros
+    // dispositivos se enteren — nunca como activo.
     const get = await request(app).get("/api/v1/me/vet-reports").set("x-api-key", ctx.apiKey).expect(200);
-    expect(get.body).toHaveLength(0);
+    expect(get.body).toHaveLength(1);
+    expect(get.body[0].id).toBe(post.body.id);
+    expect(get.body[0].deletedAt).not.toBeNull();
+
+    const getSince = await request(app)
+      .get(`/api/v1/me/vet-reports?since=${beforeDelete.toISOString()}`)
+      .set("x-api-key", ctx.apiKey)
+      .expect(200);
+    expect(getSince.body).toHaveLength(1);
+    expect(getSince.body[0].deletedAt).not.toBeNull();
   });
 
   test("crear sin hipId -> 400", async () => {
