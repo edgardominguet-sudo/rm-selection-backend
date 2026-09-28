@@ -14,6 +14,7 @@ let saleId: string;
 const SIRE_A = `Pappacap ${tag}`;
 const SIRE_B = `Lexitonian ${tag}`;
 const SIRE_C = `Known Sire ${tag}`;
+const SIRE_D = `Arabian Lion ${tag}`;
 
 function pdfText(sireSire: string, sire: string, damSire: string) {
   return [
@@ -40,7 +41,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.$executeRawUnsafe(`DELETE FROM "Stallion" WHERE name = ANY($1::text[])`, [SIRE_A, SIRE_B, SIRE_C].map((s) => s.toUpperCase()));
+  await db.$executeRawUnsafe(`DELETE FROM "Stallion" WHERE name = ANY($1::text[])`, [SIRE_A, SIRE_B, SIRE_C, SIRE_D].map((s) => s.toUpperCase()));
   await cleanupTestData({ saleId });
 });
 
@@ -101,4 +102,31 @@ test("Grand Sire: un PDF por padrillo, verificado contra el catálogo; nunca pis
     return texts[url] ?? null;
   });
   expect(fetched).toEqual([]);
+});
+
+test("Grand Sire: si el PDF del primer HIP no verifica, prueba el siguiente HIP del mismo padrillo (máx. 3)", async () => {
+  const fetched: string[] = [];
+  const texts: Record<string, string> = {
+    "https://pdf/d1": pdfText("Justify", "Otro Sire", "Fastnet Rock"), // no coincide
+    "https://pdf/d2": pdfText("Justify", SIRE_D, "Pioneerof the Nile"),
+  };
+  const summary = await enrichGrandSiresFromPedigreePdfs(
+    `Catalog Names ${tag}`,
+    [
+      hip("8", { sire: SIRE_D, damSire: "Fastnet Rock (AUS)", pedigreePdfUrl: "https://pdf/d1" }),
+      hip("50", { sire: SIRE_D, damSire: "Pioneerof the Nile", pedigreePdfUrl: "https://pdf/d2" }),
+      hip("169", { sire: SIRE_D, damSire: "War Front", pedigreePdfUrl: "https://pdf/d3" }),
+    ],
+    async (url) => {
+      fetched.push(url);
+      return texts[url] ?? null;
+    }
+  );
+  expect(summary).toEqual({ sires: 1, alreadyKnown: 0, checked: 1, saved: 1, unverified: 0 });
+  expect(fetched).toEqual(["https://pdf/d1", "https://pdf/d2"]);
+  const rows = await db.$queryRawUnsafe<Array<{ sireName: string; sireNameSource: string }>>(
+    `SELECT "sireName", "sireNameSource" FROM "Stallion" WHERE name = $1`,
+    SIRE_D.toUpperCase()
+  );
+  expect(rows[0]).toMatchObject({ sireName: "Justify", sireNameSource: `Pedigree PDF · Catalog Names ${tag} · HIP 50` });
 });

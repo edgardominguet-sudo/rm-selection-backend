@@ -40,8 +40,14 @@ export function normalizeBredState(raw: string | null | undefined): string | nul
   return /^[A-Z]{2,4}$/.test(code) ? code : null;
 }
 
+/**
+ * Clave de comparación de nombres de caballos: sin mayúsculas/espacios extra
+ * y sin el sufijo de país entre paréntesis — el PDF de OBS lo publica de forma
+ * inconsistente ("Fastnet Rock" en el cruce vs "Fastnet Rock (AUS)" en el
+ * catálogo JSON), pero es el mismo caballo.
+ */
 function nameKey(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toUpperCase();
+  return value.trim().replace(/\s*\([A-Z]{2,4}\)\s*$/i, "").replace(/\s+/g, " ").toUpperCase();
 }
 
 export interface PedigreeCross {

@@ -101,6 +101,19 @@ describe("Grand Sire desde el PDF de pedigree de OBS", () => {
     expect(extractVerifiedGrandSire(HIP1, { sire: "Pappacap", damSire: "Tapit" })).toBeNull();
   });
 
+  test("el sufijo de país que el PDF omite no impide verificar (HIP 8: Fastnet Rock vs Fastnet Rock (AUS))", () => {
+    const HIP8 = [
+      "Justify....................................",
+      "Unbound ..............................",
+      "Fastnet Rock..........................",
+      "Praesepe................................",
+      "Arabian Lion..........................",
+      "Irish Teardrop (GB) ..............",
+    ].join("\n");
+    expect(extractVerifiedGrandSire(HIP8, { sire: "Arabian Lion", damSire: "Fastnet Rock (AUS)" })).toBe("Justify");
+    expect(extractVerifiedGrandSire(HIP8, { sire: "Arabian Lion", damSire: "Fastnet Rock (IRE) II" })).toBeNull();
+  });
+
   test("texto incompleto o de otro formato -> null", () => {
     expect(parseObsPedigreeCross("Consigned by X\nBay Colt")).toBeNull();
     expect(extractVerifiedGrandSire("", { sire: "Pappacap" })).toBeNull();

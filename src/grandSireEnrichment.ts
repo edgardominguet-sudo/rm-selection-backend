@@ -20,6 +20,7 @@ import { extractVerifiedGrandSire } from "./catalogNames";
 /** Tope de PDFs por corrida (una venta grande tiene ~120-250 padrillos distintos). */
 const MAX_PDFS_PER_RUN = 300;
 const PDF_TIMEOUT_MS = 20_000;
+const MAX_CANDIDATES_PER_SIRE = 3;
 
 export type PdfTextFetcher = (url: string) => Promise<string | null>;
 
@@ -54,13 +55,20 @@ export async function enrichGrandSiresFromPedigreePdfs(
   hips: NormalizedHip[],
   fetchText: PdfTextFetcher = fetchPdfText
 ): Promise<GrandSireEnrichmentSummary> {
-  // Un HIP representativo por padrillo (con PDF, y con Broodmare Sire para verificar mejor).
-  const bySire = new Map<string, NormalizedHip>();
+  // Hasta 3 HIPs por padrillo (con PDF; primero los que tienen Broodmare Sire
+  // para verificar mejor). Si el PDF del primero no verifica, se prueba el
+  // siguiente — nunca más de MAX_CANDIDATES_PER_SIRE por padrillo.
+  const bySire = new Map<string, NormalizedHip[]>();
   for (const hip of hips) {
     if (!hip.sire || !hip.pedigreePdfUrl) continue;
     const key = normalizeStallionName(hip.sire);
-    const current = bySire.get(key);
-    if (!current || (!current.damSire && hip.damSire)) bySire.set(key, hip);
+    const list = bySire.get(key) ?? [];
+    list.push(hip);
+    bySire.set(key, list);
+  }
+  for (const list of bySire.values()) {
+    list.sort((a, b) => Number(!a.damSire) - Number(!b.damSire));
+    list.splice(MAX_CANDIDATES_PER_SIRE);
   }
   const summary: GrandSireEnrichmentSummary = { sires: bySire.size, alreadyKnown: 0, checked: 0, saved: 0, unverified: 0 };
   if (bySire.size === 0) return summary;
@@ -72,12 +80,20 @@ export async function enrichGrandSiresFromPedigreePdfs(
   const knownSet = new Set(known.map((k) => k.name));
   summary.alreadyKnown = knownSet.size;
 
-  for (const [key, hip] of bySire) {
+  for (const [key, candidates] of bySire) {
     if (knownSet.has(key)) continue;
     if (summary.checked >= MAX_PDFS_PER_RUN) break;
     summary.checked += 1;
-    const text = await fetchText(hip.pedigreePdfUrl!);
-    const grandSire = text ? extractVerifiedGrandSire(text, { sire: hip.sire!, damSire: hip.damSire }) : null;
+    let grandSire: string | null = null;
+    let hip = candidates[0];
+    for (const candidate of candidates) {
+      const text = await fetchText(candidate.pedigreePdfUrl!);
+      grandSire = text ? extractVerifiedGrandSire(text, { sire: candidate.sire!, damSire: candidate.damSire }) : null;
+      if (grandSire) {
+        hip = candidate;
+        break;
+      }
+    }
     if (!grandSire) {
       summary.unverified += 1;
       continue;
