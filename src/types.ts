@@ -77,6 +77,17 @@ export interface NormalizedHip {
     // con `parseFoalingDate` (ver saleHouses/dateParsing.ts) a partir de su
     // propio campo crudo — nunca inventada ni copiada de foalYear.
     foalingDate?: Date;
+    // Search por venta (2026-09-28). Todos opcionales: si la fuente no los
+    // trae, upsertNormalizedHips no toca el valor guardado.
+    //  - bredState: estado/país donde nació (OBS `foaling_area`: "KY", "FL"...).
+    //  - consignorBase: nombre real del consignor SIN su rol de agente (OBS
+    //    `consignor_sort`); para las demás casas se deriva de `consignor`
+    //    con consignorBaseName (catalogNames.ts).
+    //  - pedigreePdfUrl: PDF de pedigree del HIP (OBS `pedigree_pdf_link`),
+    //    solo para completar el Grand Sire del padrillo — no se guarda.
+    bredState?: string;
+    consignorBase?: string;
+    pedigreePdfUrl?: string;
 }
 
 // Contexto opcional de la venta que algún cliente puede necesitar además

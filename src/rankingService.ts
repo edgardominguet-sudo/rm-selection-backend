@@ -1,4 +1,6 @@
 import { Sale } from "@prisma/client";
+import { consignorBaseName } from "./catalogNames";
+import { enrichGrandSiresFromPedigreePdfs } from "./grandSireEnrichment";
 import { db } from "./db";
 import { config } from "./config";
 import { clientFor } from "./saleHouses/registry";
@@ -132,6 +134,8 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
         foalYear: hip.foalYear,
         foalingDate: hip.foalingDate,
         color: hip.color,
+        bredState: hip.bredState,
+        consignorBase: hip.consignorBase ?? consignorBaseName(hip.consignor) ?? undefined,
         sessionDate,
         mediaJson: hip.media as unknown as object,
         saleResultJson: (hip.saleResult ?? null) as unknown as object,
@@ -149,6 +153,8 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
         foalYear: hip.foalYear,
         foalingDate: hip.foalingDate,
         color: hip.color,
+        bredState: hip.bredState,
+        consignorBase: hip.consignorBase ?? consignorBaseName(hip.consignor) ?? undefined,
         sessionDate,
         mediaJson: hip.media as unknown as object,
         saleResultJson: (hip.saleResult ?? null) as unknown as object,
@@ -401,6 +407,18 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   });
 
   await upsertNormalizedHips(sale.id, hips, sessionDates);
+
+  // Grand Sire (2026-09-28): un PDF de pedigree por padrillo que todavía no
+  // lo tenga — ver grandSireEnrichment.ts. Solo para fuentes que publican
+  // el PDF por HIP (hoy OBS). Nunca debe tirar abajo la sincronización.
+  if (hips.some((h) => h.pedigreePdfUrl)) {
+    try {
+      const summary = await enrichGrandSiresFromPedigreePdfs(sale.name, hips);
+      console.log(`[grand-sire] "${sale.name}": ${JSON.stringify(summary)}`);
+    } catch (err) {
+      console.error(`[grand-sire] Error completando Grand Sire de "${sale.name}":`, err);
+    }
+  }
 
   // Calendario de Ventas (SaleDay): resuelto en processSale(), NO acá —
   // corre en todos los ciclos del scheduler (no atado a la cadencia de

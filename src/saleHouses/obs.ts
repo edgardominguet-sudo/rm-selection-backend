@@ -9,6 +9,7 @@ import {
 import { fetchWithRetry } from "../util/httpRetry";
 import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
 import { parseFoalingDate } from "./dateParsing";
+import { normalizeBredState } from "../catalogNames";
 
 // OBS (Ocala Breeders' Sales) — integración real de catálogo (2026-09-26).
 //
@@ -54,6 +55,14 @@ interface RawHip {
   dam_name?: string | null;
   dam_sire?: string | null;
   consignor_name?: string | null;
+  // Nombre real del consignor SIN el rol ("Vinery Sales"); el rol va aparte
+  // en property_line_2 ("Agent XVI"). Confirmado con la venta 155 (2026-09-28).
+  consignor_sort?: string | null;
+  property_line_1?: string | null;
+  // Estado/país donde nació ("KY", "FL", "NY"...).
+  foaling_area?: string | null;
+  // PDF de pedigree del HIP (fuente del Grand Sire).
+  pedigree_pdf_link?: string | null;
   barn_number?: string | null;
   session_number?: string | null;
   in_out_status?: string | null; // "I" (en venta) | "O" (retirado/scratch).
@@ -137,6 +146,9 @@ function normalize(entry: RawHip): NormalizedHip {
     horseName: entry.horse_name?.trim() || undefined,
     sex: entry.sex ?? undefined,
     consignor: entry.consignor_name?.trim() || undefined,
+    consignorBase: entry.consignor_sort?.trim() || entry.property_line_1?.trim() || undefined,
+    bredState: normalizeBredState(entry.foaling_area) ?? undefined,
+    pedigreePdfUrl: entry.pedigree_pdf_link?.trim() || undefined,
     barn: entry.barn_number ?? undefined,
     sire: entry.sire_name?.trim() || undefined,
     dam: entry.dam_name?.trim() || undefined,

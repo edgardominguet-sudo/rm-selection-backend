@@ -100,10 +100,10 @@ beforeAll(async () => {
   await db.$executeRawUnsafe(`INSERT INTO "Stallion" (id, name, "updatedAt") VALUES ($1, $2, now())`, `st-b-${tag}`, SIRE_B.toUpperCase());
 
   const d = (s: string) => new Date(`${s}T00:00:00Z`);
-  await addHip(saleId, "1", { sire: SIRE_A, dam: "Ice Maiden", damSire: "Tapit", consignor: "Vinery Sales", sex: "C", color: "B", foalingDate: d("2025-01-20") }, { score: 9.1 }, "Comprar");
-  await addHip(saleId, "2", { sire: SIRE_A.toUpperCase(), dam: "Racing Stripes", damSire: "TAPIT", consignor: "VINERY SALES", sex: "F", color: "Chestnut", foalingDate: d("2025-03-05") });
-  await addHip(saleId, "10", { sire: SIRE_B, dam: "Queen Caroline", damSire: "Medaglia d'Oro", consignor: "Hidden Brook", sex: "C", color: "Dark Bay or Brown", foalingDate: d("2025-04-30"), saleResultJson: { priceRaw: "0.00", purchaser: "OUT", soldAsCode: "Y" } }, { score: 7.2 });
-  await addHip(saleId, "3", { sire: SIRE_B, dam: "Sea View", damSire: null, consignor: "Hidden Brook", sex: "G", color: "GR/RO", foalingDate: null });
+  await addHip(saleId, "1", { sire: SIRE_A, dam: "Ice Maiden", damSire: "Tapit", consignor: "Vinery Sales, Agent XVI", consignorBase: "Vinery Sales", bredState: "KY", sex: "C", color: "B", foalingDate: d("2025-01-20") }, { score: 9.1 }, "Comprar");
+  await addHip(saleId, "2", { sire: SIRE_A.toUpperCase(), dam: "Racing Stripes", damSire: "TAPIT", consignor: "VINERY SALES, AGENT", bredState: "FL", sex: "F", color: "Chestnut", foalingDate: d("2025-03-05") });
+  await addHip(saleId, "10", { sire: SIRE_B, dam: "Queen Caroline", damSire: "Medaglia d'Oro", consignor: "Hidden Brook, Agent II", bredState: "KY", sex: "C", color: "Dark Bay or Brown", foalingDate: d("2025-04-30"), saleResultJson: { priceRaw: "0.00", purchaser: "OUT", soldAsCode: "Y" } }, { score: 7.2 });
+  await addHip(saleId, "3", { sire: SIRE_B, dam: "Sea View", damSire: null, consignor: "Hidden Brook Agent V", sex: "G", color: "GR/RO", foalingDate: null });
   // Otra venta: nunca debe aparecer ni en los selectores ni en los resultados.
   await addHip(otherSaleId, "1", { sire: SIRE_A, dam: "Other Dam", consignor: "Vinery Sales", sex: "C", color: "Bay", foalingDate: d("2025-02-01") });
 });
@@ -142,6 +142,35 @@ describe("Search por venta (base real)", () => {
       { value: "Gray/Roan", count: 1 },
     ]);
     expect(f.dateOfBirth).toEqual({ min: "2025-01-20", max: "2025-04-30", withData: 3 });
+    // Estado de nacimiento: solo los que la fuente publicó (el HIP 3 no tiene).
+    expect(f.bredStates).toEqual([
+      { value: "KY", count: 2 },
+      { value: "FL", count: 1 },
+    ]);
+  });
+
+  test("Consignor: el rol de agente (Agent, Agent II, Agent V, AGENT) NO crea consignors separados", async () => {
+    const res = await request(app).get(`/api/v1/search/filters?house=${house}&externalSaleId=${externalSaleId}`).set("x-api-key", ctx.apiKey).expect(200);
+    // Una sola entrada por consignor real, con TODOS sus HIPs contados.
+    expect(res.body.consignors).toEqual([
+      { value: "Hidden Brook", count: 2 },
+      { value: "Vinery Sales", count: 2 },
+    ]);
+    // Al elegirlo aparecen todos sus HIPs, cada uno una sola vez.
+    expect(hips(await search({ consignors: ["Vinery Sales"] }))).toEqual(["1", "2"]);
+    expect(hips(await search({ consignors: ["Hidden Brook"] }))).toEqual(["3", "10"]);
+    // El texto original completo del consignor se conserva tal cual.
+    const r = await search({ consignors: ["Vinery Sales"] });
+    expect(r.body.results.map((i: { consignor: string }) => i.consignor)).toEqual(["Vinery Sales, Agent XVI", "VINERY SALES, AGENT"]);
+  });
+
+  test("Bred State: filtro y dato de cada HIP (sin dato -> null, nunca inventado)", async () => {
+    expect(hips(await search({ bredStates: ["KY"] }))).toEqual(["1", "10"]);
+    const all = await search({});
+    const byHip = Object.fromEntries(all.body.results.map((i: { hipNumber: string; bredState: string | null }) => [i.hipNumber, i.bredState]));
+    expect(byHip).toEqual({ "1": "KY", "2": "FL", "3": null, "10": "KY" });
+    const bad = await search({ bredStates: ["Kentucky"] });
+    expect(bad.status).toBe(400);
   });
 
   test("venta inexistente -> 404; faltan parámetros -> 400", async () => {

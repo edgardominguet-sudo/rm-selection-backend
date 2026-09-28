@@ -463,6 +463,13 @@ model Hip {
   // el próximo resync automático la completa sola en los Hips ya
   // guardados, igual que barn (ver migración hip_barn).
   foalingDate       DateTime?
+  // Search por venta (2026-09-28): estado/país donde nació ("KY", "FL"...)
+  // tal como lo publica la fuente (OBS `foaling_area`), y nombre real del
+  // consignor sin su rol de agente (OBS `consignor_sort`; otras casas: ver
+  // consignorBaseName en catalogNames.ts). `consignor` conserva el texto
+  // completo original.
+  bredState         String?
+  consignorBase     String?
   color             String?
 
   // Fecha (día calendario) de la jornada en la que está programado
@@ -1388,6 +1395,8 @@ model Stallion {
   // casa de ventas lo publica en el catálogo — se carga aparte desde una
   // fuente verificable. Nullable: sin dato, el filtro no ofrece ese valor.
   sireName            String?
+  // De dónde salió sireName (ej. "Pedigree PDF · <venta> · HIP 1").
+  sireNameSource      String?
 
   @@index([firstYearlingsYear])
 }

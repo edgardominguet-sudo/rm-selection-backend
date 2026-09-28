@@ -41,6 +41,7 @@ export interface SaleSearchRequest {
   consignors?: string[];
   sexes?: string[];
   colors?: string[];
+  bredStates?: string[]; // "KY", "FL"... (2026-09-28)
   dobFrom?: string; // YYYY-MM-DD
   dobTo?: string; // YYYY-MM-DD
   page: number;
@@ -100,6 +101,11 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
     consignors: optStringList(b.consignors, "consignors"),
     sexes: optStringList(b.sexes, "sexes", SEXES),
     colors: optStringList(b.colors, "colors", CANONICAL_COLORS),
+    bredStates: optStringList(b.bredStates, "bredStates")?.map((v) => {
+      const code = v.toUpperCase();
+      if (!/^[A-Z]{2,4}$/.test(code)) bad(`'bredStates' contiene un valor inválido: ${v}.`);
+      return code;
+    }),
     dobFrom: optDay(b.dobFrom, "dobFrom"),
     dobTo: optDay(b.dobTo, "dobTo"),
     page: optInt(b.page, "page", 1, 100000) ?? 1,

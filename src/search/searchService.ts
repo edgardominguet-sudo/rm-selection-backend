@@ -19,6 +19,7 @@ import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getSaleLifecycleStatus } from "../activeSaleService";
 import { resolveReadUrl } from "../storage/r2Client";
 import { HttpError } from "../api/errorHandler";
+import { AGENT_SUFFIX_SQL_PATTERN } from "../catalogNames";
 import {
   SaleSearchRequest,
   CANONICAL_COLORS,
@@ -60,11 +61,19 @@ export interface SaleSearchFilters {
   consignors: FilterValue[];
   sexes: FilterValue[];
   colors: FilterValue[];
+  bredStates: FilterValue[];
   dateOfBirth: { min: string | null; max: string | null; withData: number };
 }
 
-// Columnas permitidas (lista cerrada — nunca texto del usuario en el SQL).
-const NAME_COLUMNS = { sire: `"sire"`, dam: `"dam"`, damSire: `"damSire"`, consignor: `"consignor"` } as const;
+// Expresiones permitidas (lista cerrada — nunca texto del usuario en el SQL).
+//
+// Consignor (2026-09-28): se agrupa y se filtra por el NOMBRE REAL, sin el
+// rol de agente ("Vinery Sales, Agent XVI" y "Vinery Sales, Agent" son el
+// mismo consignor). Primero `consignorBase` (dato de la fuente, ver
+// catalogNames.ts); para filas guardadas antes de esa columna, la misma
+// regla aplicada en SQL. `consignor` (texto completo) no se modifica.
+const CONSIGNOR_NAME_SQL = `COALESCE(NULLIF(btrim("consignorBase"), ''), NULLIF(btrim(regexp_replace(btrim("consignor"), '${AGENT_SUFFIX_SQL_PATTERN}', '', 'i')), ''))`;
+const NAME_COLUMNS = { sire: `"sire"`, dam: `"dam"`, damSire: `"damSire"`, consignor: CONSIGNOR_NAME_SQL } as const;
 
 async function groupedNames(saleId: string, column: string): Promise<FilterValue[]> {
   // Agrupa sin distinguir mayúsculas/espacios y muestra la variante escrita
@@ -87,7 +96,7 @@ function isoDay(d: Date | null): string | null {
 
 export async function getSaleSearchFilters(house: string, externalSaleId: string): Promise<SaleSearchFilters> {
   const sale = await resolveSale(house, externalSaleId);
-  const [sires, dams, broodmareSires, consignors, sexRows, colorRows, grandsireRows, dobRows] = await Promise.all([
+  const [sires, dams, broodmareSires, consignors, sexRows, colorRows, grandsireRows, dobRows, stateRows] = await Promise.all([
     groupedNames(sale.id, NAME_COLUMNS.sire),
     groupedNames(sale.id, NAME_COLUMNS.dam),
     groupedNames(sale.id, NAME_COLUMNS.damSire),
@@ -116,6 +125,12 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
       `SELECT min("foalingDate") AS mn, max("foalingDate") AS mx,
               count("foalingDate")::int AS "withData", count(*)::int AS total
          FROM "Hip" WHERE "saleId" = $1`,
+      sale.id
+    ),
+    db.$queryRawUnsafe<Array<{ v: string; n: number }>>(
+      `SELECT upper(btrim("bredState")) AS v, count(*)::int AS n FROM "Hip"
+        WHERE "saleId" = $1 AND "bredState" IS NOT NULL AND btrim("bredState") <> ''
+        GROUP BY upper(btrim("bredState")) ORDER BY 2 DESC, 1 ASC`,
       sale.id
     ),
   ]);
@@ -147,6 +162,7 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
     sexes: sexRows.map((r) => ({ value: r.v, count: Number(r.n) })),
     colors: CANONICAL_COLORS.filter((c) => colorCounts.has(c)).map((c) => ({ value: c, count: colorCounts.get(c)! })),
     dateOfBirth: { min: isoDay(dob?.mn ?? null), max: isoDay(dob?.mx ?? null), withData: Number(dob?.withData ?? 0) },
+    bredStates: stateRows.map((r) => ({ value: r.v, count: Number(r.n) })),
   };
 }
 
@@ -203,6 +219,8 @@ export interface SearchResultItem {
   birthYear: number | null;
   foalingDate: Date | null;
   consignor: string | null;
+  /** Estado/país donde nació ("KY"...) — null si la fuente no lo publica. */
+  bredState: string | null;
   barn: string | null;
   sale: { id: string; name: string; house: string; externalSaleId: string; status: string; startDate: Date | null; endDate: Date | null };
   sessionDate: Date | null;
@@ -240,7 +258,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
         AND ($2::text[] IS NULL OR upper(regexp_replace(btrim(h."sire"), '\\s+', ' ', 'g')) = ANY($2::text[]))
         AND ($3::text[] IS NULL OR upper(regexp_replace(btrim(h."dam"), '\\s+', ' ', 'g')) = ANY($3::text[]))
         AND ($4::text[] IS NULL OR upper(regexp_replace(btrim(h."damSire"), '\\s+', ' ', 'g')) = ANY($4::text[]))
-        AND ($5::text[] IS NULL OR upper(regexp_replace(btrim(h."consignor"), '\\s+', ' ', 'g')) = ANY($5::text[]))
+        AND ($5::text[] IS NULL OR upper(regexp_replace(${CONSIGNOR_NAME_SQL.replace(/"consignor(Base)?"/g, (m) => `h.${m}`)}, '\\s+', ' ', 'g')) = ANY($5::text[]))
+        AND ($10::text[] IS NULL OR upper(btrim(h."bredState")) = ANY($10::text[]))
         AND ($6::text[] IS NULL OR upper(btrim(h."sex")) = ANY($6::text[]))
         AND ($7::text[] IS NULL OR upper(btrim(h."sire")) IN (
               SELECT upper(btrim(s."name")) FROM "Stallion" s
@@ -255,7 +274,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
     req.sexes ? req.sexes.map((s) => s.toUpperCase()) : null,
     keys(req.grandsires),
     req.dobFrom ?? null,
-    req.dobTo ?? null
+    req.dobTo ?? null,
+    req.bredStates ?? null
   );
 
   const colorSet = req.colors ? new Set(req.colors) : null;
@@ -330,6 +350,7 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
       birthYear: h.foalingDate ? h.foalingDate.getUTCFullYear() : h.foalYear ?? null,
       foalingDate: h.foalingDate,
       consignor: h.consignor,
+      bredState: h.bredState ?? null,
       barn: h.barn,
       sale: saleInfo,
       sessionDate: h.sessionDate,
