@@ -144,7 +144,10 @@ export async function resolveActiveSaleForAutomation(): Promise<Sale | null> {
  * empiece más lejos). Nunca incluye ventas COMPLETED: las finalizadas quedan
  * guardadas como historial y no se vuelven a descargar ni barrer.
  */
-export const NIGHTLY_AUTOMATION_WINDOW_DAYS = 7;
+// 10 días (no 7): OBS October (6/10) quedaba a 7,4 días de la corrida del
+// 28/9 y se caía de la ventana; con 10 entra junto con California Fall
+// Yearlings, que es lo pedido ("ambas ventas todas las noches").
+export const NIGHTLY_AUTOMATION_WINDOW_DAYS = 10;
 
 export async function resolveSalesForNightlyAutomation(now: Date = new Date()): Promise<Sale[]> {
   const candidates = await db.sale.findMany({
