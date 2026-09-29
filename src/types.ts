@@ -144,7 +144,7 @@ export interface SaleHouseClient {
   resolveSessionDates(
       externalSaleId: string,
       hips: NormalizedHip[],
-      opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+      opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
     ): Promise<Map<string, Date>>;
 
   // Calendario completo de la venta (Fecha → Libro → rango de Hip) para
@@ -154,7 +154,7 @@ export interface SaleHouseClient {
   // única implementación real hoy).
   resolveSaleDays?(
       externalSaleId: string,
-      opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+      opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
     ): Promise<ResolvedSaleDay[]>;
 }
 

@@ -218,6 +218,8 @@ async function syncSaleDays(sale: Sale, client: SaleHouseClient): Promise<void> 
     const days = await client.resolveSaleDays(sale.externalSaleId, {
       scheduleYear: sale.scheduleYear,
       scheduleSlug: sale.scheduleSlug,
+      saleName: sale.name,
+      startDate: sale.startDate,
     });
     console.log(`[sale-days] "${sale.name}": ${days.length} jornada(s) resuelta(s) desde la fuente oficial.`);
     for (const day of days) {
@@ -404,6 +406,8 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   const sessionDates = await client.resolveSessionDates(sale.externalSaleId, hips, {
     scheduleYear: sale.scheduleYear,
     scheduleSlug: sale.scheduleSlug,
+    saleName: sale.name,
+    startDate: sale.startDate,
   });
 
   await upsertNormalizedHips(sale.id, hips, sessionDates);
@@ -1224,12 +1228,17 @@ export async function importNewlyPublishedCatalogs(excludeSaleIds: string[] = []
       catalogAccess: "FULL",
       startDate: { gt: now },
       id: { notIn: excludeSaleIds },
-      hips: { none: {} },
+      // Sin ningún HIP con fecha de sesión: cubre "sin catálogo" (0 HIPs)
+      // y "catálogo cargado pero sin calendario todavía" (FT publica el
+      // catálogo antes que las sesiones por Hip — ver
+      // fasigTipton.resolveSessionDatesWithSource). En cuanto un HIP tiene
+      // fecha, la venta sale de esta lista.
+      hips: { none: { sessionDate: { not: null } } },
     },
     orderBy: { startDate: "asc" },
   });
   if (candidates.length === 0) return;
-  console.log(`[daily-sync][new-catalogs] Ventas futuras sin catálogo cargado: ${candidates.map((s) => `"${s.name}" (${s.house}/${s.externalSaleId})`).join(", ")}.`);
+  console.log(`[daily-sync][new-catalogs] Ventas futuras sin catálogo o sin calendario: ${candidates.map((s) => `"${s.name}" (${s.house}/${s.externalSaleId})`).join(", ")}.`);
   for (const sale of candidates) {
     try {
       await syncCatalog(sale);

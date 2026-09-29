@@ -150,7 +150,29 @@ export class FasigTiptonClient implements SaleHouseClient {
   // Fasig-Tipton ya trae la fecha de sesión directa en cada Hip del
   // catálogo (campo "session", "YYYY-MM-DD") — no hace falta ningún paso
   // extra de red ni de scraping, a diferencia de Keeneland.
-  async resolveSessionDates(externalSaleId: string): Promise<Map<string, Date>> {
+  async resolveSessionDates(
+    externalSaleId: string,
+    _hips?: NormalizedHip[],
+    opts: { saleName?: string; startDate?: Date | null } = {}
+  ): Promise<Map<string, Date>> {
+    return (await this.resolveSessionDatesWithSource(externalSaleId, opts)).dates;
+  }
+
+  /**
+   * Fecha de sesión por Hip. Fuente 1 (la de siempre): el campo "session"
+   * de cada Hip en la API del catálogo. Fuente 2 (2026-09-29, Ramon: "el
+   * calendario de Fasig-Tipton October no se descargó"): con el catálogo
+   * recién publicado, Fasig-Tipton deja "session" en null para TODOS los
+   * Hips (Kentucky October Yearlings/320: 1612 de 1612) y lo completa
+   * recién cerca de la venta — pero el calendario oficial ya está publicado
+   * en la página de la venta ("10/19: Hips 1-404 · 10/20: Hips 405-808 ·
+   * …"). Solo si la fuente 1 viene vacía se lee esa página oficial. Nada se
+   * deduce: un Hip fuera de los rangos publicados queda sin fecha.
+   */
+  private async resolveSessionDatesWithSource(
+    externalSaleId: string,
+    opts: { saleName?: string; startDate?: Date | null }
+  ): Promise<{ dates: Map<string, Date>; source: string }> {
     const entries = await this.fetchRaw(externalSaleId);
     const result = new Map<string, Date>();
     for (const entry of entries) {
@@ -160,21 +182,74 @@ export class FasigTiptonClient implements SaleHouseClient {
         result.set(String(entry.hip), date);
       }
     }
-    return result;
+    if (result.size > 0 || !opts.saleName || !opts.startDate) {
+      return { dates: result, source: "FASIG_TIPTON_CATALOG_SESSION_FIELD" };
+    }
+
+    const schedule = await this.fetchOfficialSchedule(opts.saleName, opts.startDate);
+    for (const entry of entries) {
+      const hipNumber = Number(entry.hip);
+      if (!Number.isInteger(hipNumber)) continue;
+      const day = schedule.find((d) => hipNumber >= d.hipStart && hipNumber <= d.hipEnd);
+      if (day) result.set(String(entry.hip), day.date);
+    }
+    return { dates: result, source: "FASIG_TIPTON_OFFICIAL_SALE_PAGE_SCHEDULE" };
+  }
+
+  private scheduleCache = new Map<string, { days: { date: Date; hipStart: number; hipEnd: number }[]; fetchedAt: number }>();
+
+  // Página oficial de la venta: https://www.fasigtipton.com/{año}/{Nombre-De-La-Venta}
+  // (ej. /2026/Kentucky-October-Yearlings). Cualquier fallo (404, red,
+  // página sin calendario todavía) devuelve [] — el calendario queda en
+  // espera como antes, nunca rompe la sincronización del catálogo.
+  private async fetchOfficialSchedule(saleName: string, startDate: Date): Promise<{ date: Date; hipStart: number; hipEnd: number }[]> {
+    const year = startDate.getUTCFullYear();
+    const slug = saleName.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const url = `https://www.fasigtipton.com/${year}/${slug}`;
+    const cached = this.scheduleCache.get(url);
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached.days;
+
+    let days: { date: Date; hipStart: number; hipEnd: number }[] = [];
+    try {
+      const response = await fetchWithRetry(url, { headers: { Accept: "text/html" } });
+      if (!response.ok) {
+        console.log(`[sale-days] Fasig-Tipton "${saleName}": página oficial ${url} respondió ${response.status}.`);
+        return [];
+      }
+      const text = (await response.text()).replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
+      const pattern = /(\d{1,2})\/(\d{1,2})\s*:\s*Hips?\s*#?\s*(\d+)\s*(?:-|–|—|to)\s*(\d+)/gi;
+      const seen = new Set<string>();
+      const minTime = startDate.getTime() - 2 * 24 * 60 * 60 * 1000;
+      const maxTime = startDate.getTime() + 21 * 24 * 60 * 60 * 1000;
+      for (const m of text.matchAll(pattern)) {
+        const [month, dayOfMonth, hipStart, hipEnd] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+        const date = new Date(`${year}-${String(month).padStart(2, "0")}-${String(dayOfMonth).padStart(2, "0")}T12:00:00-04:00`);
+        if (isNaN(date.getTime()) || date.getTime() < minTime || date.getTime() > maxTime || hipEnd < hipStart) continue;
+        const key = `${date.toISOString()}|${hipStart}|${hipEnd}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        days.push({ date, hipStart, hipEnd });
+      }
+      console.log(`[sale-days] Fasig-Tipton "${saleName}": ${days.length} jornada(s) en la página oficial ${url}.`);
+    } catch (err) {
+      console.log(`[sale-days] Fasig-Tipton "${saleName}": no se pudo leer la página oficial ${url}: ${String(err)}`);
+      days = [];
+    }
+    this.scheduleCache.set(url, { days, fetchedAt: Date.now() });
+    return days;
   }
 
   // Calendario de Ventas para Fasig-Tipton (implementado 2026-08-15, a
   // pedido: "utilizando exactamente el mismo funcionamiento, diseño y
-  // ubicación que ya está implementado para Keeneland"). A diferencia de
-  // Keeneland, acá no hace falta ningún scraping de programa oficial: el
-  // campo "session" que ya trae cada Hip del catálogo (ver
-  // resolveSessionDates arriba) es fuente suficiente y real para agrupar
-  // por día — se reutiliza el mismo dato, sin pedirlo dos veces.
+  // ubicación que ya está implementado para Keeneland"). Fuente: la fecha
+  // de sesión por Hip (ver resolveSessionDatesWithSource arriba — campo
+  // "session" del catálogo, o el calendario oficial de la página de la
+  // venta mientras ese campo siga vacío).
   async resolveSaleDays(
     externalSaleId: string,
-    _opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+    opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
   ): Promise<ResolvedSaleDay[]> {
-    const sessionDates = await this.resolveSessionDates(externalSaleId);
-    return resolveSaleDaysFromSessionDates(sessionDates, "FASIG_TIPTON_CATALOG_SESSION_FIELD");
+    const { dates, source } = await this.resolveSessionDatesWithSource(externalSaleId, opts);
+    return resolveSaleDaysFromSessionDates(dates, source);
   }
 }
