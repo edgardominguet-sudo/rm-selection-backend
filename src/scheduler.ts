@@ -4,6 +4,7 @@ import { config } from "./config";
 import {
   processSale,
   syncCatalogsForActiveSales,
+  importNewlyPublishedCatalogs,
   ensureSaleDaysForAllFullAccessSales,
   syncLivePricesForActiveSessions,
   AnalysisBudget,
@@ -194,6 +195,16 @@ export function startNightlySyncScheduler(): void {
     void runNightlySyncCycle();
   });
   console.log("[nightly-sync] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor) — descubrimiento + catálogo/precios + Media, un solo horario fijo, sin otra cadencia.");
+
+  // 2026-09-29: al arrancar, importar una sola vez los catálogos ya
+  // publicados de ventas futuras que todavía no tienen HIPs (ver
+  // importNewlyPublishedCatalogs en rankingService.ts). Solo catálogo, solo
+  // ventas sin HIPs — si no hay ninguna es una única consulta a la base.
+  setTimeout(() => {
+    importNewlyPublishedCatalogs().catch((err) =>
+      console.error("[nightly-sync][new-catalogs] Error en la revisión de arranque:", err)
+    );
+  }, 90_000);
 
   // CORRECCIÓN 2026-09-05 (bug real reportado por Ramon: "no se
   // descargaron todos los nuevos videos y fotos a las 3:00 am").

@@ -1184,6 +1184,71 @@ export async function syncCatalogsForActiveSales(): Promise<void> {
       }
     }
   }
+
+  // 2026-09-29 (pedido de Ramon: "el catálogo de Fasig-Tipton October ya
+  // aparece en la página de la casa y no en nuestra APP — ¿no se supone
+  // que sea automático?"). Ver importNewlyPublishedCatalogs abajo.
+  try {
+    await importNewlyPublishedCatalogs(sales.map((s) => s.id), now);
+  } catch (err) {
+    console.error("[daily-sync][new-catalogs] Error revisando catálogos recién publicados:", err);
+  }
+}
+
+/**
+ * CAUSA RAÍZ (2026-09-29, confirmada contra la base y la API en vivo): el
+ * catálogo de "Kentucky October Yearlings" (FASIG_TIPTON/320, 19-22 oct)
+ * ya estaba publicado en fasigtipton.com (1.612 HIPs) pero en la base
+ * tenía 0 HIPs y lastCatalogCheckAt=null — nunca se había consultado. La
+ * sincronización nocturna de catálogo solo recorre las ventas dentro de
+ * la ventana de NIGHTLY_AUTOMATION_WINDOW_DAYS (10 días), pensada para no
+ * gastar tiempo/memoria en barridos pesados; una venta a 20 días nunca
+ * entraba y su catálogo recién publicado no llegaba a la app hasta 10 días
+ * antes de la venta.
+ *
+ * FIX: toda venta FUTURA (startDate > ahora, nunca una finalizada), activa
+ * y FULL, que todavía NO tenga ningún HIP se consulta una vez por noche
+ * contra la casa de ventas. Si el catálogo ya está publicado se importa
+ * (mismo syncCatalog/upsert de siempre, idempotente, y la misma
+ * notificación CATALOG_NOW_AVAILABLE). Si todavía no está publicado es una
+ * sola llamada liviana a la API y listo. Solo CATÁLOGO: el barrido de
+ * fotos/videos y el análisis IA siguen igual (Media solo dentro de la
+ * ventana, IA solo manual). Una vez importada, la venta sale de esta
+ * lista (ya tiene HIPs) y vuelve a sincronizarse cuando entre en la
+ * ventana normal de 10 días — cero trabajo repetido.
+ */
+export async function importNewlyPublishedCatalogs(excludeSaleIds: string[] = [], now: Date = new Date()): Promise<void> {
+  const candidates = await db.sale.findMany({
+    where: {
+      isActive: true,
+      catalogAccess: "FULL",
+      startDate: { gt: now },
+      id: { notIn: excludeSaleIds },
+      hips: { none: {} },
+    },
+    orderBy: { startDate: "asc" },
+  });
+  if (candidates.length === 0) return;
+  console.log(`[daily-sync][new-catalogs] Ventas futuras sin catálogo cargado: ${candidates.map((s) => `"${s.name}" (${s.house}/${s.externalSaleId})`).join(", ")}.`);
+  for (const sale of candidates) {
+    try {
+      await syncCatalog(sale);
+      const count = await db.hip.count({ where: { saleId: sale.id } });
+      console.log(`[daily-sync][new-catalogs] "${sale.name}": catálogo importado, ${count} HIPs.`);
+    } catch (err) {
+      if (err instanceof CatalogNotYetPublishedError) {
+        console.log(`[daily-sync][new-catalogs] "${sale.name}": catálogo todavía no publicado.`);
+      } else {
+        console.error(`[daily-sync][new-catalogs] Error importando catálogo de "${sale.name}":`, err);
+      }
+    } finally {
+      try {
+        await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: new Date() } });
+      } catch (updateErr) {
+        console.error(`[daily-sync][new-catalogs] Error actualizando lastCatalogCheckAt de "${sale.name}":`, updateErr);
+      }
+    }
+  }
 }
 
 /**
