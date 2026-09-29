@@ -1235,6 +1235,12 @@ export async function importNewlyPublishedCatalogs(excludeSaleIds: string[] = []
       await syncCatalog(sale);
       const count = await db.hip.count({ where: { saleId: sale.id } });
       console.log(`[daily-sync][new-catalogs] "${sale.name}": catálogo importado, ${count} HIPs.`);
+      // 2026-09-29 (Ramon: "el calendario de Fasig-Tipton October no se
+      // descargó"): el Calendario de Ventas (SaleDay) solo se armaba en el
+      // paso nocturno ensureSaleDaysForAllFullAccessSales, así que una
+      // venta importada por acá quedaba sin calendario hasta la noche.
+      // Se resuelve en el mismo momento en que llega el catálogo.
+      if (count > 0) await ensureSaleDaysPopulated(sale, clientFor(sale.house));
     } catch (err) {
       if (err instanceof CatalogNotYetPublishedError) {
         console.log(`[daily-sync][new-catalogs] "${sale.name}": catálogo todavía no publicado.`);

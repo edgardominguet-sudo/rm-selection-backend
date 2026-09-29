@@ -201,9 +201,12 @@ export function startNightlySyncScheduler(): void {
   // importNewlyPublishedCatalogs en rankingService.ts). Solo catálogo, solo
   // ventas sin HIPs — si no hay ninguna es una única consulta a la base.
   setTimeout(() => {
-    importNewlyPublishedCatalogs().catch((err) =>
-      console.error("[nightly-sync][new-catalogs] Error en la revisión de arranque:", err)
-    );
+    importNewlyPublishedCatalogs()
+      .catch((err) => console.error("[nightly-sync][new-catalogs] Error en la revisión de arranque:", err))
+      // Y el Calendario de Ventas de toda venta no finalizada que todavía
+      // no lo tenga (solo consulta la casa si SaleDay está vacío).
+      .then(() => ensureSaleDaysForAllFullAccessSales())
+      .catch((err) => console.error("[nightly-sync][sale-days] Error en la revisión de arranque:", err));
   }, 90_000);
 
   // CORRECCIÓN 2026-09-05 (bug real reportado por Ramon: "no se
