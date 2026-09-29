@@ -1,4 +1,5 @@
 import { NormalizedHip, SaleHouseClient, CatalogMediaItem, CatalogNotYetPublishedError, SaleFetchContext, ResolvedSaleDay } from "../types";
+import { normalizeBredState } from "../catalogNames";
 import { fetchWithRetry } from "../util/httpRetry";
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
 import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
@@ -59,6 +60,12 @@ interface RawEntry {
     field_broodmare_sire?: string | null;
     field_color?: string | null;
     field_foaling_date?: string | null;
+    // Estado/país de nacimiento ("KY        " con espacios de relleno, "FL",
+    // "ON", "JPN"...) y nombre real del consignor sin el rol de agente
+    // ("Taylor Made Sales Agency" vs field_consignor "…, Agent XIII") —
+    // confirmados en el catálogo oficial de Keeneland (2026-09-28).
+    field_foaling_area?: string | null;
+    field_consignor_name?: string | null;
     field_sex?: string | null;
     field_consignor?: string | null;
     field_barns?: string[] | null;
@@ -157,6 +164,8 @@ function normalize(entry: RawEntry): NormalizedHip {
         dam: entry.field_dam ?? undefined,
         damSire: entry.field_broodmare_sire ?? undefined,
         color: entry.field_color ?? undefined,
+        bredState: normalizeBredState(entry.field_foaling_area) ?? undefined,
+        consignorBase: entry.field_consignor_name?.trim() || undefined,
         foalYear: extractFoalYear(entry.field_foaling_date),
         // Confirmado con datos reales de September Yearling Sale 2026:
         // "field_foaling_date" viene como "MM/DD/YYYY" (ej. "02/15/2025")
