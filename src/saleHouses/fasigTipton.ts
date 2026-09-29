@@ -2,6 +2,7 @@ import { NormalizedHip, ResolvedSaleDay, SaleHouseClient, CatalogMediaItem, Cata
 import { fetchWithRetry } from "../util/httpRetry";
 import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
 import { parseFoalingDate } from "./dateParsing";
+import { normalizeBredState } from "../catalogNames";
 
 // Forma cruda de la API interna de Fasig-Tipton
 // (GET https://www.fasigtipton.com/django/api/horses/?sale={saleID}).
@@ -37,6 +38,12 @@ interface RawEntry {
   // — confirmado con datos reales de una venta en vivo (2026-09-07, ver
   // dateParsing.ts).
   year_of_birth?: string | null;
+  // Color ("B", "CH", "DK B/", "GR/RO"...) y ESTADO de nacimiento ("CA",
+  // "KY", "NY"...) — publicados por Fasig-Tipton en su propio catálogo
+  // oficial (confirmado con California Fall Yearlings, 2026-09-28: 289/289
+  // con ambos datos). Antes no se leían y en Search quedaban "No disponible".
+  color?: string | null;
+  foaled?: string | null;
 }
 
 function buildMedia(entry: RawEntry): CatalogMediaItem[] {
@@ -70,6 +77,8 @@ function normalize(entry: RawEntry): NormalizedHip {
     dam: entry.dam ?? undefined,
     damSire: entry.sire_of_dam ?? undefined,
     foalingDate: parseFoalingDate(entry.year_of_birth),
+    color: entry.color?.trim() || undefined,
+    bredState: normalizeBredState(entry.foaled) ?? undefined,
     media: buildMedia(entry),
     saleResult: hasSaleResult
       ? {
