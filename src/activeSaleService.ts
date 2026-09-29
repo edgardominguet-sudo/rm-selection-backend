@@ -129,3 +129,33 @@ export async function resolveActiveSaleForAutomation(): Promise<Sale | null> {
   }
   return best;
 }
+
+/**
+ * Ventas que trabaja el job NOCTURNO (catálogo/precios + barrido de fotos y
+ * videos) — 2026-09-28, pedido de Ramon: "los barridos de nuevas fotos deben
+ * hacerse en ambas ventas todas las noches, no alternadas". Antes el job
+ * nocturno tomaba UNA sola venta (la más cercana por fecha) y, con dos
+ * ventas pegadas (California Fall Yearlings 30/9 y OBS October 6-7/10), la
+ * segunda quedaba sin actualizar hasta que terminaba la primera.
+ *
+ * Regla (100% por fecha, sin listas manuales): toda venta isActive + FULL
+ * que NO esté terminada y que esté en curso o empiece dentro de los próximos
+ * `NIGHTLY_AUTOMATION_WINDOW_DAYS` días, más siempre la más cercana (aunque
+ * empiece más lejos). Nunca incluye ventas COMPLETED: las finalizadas quedan
+ * guardadas como historial y no se vuelven a descargar ni barrer.
+ */
+export const NIGHTLY_AUTOMATION_WINDOW_DAYS = 7;
+
+export async function resolveSalesForNightlyAutomation(now: Date = new Date()): Promise<Sale[]> {
+  const candidates = await db.sale.findMany({
+    where: { isActive: true, catalogAccess: "FULL", startDate: { not: null } },
+    orderBy: { startDate: "asc" },
+  });
+  const windowEnd = now.getTime() + NIGHTLY_AUTOMATION_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const selected = candidates.filter(
+    (sale) => getSaleLifecycleStatus(sale, now) !== "COMPLETED" && sale.startDate!.getTime() <= windowEnd
+  );
+  const nearest = await resolveActiveSaleForAutomation();
+  if (nearest && !selected.some((sale) => sale.id === nearest.id)) selected.unshift(nearest);
+  return selected;
+}

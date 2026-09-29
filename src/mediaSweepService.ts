@@ -7,7 +7,7 @@ import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisOutcome } from "./analysis/autoPhotoAnalysis";
 import { runWithConcurrencyLimit } from "./util/concurrencyPool";
 import { config } from "./config";
-import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "./activeSaleService";
+import { resolveSalesForNightlyAutomation, getSaleLifecycleStatus } from "./activeSaleService";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -253,24 +253,29 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
     // camino de código que siga iterando "todas" salvo el manual explícito.
     let sales: Awaited<ReturnType<typeof db.sale.findMany>> = [];
     let activeSaleId: string | null = null;
+    let sweptSaleIds: string[] = [];
     if (opts.saleId) {
       sales = await db.sale.findMany({ where: { id: opts.saleId } });
     } else {
-      const active = await resolveActiveSaleForAutomation();
-      // GUARD (2026-09-26, pedido explícito de Ramon, defensa en
-      // profundidad): resolveActiveSaleForAutomation() ya excluye ventas
-      // COMPLETED de su selección (ver activeSaleService.ts), pero este job
-      // vuelve a chequear su propio estado antes de barrer en vez de confiar
-      // únicamente en el llamador -- en la práctica nunca debería disparar,
-      // salvo un bug futuro en esa exclusión.
-      if (active && getSaleLifecycleStatus(active) === "COMPLETED") {
-        console.warn(`[media-sweep] "${active.name}" resolvió como venta activa pero ya está COMPLETED -- no se barre (defensa en profundidad, no debería pasar tras el filtro en resolveActiveSaleForAutomation).`);
-      } else if (active) {
-        activeSaleId = active.id;
-        sales = [active];
-        console.log(`[media-sweep] Venta activa determinada por fecha: "${active.name}" (${active.house}/${active.externalSaleId}) — esta corrida se limita EXCLUSIVAMENTE a esa venta.`);
+      // 2026-09-28 (pedido de Ramon: "deben hacerse en ambas ventas todas las
+      // noches, no alternadas"): todas las ventas en curso o próximas dentro
+      // de la ventana (ver resolveSalesForNightlyAutomation) — nunca una
+      // venta COMPLETED. Se vuelve a chequear el estado de cada una antes de
+      // barrer (defensa en profundidad, igual que antes).
+      const selected = await resolveSalesForNightlyAutomation();
+      sales = selected.filter((sale) => {
+        if (getSaleLifecycleStatus(sale) === "COMPLETED") {
+          console.warn(`[media-sweep] "${sale.name}" está COMPLETED -- no se barre.`);
+          return false;
+        }
+        return true;
+      });
+      sweptSaleIds = sales.map((sale) => sale.id);
+      activeSaleId = sweptSaleIds[0] ?? null;
+      if (sales.length > 0) {
+        console.log(`[media-sweep] Ventas de esta corrida (por fecha): ${sales.map((sale) => `"${sale.name}" (${sale.house}/${sale.externalSaleId})`).join(", ")}.`);
       } else {
-        console.warn("[media-sweep] No se pudo determinar ninguna venta activa por fecha (ninguna isActive+FULL con startDate resuelto) — no hay nada que barrer en esta corrida.");
+        console.warn("[media-sweep] No hay ventas en curso ni próximas — no hay nada que barrer en esta corrida.");
       }
     }
 
@@ -613,7 +618,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
     const salesPausedByActiveSaleFilter =
       opts.saleId || !activeSaleId
         ? 0
-        : await db.sale.count({ where: { isActive: true, catalogAccess: "FULL", id: { not: activeSaleId } } });
+        : await db.sale.count({ where: { isActive: true, catalogAccess: "FULL", id: { notIn: sweptSaleIds } } });
 
     // AGREGADO 2026-09-15: mensaje específico y accionable cuando la corrida
     // se frenó por falta de saldo — a propósito NUNCA se mezcla con

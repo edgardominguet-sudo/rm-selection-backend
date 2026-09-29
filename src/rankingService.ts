@@ -18,7 +18,7 @@ import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
-import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "./activeSaleService";
+import { resolveActiveSaleForAutomation, resolveSalesForNightlyAutomation, getSaleLifecycleStatus } from "./activeSaleService";
 import { selectRankingTop, rankingGenerationAllowed, rankingExpiresAt, RANKING_RETENTION_HOURS_AFTER_SESSION } from "./rankingSelection";
 import { RM_SINGLE_LATERAL_ANALYSIS_MODE } from "./analysis/analysisMode";
 
@@ -1147,12 +1147,13 @@ export async function syncCatalogsForActiveSales(): Promise<void> {
   // pausadas conservan su último catálogo/resultado tal cual — no se
   // pierde nada, simplemente no se vuelve a re-chequear contra la casa de
   // ventas todas las noches para una venta que ya terminó.
-  const active = await resolveActiveSaleForAutomation();
-  const sales = active ? [active] : [];
-  if (active) {
-    console.log(`[daily-sync] Venta activa determinada por fecha: "${active.name}" (${active.house}/${active.externalSaleId}) — la sincronización de catálogo/precios de esta corrida se limita EXCLUSIVAMENTE a esa venta.`);
+  // 2026-09-28 (pedido de Ramon): todas las ventas en curso o próximas
+  // dentro de la ventana (ver resolveSalesForNightlyAutomation), no una sola.
+  const sales = await resolveSalesForNightlyAutomation();
+  if (sales.length > 0) {
+    console.log(`[daily-sync] Ventas de esta corrida (por fecha): ${sales.map((s) => `"${s.name}" (${s.house}/${s.externalSaleId})`).join(", ")}.`);
   } else {
-    console.warn("[daily-sync] No se pudo determinar ninguna venta activa por fecha — no hay catálogo que sincronizar en esta corrida.");
+    console.warn("[daily-sync] No hay ventas en curso ni próximas — no hay catálogo que sincronizar en esta corrida.");
   }
   const now = new Date();
   for (const sale of sales) {
