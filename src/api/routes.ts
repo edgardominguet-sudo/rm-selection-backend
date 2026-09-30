@@ -13,6 +13,7 @@ import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfTheDayService";
+import { getSaleResults } from "../saleResultsService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
@@ -1722,6 +1723,24 @@ router.get("/reference-recalc-sweep/runs", requireUser, async (req, res) => {
 // de cada Hip, nunca inventado ni estimado). Mismo criterio de identidad
 // (house+externalSaleId) y misma autenticación que /ranking y /sales/days
 // — puramente aditivo, no modifica ninguna otra ruta.
+// "Resultados" (2026-09-30): lista completa de la venta (HIP 1 al último)
+// con su resultado ya guardado — solo lectura, ver saleResultsService.ts.
+router.get("/sales/results", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.status(404).json({ error: "Venta no encontrada." });
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json(await getSaleResults(sale));
+});
+
 router.get("/sales/rna-del-dia", requireUser, async (req, res) => {
   const house = req.query.house as string | undefined;
   const externalSaleId = req.query.externalSaleId as string | undefined;
