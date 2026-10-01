@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { backfillHistoricalSales } from "./historicalSaleBackfill";
 import { db } from "./db";
 import { config } from "./config";
 import {
@@ -207,6 +208,12 @@ export function startNightlySyncScheduler(): void {
       // no lo tenga (solo consulta la casa si SaleDay está vacío).
       .then(() => ensureSaleDaysForAllFullAccessSales())
       .catch((err) => console.error("[nightly-sync][sale-days] Error en la revisión de arranque:", err));
+    // Historial de Ventas (2026-09-30): relleno único de ventas anteriores
+    // + recálculo de las ventas próximas — ver historicalSaleBackfill.ts.
+    // Idempotente: en arranques siguientes no vuelve a bajar nada.
+    setTimeout(() => {
+      backfillHistoricalSales().catch((err) => console.error("[sale-history][backfill] Error:", err));
+    }, 120_000);
   }, 90_000);
 
   // CORRECCIÓN 2026-09-05 (bug real reportado por Ramon: "no se

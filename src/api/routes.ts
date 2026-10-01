@@ -8,7 +8,7 @@ import { db } from "../db";
 import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
-import { resolveSaleHistoryForHip, readSaleHistory } from "../saleHistoryService";
+import { resolveSaleHistoryForHip, readSaleHistory, saleHistoryIndex } from "../saleHistoryService";
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
 import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
@@ -465,6 +465,25 @@ router.get("/stallions/first-yearlings", requireUser, async (req, res) => {
 router.get("/stallions/stud-fees", requireUser, async (req, res) => {
   const stallions = await listStudFees();
   res.json({ stallions });
+});
+
+// Historial de Ventas — índice liviano de toda una venta: HIP Number ->
+// cantidad de ventas anteriores. La ventana de cada HIP lo usa para mostrar
+// la etiqueta "Historial · N" sin pedir nada HIP por HIP (2026-09-30).
+router.get("/sales/sale-history-index", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) {
+    res.json({ counts: {} });
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ counts: await saleHistoryIndex(sale.id) });
 });
 
 router.get("/hips/sale-history", requireUser, async (req, res) => {
