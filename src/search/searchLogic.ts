@@ -31,6 +31,9 @@ export type AiClass = "EXCELENTE" | "BIEN" | "REVISAR" | "NOT_ANALYZED";
 export const CANONICAL_COLORS = ["Bay", "Dark Bay/Brown", "Chestnut", "Gray/Roan", "Black"] as const;
 export const SEXES = ["C", "F", "G", "R", "M"] as const;
 
+export const MEDIA_FILTERS = ["PHOTO", "VIDEO", "BOTH", "NONE"] as const;
+export type MediaFilter = (typeof MEDIA_FILTERS)[number];
+
 export interface SaleSearchRequest {
   house: string;
   externalSaleId: string;
@@ -44,6 +47,8 @@ export interface SaleSearchRequest {
   bredStates?: string[]; // "KY", "FL"... (2026-09-28)
   dobFrom?: string; // YYYY-MM-DD
   dobTo?: string; // YYYY-MM-DD
+  /** Fotos/video del catálogo (2026-10-01): PHOTO | VIDEO | BOTH | NONE. */
+  media?: MediaFilter;
   page: number;
   pageSize: number;
 }
@@ -108,6 +113,11 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
     }),
     dobFrom: optDay(b.dobFrom, "dobFrom"),
     dobTo: optDay(b.dobTo, "dobTo"),
+    media: (() => {
+      if (b.media === undefined || b.media === null || b.media === "") return undefined;
+      if (typeof b.media !== "string" || !(MEDIA_FILTERS as readonly string[]).includes(b.media)) bad("'media' debe ser PHOTO, VIDEO, BOTH o NONE.");
+      return b.media as MediaFilter;
+    })(),
     page: optInt(b.page, "page", 1, 100000) ?? 1,
     pageSize: optInt(b.pageSize, "pageSize", 1, SEARCH_MAX_PAGE_SIZE) ?? SEARCH_DEFAULT_PAGE_SIZE,
   };

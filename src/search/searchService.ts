@@ -63,7 +63,14 @@ export interface SaleSearchFilters {
   colors: FilterValue[];
   bredStates: FilterValue[];
   dateOfBirth: { min: string | null; max: string | null; withData: number };
+  /** Cuántos HIPs de la venta tienen foto / video / ambos / nada (catálogo). */
+  media: { photo: number; video: number; both: number; none: number };
 }
+
+// Fotos/video del catálogo (2026-10-01): mediaJson es un arreglo jsonb de
+// { kind: "photo" | "video", url }. Containment (@>) — sin leer el JSON.
+const HAS_PHOTO_SQL = `h."mediaJson" @> '[{"kind":"photo"}]'::jsonb`;
+const HAS_VIDEO_SQL = `h."mediaJson" @> '[{"kind":"video"}]'::jsonb`;
 
 // Expresiones permitidas (lista cerrada — nunca texto del usuario en el SQL).
 //
@@ -96,7 +103,7 @@ function isoDay(d: Date | null): string | null {
 
 export async function getSaleSearchFilters(house: string, externalSaleId: string): Promise<SaleSearchFilters> {
   const sale = await resolveSale(house, externalSaleId);
-  const [sires, dams, broodmareSires, consignors, sexRows, colorRows, grandsireRows, dobRows, stateRows] = await Promise.all([
+  const [sires, dams, broodmareSires, consignors, sexRows, colorRows, grandsireRows, dobRows, stateRows, mediaRows] = await Promise.all([
     groupedNames(sale.id, NAME_COLUMNS.sire),
     groupedNames(sale.id, NAME_COLUMNS.dam),
     groupedNames(sale.id, NAME_COLUMNS.damSire),
@@ -133,6 +140,14 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
         GROUP BY upper(btrim("bredState")) ORDER BY 2 DESC, 1 ASC`,
       sale.id
     ),
+    db.$queryRawUnsafe<Array<{ photo: number; video: number; both: number; none: number }>>(
+      `SELECT count(*) FILTER (WHERE ${HAS_PHOTO_SQL})::int AS photo,
+              count(*) FILTER (WHERE ${HAS_VIDEO_SQL})::int AS video,
+              count(*) FILTER (WHERE ${HAS_PHOTO_SQL} AND ${HAS_VIDEO_SQL})::int AS both,
+              count(*) FILTER (WHERE NOT ${HAS_PHOTO_SQL} AND NOT ${HAS_VIDEO_SQL})::int AS none
+         FROM "Hip" h WHERE h."saleId" = $1`,
+      sale.id
+    ),
   ]);
 
   // Colores: la fuente mezcla abreviaturas — se suman por color canónico.
@@ -163,6 +178,12 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
     colors: CANONICAL_COLORS.filter((c) => colorCounts.has(c)).map((c) => ({ value: c, count: colorCounts.get(c)! })),
     dateOfBirth: { min: isoDay(dob?.mn ?? null), max: isoDay(dob?.mx ?? null), withData: Number(dob?.withData ?? 0) },
     bredStates: stateRows.map((r) => ({ value: r.v, count: Number(r.n) })),
+    media: {
+      photo: Number(mediaRows[0]?.photo ?? 0),
+      video: Number(mediaRows[0]?.video ?? 0),
+      both: Number(mediaRows[0]?.both ?? 0),
+      none: Number(mediaRows[0]?.none ?? 0),
+    },
   };
 }
 
@@ -233,6 +254,9 @@ export interface SearchResultItem {
   favoriteDecision: string | null;
   photoUrl: string | null;
   photoSource: "AI_LATERAL" | "CATALOG" | null;
+  /** El catálogo de la casa tiene al menos una foto / un video de este HIP. */
+  hasPhoto: boolean;
+  hasVideo: boolean;
 }
 
 export interface SearchResponse {
@@ -265,7 +289,12 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
               SELECT upper(btrim(s."name")) FROM "Stallion" s
                WHERE upper(regexp_replace(btrim(s."sireName"), '\\s+', ' ', 'g')) = ANY($7::text[])))
         AND ($8::date IS NULL OR h."foalingDate" >= $8::date)
-        AND ($9::date IS NULL OR h."foalingDate" < ($9::date + 1))`,
+        AND ($9::date IS NULL OR h."foalingDate" < ($9::date + 1))
+        AND ($11::text IS NULL
+             OR ($11 = 'PHOTO' AND ${HAS_PHOTO_SQL})
+             OR ($11 = 'VIDEO' AND ${HAS_VIDEO_SQL})
+             OR ($11 = 'BOTH' AND ${HAS_PHOTO_SQL} AND ${HAS_VIDEO_SQL})
+             OR ($11 = 'NONE' AND NOT ${HAS_PHOTO_SQL} AND NOT ${HAS_VIDEO_SQL}))`,
     sale.id,
     keys(req.sires),
     keys(req.dams),
@@ -275,7 +304,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
     keys(req.grandsires),
     req.dobFrom ?? null,
     req.dobTo ?? null,
-    req.bredStates ?? null
+    req.bredStates ?? null,
+    req.media ?? null
   );
 
   const colorSet = req.colors ? new Set(req.colors) : null;
@@ -332,9 +362,9 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
     const aiScore = aiScoreOf(analysisInput(analyses.get(h.id)));
     const assetId = lateralAssetByHip.get(h.id);
     const storageKey = assetId ? storageKeyByAsset.get(assetId) : undefined;
-    const catalogPhoto = (Array.isArray(h.mediaJson) ? (h.mediaJson as Array<{ kind?: string; url?: string }>) : []).find(
-      (m) => m?.kind === "photo" && typeof m.url === "string"
-    );
+    const mediaList = Array.isArray(h.mediaJson) ? (h.mediaJson as Array<{ kind?: string; url?: string }>) : [];
+    const catalogPhoto = mediaList.find((m) => m?.kind === "photo" && typeof m.url === "string");
+    const hasVideo = mediaList.some((m) => m?.kind === "video");
     const saleDay = h.sessionDate ? saleDayByTime.get(startOfCalendarDay(h.sessionDate).getTime()) : undefined;
     const decision = h.decisions[0]?.finalCall ?? null;
     return {
@@ -369,6 +399,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
       favoriteDecision: decision,
       photoUrl: storageKey ? resolveReadUrl(storageKey) : catalogPhoto?.url ?? null,
       photoSource: storageKey ? "AI_LATERAL" : catalogPhoto ? "CATALOG" : null,
+      hasPhoto: mediaList.some((m) => m?.kind === "photo"),
+      hasVideo,
     };
   });
 
