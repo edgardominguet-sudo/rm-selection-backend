@@ -49,6 +49,8 @@ export interface SaleSearchRequest {
   dobTo?: string; // YYYY-MM-DD
   /** Fotos/video del catálogo (2026-10-01): PHOTO | VIDEO | BOTH | NONE. */
   media?: MediaFilter;
+  /** Madres velocistas ⚡ (2026-10-02): solo HIPs con un trabajo élite en la familia. */
+  speedDam?: boolean;
   page: number;
   pageSize: number;
 }
@@ -118,6 +120,7 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
       if (typeof b.media !== "string" || !(MEDIA_FILTERS as readonly string[]).includes(b.media)) bad("'media' debe ser PHOTO, VIDEO, BOTH o NONE.");
       return b.media as MediaFilter;
     })(),
+    speedDam: b.speedDam === true ? true : undefined,
     page: optInt(b.page, "page", 1, 100000) ?? 1,
     pageSize: optInt(b.pageSize, "pageSize", 1, SEARCH_MAX_PAGE_SIZE) ?? SEARCH_DEFAULT_PAGE_SIZE,
   };

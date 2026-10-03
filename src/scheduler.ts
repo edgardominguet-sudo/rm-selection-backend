@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { backfillHistoricalSales } from "./historicalSaleBackfill";
+import { importBreezeRecords } from "./breezeSpeedService";
 import { db } from "./db";
 import { config } from "./config";
 import {
@@ -212,7 +213,12 @@ export function startNightlySyncScheduler(): void {
     // + recálculo de las ventas próximas — ver historicalSaleBackfill.ts.
     // Idempotente: en arranques siguientes no vuelve a bajar nada.
     setTimeout(() => {
-      backfillHistoricalSales().catch((err) => console.error("[sale-history][backfill] Error:", err));
+      backfillHistoricalSales()
+        .catch((err) => console.error("[sale-history][backfill] Error:", err))
+        // Madres velocistas ⚡ (2026-10-02): tiempos de breeze de los
+        // últimos 5 años, una sola vez (idempotente) — ver breezeSpeedService.ts.
+        .then(() => importBreezeRecords())
+        .catch((err) => console.error("[speed-dam] Error:", err));
     }, 120_000);
   }, 90_000);
 

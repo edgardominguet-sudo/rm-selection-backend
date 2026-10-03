@@ -1447,3 +1447,44 @@ model LandmarkExtractionCache {
 
   @@unique([photoHash, expectedView, promptVersion])
 }
+
+// MADRES VELOCISTAS ⚡ (2026-10-02, ver src/breezeSpeedService.ts):
+// un trabajo oficial del Under Tack / Breeze Show de una venta de 2 años
+// (OBS / Fasig-Tipton). Se guarda una sola vez por HIP y venta; nunca se
+// vuelve a bajar. Solo lo necesario para identificar al caballo, su tiempo
+// y su resultado de venta.
+model BreezeRecord {
+  id             String    @id @default(cuid())
+  house          SaleHouse
+  externalSaleId String
+  saleName       String
+  saleYear       Int
+  hipNumber      String
+  horseName      String?
+  nameKey        String?
+  sex            String?
+  sire           String?
+  sireKey        String?
+  dam            String?
+  damKey         String?
+  damSire        String?
+  damSireKey     String?
+  foalYear       Int?
+  consignor      String?
+  distance       String // "1/8" | "1/4" | "3/8"
+  timeRaw        String // notación de la casa, en quintos ("9.4")
+  seconds        Float
+  isElite        Boolean
+  rankInSale     Int
+  fieldSize      Int
+  workDate       DateTime?
+  priceRaw       String?
+  purchaser      String?
+  resultCode     String?
+  videoUrl       String?
+  createdAt      DateTime  @default(now())
+
+  @@unique([house, externalSaleId, hipNumber])
+  @@index([damKey])
+  @@index([nameKey])
+}

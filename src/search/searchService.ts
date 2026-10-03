@@ -15,6 +15,7 @@
 // Sire. Mientras esa columna no tenga datos, el selector vuelve vacío y la
 // app lo muestra como "Not available" — nunca se infiere ni se inventa.
 import { db } from "../db";
+import { speedDamIndex } from "../breezeSpeedService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getSaleLifecycleStatus } from "../activeSaleService";
 import { resolveReadUrl } from "../storage/r2Client";
@@ -65,6 +66,8 @@ export interface SaleSearchFilters {
   dateOfBirth: { min: string | null; max: string | null; withData: number };
   /** Cuántos HIPs de la venta tienen foto / video / ambos / nada (catálogo). */
   media: { photo: number; video: number; both: number; none: number };
+  /** Cuántos HIPs tienen madre velocista ⚡ (hermanos o madre con trabajo élite). */
+  speedDam: number;
 }
 
 // Fotos/video del catálogo (2026-10-01): mediaJson es un arreglo jsonb de
@@ -178,6 +181,7 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
     colors: CANONICAL_COLORS.filter((c) => colorCounts.has(c)).map((c) => ({ value: c, count: colorCounts.get(c)! })),
     dateOfBirth: { min: isoDay(dob?.mn ?? null), max: isoDay(dob?.mx ?? null), withData: Number(dob?.withData ?? 0) },
     bredStates: stateRows.map((r) => ({ value: r.v, count: Number(r.n) })),
+    speedDam: Object.keys(await speedDamIndex(sale.id)).length,
     media: {
       photo: Number(mediaRows[0]?.photo ?? 0),
       video: Number(mediaRows[0]?.video ?? 0),
@@ -257,6 +261,8 @@ export interface SearchResultItem {
   /** El catálogo de la casa tiene al menos una foto / un video de este HIP. */
   hasPhoto: boolean;
   hasVideo: boolean;
+  /** Madre velocista ⚡: cantidad de trabajos élite en la familia y el mejor ("9.4 1/8"); null si no hay. */
+  speedDam: { elite: number; best: string } | null;
 }
 
 export interface SearchResponse {
@@ -309,8 +315,10 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
   );
 
   const colorSet = req.colors ? new Set(req.colors) : null;
+  const speedIndex = await speedDamIndex(sale.id);
   const matching = rows
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
+    .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
     .sort((a, b) => compareHips(a.hipNumber, b.hipNumber) || (a.id < b.id ? -1 : 1));
   if (matching.length === 0) return empty;
 
@@ -401,6 +409,7 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
       photoSource: storageKey ? "AI_LATERAL" : catalogPhoto ? "CATALOG" : null,
       hasPhoto: mediaList.some((m) => m?.kind === "photo"),
       hasVideo,
+      speedDam: speedIndex[h.hipNumber] ? { elite: speedIndex[h.hipNumber].elite, best: speedIndex[h.hipNumber].best } : null,
     };
   });
 

@@ -14,6 +14,7 @@ import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfTheDayService";
 import { getSaleResults } from "../saleResultsService";
+import { speedDamIndex, speedDamDetail } from "../breezeSpeedService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
@@ -484,6 +485,39 @@ router.get("/sales/sale-history-index", requireUser, async (req, res) => {
   }
   res.setHeader("Cache-Control", "no-store");
   res.json({ counts: await saleHistoryIndex(sale.id) });
+});
+
+// MADRES VELOCISTAS ⚡ (2026-10-02): índice liviano HIP -> resumen (una
+// sola consulta por venta, sin nada HIP por HIP al deslizar) y detalle de
+// un HIP (todos los trabajos de sus hermanos y de la madre) al tocar ⚡.
+router.get("/sales/speed-dam-index", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ hips: sale ? await speedDamIndex(sale.id) : {} });
+});
+
+router.get("/hips/speed-dam", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  const hipNumber = req.query.hipNumber as string | undefined;
+  if (!house || !externalSaleId || !hipNumber) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId, hipNumber." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  const detail = sale ? await speedDamDetail(sale.id, hipNumber) : null;
+  if (!detail) {
+    res.status(404).json({ error: "HIP no encontrado." });
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json(detail);
 });
 
 router.get("/hips/sale-history", requireUser, async (req, res) => {
