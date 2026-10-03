@@ -224,37 +224,49 @@ async function fetchObsLegacyBreezes(externalSaleId: string): Promise<SaleMeta |
   const tail = html.slice(start).search(/\]\]\s*;?\s*<\/script>/);
   if (tail < 0) return null;
   const table = JSON.parse(html.slice(start + "arrData = ".length, start + tail + 2)) as string[][];
+  // Las columnas cambian según la venta (Spring/June traen además "Walk"):
+  // se ubican por el nombre del encabezado, nunca por posición fija.
+  const headers = [...html.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => stripTags(m[1]).toLowerCase());
+  const col = (name: string) => headers.indexOf(name.toLowerCase());
+  const c = {
+    hip: col("Hip #"), video: col("Video"), time: col("UT Time"), sex: col("Sex"), sire: col("Sire"), dam: col("Dam"),
+    consignor: col("Consignor"), buyer: col("Buyer"), price: col("Price"), ps: col("PS"),
+  };
+  if (c.hip < 0 || c.time < 0 || c.dam < 0) return null;
+  const cell = (r: string[], i: number) => (i >= 0 ? stripTags(String(r[i] ?? "")) : "");
   const rows: BreezeRow[] = [];
   for (const r of table) {
-    const seconds = breezeSeconds(r[3]);
+    const rawTime = cell(r, c.time);
+    const seconds = breezeSeconds(rawTime);
     if (seconds === null) continue;
     const distance = normalizeDistance(null, seconds);
     if (!distance) continue;
-    const hipNumber = stripTags(r[1] ?? "");
+    const hipNumber = cell(r, c.hip);
     if (!hipNumber) continue;
-    const buyer = stripTags(r[9] ?? "");
-    const priceText = stripTags(r[10] ?? "");
-    const amount = Number(priceText.replace(/[^0-9]/g, ""));
+    const buyer = cell(r, c.buyer);
+    const priceText = cell(r, c.price);
     const isOut = /^out$/i.test(priceText) || /withdrawn/i.test(buyer);
-    const isRna = /rna|not sold|no sale/i.test(`${buyer} ${priceText}`);
-    const ps = /ps/i.test(stripTags(r[11] ?? ""));
+    // RNA: OBS escribe "Not Sold" en Precio y el último bid en Comprador.
+    const isRna = /not sold|rna|no sale/i.test(`${buyer} ${priceText}`);
+    const amount = Number((isRna && !/\d/.test(priceText) ? buyer : priceText).replace(/[^0-9]/g, ""));
+    const ps = /ps/i.test(cell(r, c.ps));
     rows.push({
       hipNumber,
       horseName: null,
-      sex: stripTags(r[4] ?? "") || null,
-      sire: stripTags(r[5] ?? "") || null,
-      dam: stripTags(r[6] ?? "") || null,
+      sex: cell(r, c.sex) || null,
+      sire: cell(r, c.sire) || null,
+      dam: cell(r, c.dam) || null,
       damSire: null,
       foalYear: legacy.year - 2,
-      consignor: stripTags(r[8] ?? "") || null,
+      consignor: cell(r, c.consignor) || null,
       distance,
-      timeRaw: breezeDisplay(r[3]),
+      timeRaw: breezeDisplay(rawTime),
       seconds,
       workDate: null,
       priceRaw: isOut ? null : isRna ? (amount > 0 ? `R.N.A. (${amount})` : "R.N.A.") : amount > 0 ? String(amount) : null,
       purchaser: isOut ? "OUT" : isRna ? null : buyer || null,
       resultCode: isOut ? "OUT" : isRna ? "RNA" : ps ? "PS" : null,
-      videoUrl: (r[2] ?? "").match(/href=["']([^"']+\.mp4)["']/)?.[1] ?? null,
+      videoUrl: c.video >= 0 ? String(r[c.video] ?? "").match(/href=["']([^"']+\.mp4)["']/)?.[1] ?? null : null,
     });
   }
   return { saleName: legacy.name, saleDate: new Date(Date.UTC(legacy.year, legacy.month - 1, 15, 12)), rows };
@@ -400,6 +412,13 @@ export async function importBreezeRecords(): Promise<void> {
   if (importing) return;
   importing = true;
   try {
+    // Una sola vez: las dos ventas March 2022/2023 se importaron con la
+    // primera versión del lector del catálogo anterior (sin el monto del
+    // RNA). Se borran y se vuelven a importar con el lector por
+    // encabezados. Idempotente: las filas nuevas tienen fecha posterior.
+    await db.breezeRecord.deleteMany({
+      where: { externalSaleId: { startsWith: "legacy-" }, createdAt: { lt: new Date("2026-10-03T03:45:00Z") } },
+    });
     const sources = [...KNOWN_SOURCES, ...(await discoverNewSources().catch(() => []))];
     let total = 0;
     for (const source of sources) {
