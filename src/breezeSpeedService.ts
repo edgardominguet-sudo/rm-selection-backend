@@ -219,9 +219,11 @@ async function fetchObsLegacyBreezes(externalSaleId: string): Promise<SaleMeta |
   const html = await response.text();
   const start = html.indexOf("arrData = ");
   if (start < 0) return null;
-  const end = html.indexOf("]];", start);
-  if (end < 0) return null;
-  const table = JSON.parse(html.slice(start + "arrData = ".length, end + 2)) as string[][];
+  // El arreglo termina en "]]</script>" (sin ";"), así que se busca el
+  // cierre por patrón y no por un literal fijo.
+  const tail = html.slice(start).search(/\]\]\s*;?\s*<\/script>/);
+  if (tail < 0) return null;
+  const table = JSON.parse(html.slice(start + "arrData = ".length, start + tail + 2)) as string[][];
   const rows: BreezeRow[] = [];
   for (const r of table) {
     const seconds = breezeSeconds(r[3]);
