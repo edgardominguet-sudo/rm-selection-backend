@@ -13,9 +13,8 @@ import { normalizeHistoryResult } from "./saleHistoryService";
  * Fuente: SOLO tiempos oficiales del Under Tack / Breeze Show de las ventas
  * de 2 años publicados por cada casa en su propia API (nada inventado ni
  * deducido):
- *   - OBS: campo `ut_time` / `ut_distance` de su API pública. OBS solo
- *     publica tiempos en la API desde 2024 (March/Spring/June 2024-2026);
- *     las ventas de 2022-2023 existen pero sin tiempos.
+ *   - OBS: campo `ut_time` / `ut_distance` de su API pública (2024-2026)
+ *     y, para 2022-2023, su catálogo anterior (ver OBS_LEGACY_SOURCES).
  *   - Fasig-Tipton: `under_tack_show_time` de su API (Midlantic mayo y
  *     junio, Gulfstream 2022 — la última que hubo).
  *
@@ -53,6 +52,26 @@ const KNOWN_SOURCES: BreezeSource[] = [
   // Fasig-Tipton: Gulfstream 2022, Midlantic mayo 2022-2026, Midlantic junio 2023-2024.
   ...["197", "198", "216", "219", "249", "254", "274", "297"].map((id) => ({ house: "FASIG_TIPTON" as SaleHouse, externalSaleId: id })),
 ];
+
+// OBS 2022-2023: su API nueva no trae los tiempos de esas ventas, pero el
+// catálogo anterior de OBS (obscatalog.com/<mes>results/<año>/) sí los
+// publica, embebidos en la página como `arrData = [[...], ...]` con las
+// columnas: Hip, Video, UT Time, Sex, Sire, Dam, State, Consignor, Buyer,
+// Price, PS (verificado con March 2022 y June 2023, 2026-10-02 — página
+// indicada por Ramon). No publica padre de la madre ni distancia: la
+// distancia se deduce del propio tiempo y el año de nacimiento es el de la
+// venta menos 2 (son ventas de 2 años).
+const OBS_LEGACY_SOURCES: { slug: string; year: number; name: string; month: number }[] = [
+  { slug: "marresults", year: 2022, name: "OBS March 2YO 2022", month: 3 },
+  { slug: "aprresults", year: 2022, name: "OBS Spring 2YO 2022", month: 4 },
+  { slug: "junresults", year: 2022, name: "OBS June 2YO 2022", month: 6 },
+  { slug: "marresults", year: 2023, name: "OBS March 2YO 2023", month: 3 },
+  { slug: "aprresults", year: 2023, name: "OBS Spring 2YO 2023", month: 4 },
+  { slug: "junresults", year: 2023, name: "OBS June 2YO 2023", month: 6 },
+];
+for (const legacy of OBS_LEGACY_SOURCES) {
+  KNOWN_SOURCES.push({ house: "OBS" as SaleHouse, externalSaleId: `legacy-${legacy.slug}-${legacy.year}` });
+}
 
 const YEARS_BACK = 5;
 const HEADERS = { Accept: "application/json", "User-Agent": "Mozilla/5.0 (RM Selection)" };
@@ -186,6 +205,59 @@ async function fetchObsBreezes(saleId: string): Promise<SaleMeta | null> {
   };
 }
 
+function stripTags(html: string): string {
+  return html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#039;|&apos;/g, "'").trim();
+}
+
+async function fetchObsLegacyBreezes(externalSaleId: string): Promise<SaleMeta | null> {
+  const legacy = OBS_LEGACY_SOURCES.find((l) => `legacy-${l.slug}-${l.year}` === externalSaleId);
+  if (!legacy) return null;
+  const response = await fetchWithRetry(`https://obscatalog.com/${legacy.slug}/${legacy.year}/`, {
+    headers: { ...HEADERS, Accept: "text/html" },
+  });
+  if (!response.ok) return null;
+  const html = await response.text();
+  const start = html.indexOf("arrData = ");
+  if (start < 0) return null;
+  const end = html.indexOf("]];", start);
+  if (end < 0) return null;
+  const table = JSON.parse(html.slice(start + "arrData = ".length, end + 2)) as string[][];
+  const rows: BreezeRow[] = [];
+  for (const r of table) {
+    const seconds = breezeSeconds(r[3]);
+    if (seconds === null) continue;
+    const distance = normalizeDistance(null, seconds);
+    if (!distance) continue;
+    const hipNumber = stripTags(r[1] ?? "");
+    if (!hipNumber) continue;
+    const buyer = stripTags(r[9] ?? "");
+    const priceText = stripTags(r[10] ?? "");
+    const amount = Number(priceText.replace(/[^0-9]/g, ""));
+    const isOut = /^out$/i.test(priceText) || /withdrawn/i.test(buyer);
+    const isRna = /rna|not sold|no sale/i.test(`${buyer} ${priceText}`);
+    const ps = /ps/i.test(stripTags(r[11] ?? ""));
+    rows.push({
+      hipNumber,
+      horseName: null,
+      sex: stripTags(r[4] ?? "") || null,
+      sire: stripTags(r[5] ?? "") || null,
+      dam: stripTags(r[6] ?? "") || null,
+      damSire: null,
+      foalYear: legacy.year - 2,
+      consignor: stripTags(r[8] ?? "") || null,
+      distance,
+      timeRaw: breezeDisplay(r[3]),
+      seconds,
+      workDate: null,
+      priceRaw: isOut ? null : isRna ? (amount > 0 ? `R.N.A. (${amount})` : "R.N.A.") : amount > 0 ? String(amount) : null,
+      purchaser: isOut ? "OUT" : isRna ? null : buyer || null,
+      resultCode: isOut ? "OUT" : isRna ? "RNA" : ps ? "PS" : null,
+      videoUrl: (r[2] ?? "").match(/href=["']([^"']+\.mp4)["']/)?.[1] ?? null,
+    });
+  }
+  return { saleName: legacy.name, saleDate: new Date(Date.UTC(legacy.year, legacy.month - 1, 15, 12)), rows };
+}
+
 async function fetchFtBreezes(saleId: string): Promise<SaleMeta | null> {
   const meta = (await fetchJson(`https://www.fasigtipton.com/django/api/sales/${saleId}/`)) as any;
   if (!meta || !meta.under_tack_show_start_day) return null;
@@ -229,7 +301,12 @@ async function fetchFtBreezes(saleId: string): Promise<SaleMeta | null> {
 async function importSource(source: BreezeSource): Promise<number> {
   const already = await db.breezeRecord.count({ where: { house: source.house, externalSaleId: source.externalSaleId } });
   if (already > 0) return 0;
-  const sale = source.house === "OBS" ? await fetchObsBreezes(source.externalSaleId) : await fetchFtBreezes(source.externalSaleId);
+  const sale =
+    source.house === "OBS"
+      ? source.externalSaleId.startsWith("legacy-")
+        ? await fetchObsLegacyBreezes(source.externalSaleId)
+        : await fetchObsBreezes(source.externalSaleId)
+      : await fetchFtBreezes(source.externalSaleId);
   if (!sale || sale.rows.length === 0) return 0;
   if (sale.saleDate.getTime() > Date.now()) return 0; // venta todavía no hecha
 
@@ -492,7 +569,7 @@ function toWork(r: BreezeRecordRow, relation: "SIBLING" | "DAM"): SpeedDamWork {
 }
 
 export const SPEED_DAM_LIMITS_TEXT = "1/8 ≤ 10.0 · 1/4 ≤ 20.3 · 3/8 ≤ 32.0";
-export const SPEED_DAM_COVERAGE_TEXT = "OBS 2YO 2024-2026 · Fasig-Tipton 2YO 2022-2025";
+export const SPEED_DAM_COVERAGE_TEXT = "OBS 2YO 2022-2026 · Fasig-Tipton 2YO 2022-2025";
 
 /** Detalle de un HIP: TODOS los trabajos de sus hermanos (élite primero) + los de la madre. */
 export async function speedDamDetail(saleId: string, hipNumber: string): Promise<SpeedDamDetail | null> {
