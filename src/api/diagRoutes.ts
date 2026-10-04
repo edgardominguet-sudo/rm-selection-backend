@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { withAsyncErrors } from "./asyncRouter";
+import { db } from "../db";
 
 /**
  * DIAGNOSTICO TEMPORAL - Pedigree flash bug (2026-08-26, a pedido de
@@ -112,4 +113,49 @@ diagRouter.get("/pedigree-log", (req, res) => {
 diagRouter.delete("/pedigree-log", (_req, res) => {
   buffer.length = 0;
   res.status(204).end();
+});
+
+// MARK: - Cierres inesperados de la app (2026-10-04)
+//
+// MetricKit entrega en el siguiente arranque los informes de cierres
+// (crash con su pila de llamadas), cuelgues, y el conteo de salidas por
+// memoria / watchdog. La app los manda acá; quedan guardados en
+// AppDiagnostic y se imprime una línea resumen en los logs de Railway
+// ("APP-DIAGNOSTIC ...") para poder verlos de inmediato.
+diagRouter.post("/app-diagnostics", async (req, res) => {
+  const body = (req.body ?? {}) as {
+    reports?: Array<{
+      kind?: string;
+      device?: string;
+      osVersion?: string;
+      appVersion?: string;
+      summary?: string;
+      payload?: unknown;
+    }>;
+  };
+  const reports = Array.isArray(body.reports) ? body.reports.slice(0, 20) : [];
+  let stored = 0;
+  for (const r of reports) {
+    const kind = typeof r.kind === "string" && r.kind ? r.kind.slice(0, 40) : "unknown";
+    const summary = typeof r.summary === "string" ? r.summary.slice(0, 2000) : null;
+    console.log(`APP-DIAGNOSTIC kind=${kind} device=${r.device ?? "-"} os=${r.osVersion ?? "-"} app=${r.appVersion ?? "-"} :: ${summary ?? ""}`);
+    await db.appDiagnostic.create({
+      data: {
+        kind,
+        device: typeof r.device === "string" ? r.device.slice(0, 80) : null,
+        osVersion: typeof r.osVersion === "string" ? r.osVersion.slice(0, 80) : null,
+        appVersion: typeof r.appVersion === "string" ? r.appVersion.slice(0, 40) : null,
+        summary,
+        payload: (r.payload ?? {}) as object,
+      },
+    });
+    stored += 1;
+  }
+  res.json({ ok: true, stored });
+});
+
+diagRouter.get("/app-diagnostics", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 20, 100);
+  const rows = await db.appDiagnostic.findMany({ orderBy: { createdAt: "desc" }, take: limit });
+  res.json({ reports: rows });
 });

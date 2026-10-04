@@ -1488,3 +1488,20 @@ model BreezeRecord {
   @@index([damKey])
   @@index([nameKey])
 }
+
+// Informes de cierres inesperados de la app (2026-10-04, pedido de Ramon:
+// "la app se ha cerrado de repente"). Los manda MetricKit desde el
+// iPhone/iPad (pila de llamadas del cierre, cuelgues, salidas por memoria)
+// para poder ver la causa exacta sin depender de copiar archivos a mano.
+model AppDiagnostic {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  kind       String
+  device     String?
+  osVersion  String?
+  appVersion String?
+  summary    String?
+  payload    Json
+
+  @@index([createdAt])
+}
