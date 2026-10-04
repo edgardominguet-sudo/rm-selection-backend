@@ -15,6 +15,7 @@ import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfTheDayService";
 import { getSaleResults } from "../saleResultsService";
 import { speedDamIndex, speedDamDetail } from "../breezeSpeedService";
+import { reentryIndex, reentryCheck } from "../reentryService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
@@ -500,6 +501,27 @@ router.get("/sales/speed-dam-index", requireUser, async (req, res) => {
   const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
   res.setHeader("Cache-Control", "no-store");
   res.json({ hips: sale ? await speedDamIndex(sale.id) : {} });
+});
+
+// REINSCRITOS (2026-10-04): HIP -> ventas posteriores donde ese mismo
+// caballo ya está inscrito (ver reentryService.ts), y chequeo puntual para
+// el aviso de favoritos/analizados.
+router.get("/sales/reentry-index", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  if (!house || !externalSaleId) {
+    res.status(400).json({ error: "Faltan parámetros: house, externalSaleId." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ hips: sale ? await reentryIndex(sale.id) : {} });
+});
+
+router.post("/hips/reentry-check", requireUser, async (req, res) => {
+  const items = Array.isArray(req.body?.hips) ? req.body.hips : [];
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ results: await reentryCheck(items) });
 });
 
 router.get("/hips/speed-dam", requireUser, async (req, res) => {
