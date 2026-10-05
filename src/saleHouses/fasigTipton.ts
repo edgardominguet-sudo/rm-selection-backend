@@ -258,6 +258,42 @@ export class FasigTiptonClient implements SaleHouseClient {
     opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
   ): Promise<ResolvedSaleDay[]> {
     const { dates, source } = await this.resolveSessionDatesWithSource(externalSaleId, opts);
-    return resolveSaleDaysFromSessionDates(dates, source);
+    const days = resolveSaleDaysFromSessionDates(dates, source);
+    // Hora de inicio (2026-10-05, pedido de Ramon). Fasig-Tipton la publica
+    // en el encabezado de la página oficial de la venta, una sola para todas
+    // las jornadas (ej. "October 19-22, 2026 | 10 AM"). Se toma tal cual; si
+    // la página no la trae, queda sin hora (nunca se inventa).
+    if (days.length > 0 && opts.saleName && opts.startDate) {
+      const label = await this.fetchOfficialStartTime(opts.saleName, opts.startDate);
+      if (label) for (const day of days) day.startTimeLabel = label;
+    }
+    return days;
+  }
+
+  private startTimeCache = new Map<string, { label: string | null; fetchedAt: number }>();
+
+  private async fetchOfficialStartTime(saleName: string, startDate: Date): Promise<string | null> {
+    const year = startDate.getUTCFullYear();
+    const slug = saleName.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const url = `https://www.fasigtipton.com/${year}/${slug}`;
+    const cached = this.startTimeCache.get(url);
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached.label;
+    let label: string | null = null;
+    try {
+      const response = await fetchWithRetry(url, { headers: { Accept: "text/html" } });
+      if (response.ok) {
+        const text = (await response.text())
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/g, " ")
+          .replace(/\s+/g, " ");
+        const m = text.match(/\b\d{4}\s*\|\s*(\d{1,2}(?::\d{2})?\s*[AaPp]\.?\s?[Mm]\.?)/);
+        if (m) label = m[1].replace(/\s+/g, " ").trim();
+      }
+    } catch {
+      label = null;
+    }
+    this.startTimeCache.set(url, { label, fetchedAt: Date.now() });
+    return label;
   }
 }

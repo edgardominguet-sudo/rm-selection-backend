@@ -339,7 +339,19 @@ export async function ensureSaleDaysPopulated(sale: Sale, client: SaleHouseClien
   if (sale.catalogAccess !== "FULL" && sale.catalogAccess !== "MANUAL_CSV") return;
   try {
     const existingSaleDayCount = await db.saleDay.count({ where: { saleId: sale.id } });
-    if (existingSaleDayCount === 0) {
+    // Hora de inicio (2026-10-05): un calendario ya armado antes de que se
+    // leyera la hora oficial se vuelve a resolver (como mucho cada 6 h)
+    // mientras la venta no terminó, para completarla en cuanto la casa la
+    // publique — sin tocar las ventas ya cerradas.
+    let missingStartTime = false;
+    if (existingSaleDayCount > 0 && sale.catalogAccess === "FULL" && getSaleLifecycleStatus(sale) !== "COMPLETED") {
+      const stale = await db.saleDay.findFirst({
+        where: { saleId: sale.id, startTimeLabel: null, updatedAt: { lt: new Date(Date.now() - 6 * 60 * 60 * 1000) } },
+        select: { id: true },
+      });
+      missingStartTime = !!stale;
+    }
+    if (existingSaleDayCount === 0 || missingStartTime) {
       if (sale.catalogAccess === "FULL") {
         await syncSaleDays(sale, client);
       } else {

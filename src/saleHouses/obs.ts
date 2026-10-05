@@ -294,7 +294,45 @@ export class OBSClient implements SaleHouseClient {
   // Fasig-Tipton (resolveSaleDaysFromSessionDates), reutilizando las
   // fechas por Hip ya resueltas arriba, sin pedirlas de nuevo.
   async resolveSaleDays(externalSaleId: string): Promise<ResolvedSaleDay[]> {
+    const sale = await this.fetchRaw(externalSaleId);
     const sessionDates = await this.resolveSessionDates(externalSaleId);
-    return resolveSaleDaysFromSessionDates(sessionDates, "OBS_CATALOG_SESSION_FIELD");
+    const days = resolveSaleDaysFromSessionDates(sessionDates, "OBS_CATALOG_SESSION_FIELD");
+    // Hora de inicio (2026-10-05, pedido de Ramon: "en el calendario de
+    // ventas no se ve la hora de inicio"). OBS la publica en el encabezado
+    // oficial de la venta (sale_meta.sale_info_header), ej. "October 6th,
+    // 2026 starting at 12:00 pm (1 - 189 + Supplements)". Se toma tal cual
+    // la escribe OBS; si un día no la trae, queda sin hora (nunca se inventa).
+    const startTimes = parseObsStartTimes(sale);
+    for (const day of days) {
+      const label = startTimes.get(day.date.toISOString().slice(0, 10));
+      if (label) day.startTimeLabel = label;
+    }
+    return days;
   }
+}
+
+const OBS_MONTHS: Record<string, number> = {
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+};
+
+/** "AAAA-MM-DD" -> hora de inicio tal como la publica OBS ("12:00 pm"). */
+function parseObsStartTimes(sale: RawSaleResponse): Map<string, string> {
+  const result = new Map<string, string>();
+  const header = sale.sale_meta?.find((m) => m.meta_key === "sale_info_header")?.meta_value;
+  if (!header) return result;
+  const text = String(header)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/[ \t]+/g, " ");
+  const re = /([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+starting\s+at\s+(\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const month = OBS_MONTHS[m[1].toLowerCase()];
+    if (!month) continue;
+    const key = `${m[3]}-${String(month).padStart(2, "0")}-${String(Number(m[2])).padStart(2, "0")}`;
+    result.set(key, m[4].replace(/\s+/g, " ").trim());
+  }
+  return result;
 }
