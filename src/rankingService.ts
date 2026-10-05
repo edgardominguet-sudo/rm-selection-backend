@@ -17,6 +17,7 @@ import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { normalizeHistoryResult } from "./saleHistoryService";
 import { recordOutEvent, recordNewSaleEvent, generateReentryEvents } from "./eventService";
+import { saleStatusOf, SaleResultInput } from "./search/searchLogic";
 import { clearReentryCache } from "./reentryService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
@@ -953,11 +954,20 @@ async function rebuildRankingSnapshot(saleId: string, organizationId: string, da
   if (!sale) return;
 
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-  const hips = await db.hip.findMany({
+  const allHips = await db.hip.findMany({
     where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
     select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, saleResultJson: true, saleId: true, sessionDate: true },
   });
+  if (allHips.length === 0) return;
+  // Un retirado (OUT) nunca entra al Ranking del Día (pedido de Ramon,
+  // 2026-10-04): la lista sale la mañana de la venta y un OUT no se
+  // presenta ni se analiza. Si un HIP queda OUT después de generado el
+  // ranking, el siguiente recálculo (cada 5 min) lo saca y sube el
+  // siguiente analizado.
+  const hips = allHips.filter((h) => saleStatusOf(h.saleResultJson as SaleResultInput | null) !== "OUT");
   if (hips.length === 0) return;
+  // "N HIPs hoy" cuenta solo los que se presentan (sin los OUT).
+  totalHipsToday = hips.length;
 
   const sessionStart = new Date(Math.min(...hips.map((h) => h.sessionDate!.getTime())));
   const activeSale = await resolveActiveSaleForAutomation();

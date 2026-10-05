@@ -7,6 +7,7 @@ import { normalizeMediaUrl } from "./mediaFingerprint";
 import { CatalogMediaItem } from "../types";
 import { ViewName } from "./landmarks";
 import { analyzeHipOnDemand } from "../rankingService";
+import { isHipOut } from "../search/searchLogic";
 
 /**
  * ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE VIDEOS DE MEDIA (2026-09-10, a
@@ -74,6 +75,8 @@ export async function autoAnalyzeNewCatalogVideoIfNeeded(hip: {
   try {
     const videoUrls = catalogVideoUrls(freshMedia);
     if (videoUrls.length === 0) return;
+    // Un retirado (OUT) no se analiza (pedido de Ramon, 2026-10-04).
+    if (await isHipOut(hip.id)) return;
 
     // Idempotencia (regla 2): si el video que YA produjo el fotograma
     // vigente sigue estando entre los videos publicados hoy (en cualquier

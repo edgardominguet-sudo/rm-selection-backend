@@ -532,6 +532,8 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
             case "failed":
               autoPhotoAnalysis.failed += 1;
               break;
+            case "hip_out":
+              break;
             case "credit_exhausted":
               autoPhotoAnalysis.creditExhausted += 1;
               // Se guarda solo el PRIMER punto donde se detectó (los demás

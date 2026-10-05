@@ -9,6 +9,7 @@ import { normalizeMediaUrl } from "./mediaFingerprint";
 import { CatalogMediaItem } from "../types";
 import { ViewName } from "./landmarks";
 import { analyzeHipOnDemand } from "../rankingService";
+import { isHipOut } from "../search/searchLogic";
 
 /**
  * ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE FOTOS DE MEDIA (2026-09-10, a
@@ -127,6 +128,7 @@ export type AutoPhotoAnalysisOutcome =
   | "no_lateral_candidate" // el motor funcionó bien, pero ninguna foto publicada clasificó como LATERAL con confianza suficiente (regla 3) — resultado válido, no es un fallo.
   | "applied" // se encontró una foto LATERAL, se guardó y se analizó correctamente en al menos una organización.
   | "failed" // fallo técnico real (descarga, IA, subida a R2, o base de datos) — se reintentará en la próxima corrida, sujeto al tope de la regla 7.
+  | "hip_out" // el Hip está retirado (OUT): un retirado no se analiza (pedido de Ramon, 2026-10-04).
   | "credit_exhausted"; // AGREGADO 2026-09-15: se agotó el saldo de Anthropic a mitad del barrido — NUNCA cuenta como fallo técnico de este Hip puntual (no toca el tope de reintentos de la regla 7, ver registerFailedAttempt) — es una condición de toda la cuenta. mediaSweepService.ts corta el resto de la corrida apenas ve el primero de estos, en vez de seguir "fallando" Hip por Hip contra una pared.
 
 function catalogPhotoUrls(media: CatalogMediaItem[]): string[] {
@@ -187,6 +189,7 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
   try {
     const photoUrls = catalogPhotoUrls(freshMedia);
     if (photoUrls.length === 0) return "no_photo";
+    if (await isHipOut(hip.id)) return "hip_out";
 
     // Idempotencia (regla 2): si la foto que YA se usó para la tarjeta
     // LATERAL automática vigente sigue estando entre las fotos publicadas

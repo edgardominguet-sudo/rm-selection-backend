@@ -1,3 +1,4 @@
+import { db } from "../db";
 // Search por venta (2026-09-27, reestructuración pedida por Ramon: "la nueva
 // ventana Search debe ser SIMPLE y contener ÚNICAMENTE estos filtros":
 // Sire, Dam, Grand Sire, Broodmare Sire, Date of Birth (desde/hasta), Sex,
@@ -215,4 +216,10 @@ export function aiClassOf(score: number | null): AiClass {
   if (score >= CLASSIFICATION_THRESHOLDS.excelenteMinimo) return "EXCELENTE";
   if (score >= CLASSIFICATION_THRESHOLDS.bienMinimo) return "BIEN";
   return "REVISAR";
+}
+
+/** true si el HIP está retirado (OUT) según su resultado guardado. */
+export async function isHipOut(hipId: string): Promise<boolean> {
+  const row = await db.hip.findUnique({ where: { id: hipId }, select: { saleResultJson: true } });
+  return saleStatusOf((row?.saleResultJson ?? null) as SaleResultInput | null) === "OUT";
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { Router, Request, Response } from "express";
 import { withAsyncErrors } from "./asyncRouter";
 import { HttpError } from "./errorHandler";
-import { parseSaleSearchRequest } from "../search/searchLogic";
+import { parseSaleSearchRequest, saleStatusOf, SaleResultInput } from "../search/searchLogic";
 import { runSaleSearch, getSaleSearchFilters } from "../search/searchService";
 import { db } from "../db";
 import { config } from "../config";
@@ -230,10 +230,27 @@ router.get("/ranking", requireUser, async (req, res) => {
   // rebuildRankingSnapshot en rankingService.ts) — la URL de lectura se
   // resuelve recién acá, en esta misma request, mismo criterio que el
   // resto del backend usa para toda la media de Análisis IA.
-  const entries = (snapshot.entriesJson as Array<Record<string, unknown>>).map((entry) => {
+  // Un retirado (OUT) nunca se muestra en el Ranking del Día (pedido de
+  // Ramon, 2026-10-04) — se mira el resultado EN VIVO del Hip, así un OUT
+  // publicado después de generado el ranking desaparece al instante (el
+  // recálculo de 5 min además sube al siguiente analizado).
+  const rawEntries = snapshot.entriesJson as Array<Record<string, unknown>>;
+  const liveResults = await db.hip.findMany({
+    where: { saleId, hipNumber: { in: rawEntries.map((e) => String(e.hipNumber)) } },
+    select: { hipNumber: true, saleResultJson: true },
+  });
+  const outHipNumbers = new Set(
+    liveResults
+      .filter((h) => saleStatusOf(h.saleResultJson as SaleResultInput | null) === "OUT")
+      .map((h) => h.hipNumber)
+  );
+  const visibleEntries = rawEntries.filter(
+    (e) => !outHipNumbers.has(String(e.hipNumber)) && saleStatusOf(e.saleResult as SaleResultInput | null) !== "OUT"
+  );
+  const entries = visibleEntries.map((entry, index) => {
     const storageKey = entry.lateralPhotoStorageKey;
     return {
-      rank: entry.rank,
+      rank: index + 1,
       hipNumber: entry.hipNumber,
       horseName: entry.horseName,
       sire: entry.sire,
