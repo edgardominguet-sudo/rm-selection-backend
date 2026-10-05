@@ -16,6 +16,7 @@ import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfThe
 import { getSaleResults } from "../saleResultsService";
 import { speedDamIndex, speedDamDetail } from "../breezeSpeedService";
 import { reentryIndex, reentryCheck } from "../reentryService";
+import { listEvents, generateReentryEvents } from "../eventService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { runNightlyMediaSweep } from "../mediaSweepService";
@@ -801,6 +802,41 @@ router.put("/me/decisions/:hipId", requireUser, async (req, res) => {
   });
   broadcastChange("decision", deviceId);
   res.json(decision);
+  // Centro de Avisos: ¿este caballo ya está inscrito en otra venta?
+  void generateReentryEvents([hipId]).catch((err) => console.error("[events] reentry tras decisión:", err));
+});
+
+// CENTRO DE AVISOS (2026-10-04) — lista compartida por iPhone y iPad.
+router.get("/me/events", requireUser, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 150, 300);
+  res.setHeader("Cache-Control", "no-store");
+  res.json(await listEvents(limit));
+});
+
+router.post("/me/events/read", requireUser, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? (req.body.ids as string[]).slice(0, 500) : null;
+  const all = req.body?.all === true;
+  if (!all && (!ids || ids.length === 0)) {
+    res.status(400).json({ error: "Faltan ids o all." });
+    return;
+  }
+  await db.appEvent.updateMany({
+    where: { readAt: null, ...(all ? {} : { id: { in: ids! } }) },
+    data: { readAt: new Date() },
+  });
+  broadcastChange("events");
+  res.json({ ok: true });
+});
+
+router.post("/me/events/hide", requireUser, async (req, res) => {
+  const id = req.body?.id as string | undefined;
+  if (!id) {
+    res.status(400).json({ error: "Falta id." });
+    return;
+  }
+  await db.appEvent.updateMany({ where: { id }, data: { hiddenAt: new Date(), readAt: new Date() } });
+  broadcastChange("events");
+  res.json({ ok: true });
 });
 
 router.delete("/me/decisions/:hipId", requireUser, async (req, res) => {

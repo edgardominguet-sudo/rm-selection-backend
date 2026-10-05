@@ -69,6 +69,11 @@ function statusOf(json: unknown): string | null {
 const CACHE_MS = 20 * 60 * 1000;
 const cache = new Map<string, { at: number; hips: Record<string, ReentryMatch[]> }>();
 
+/** Se llama al importar un catálogo nuevo: los cruces cambian. */
+export function clearReentryCache(): void {
+  cache.clear();
+}
+
 /** HIP Number -> ventas POSTERIORES donde ese mismo caballo está inscrito. */
 export async function reentryIndex(saleId: string): Promise<Record<string, ReentryMatch[]>> {
   const cached = cache.get(saleId);

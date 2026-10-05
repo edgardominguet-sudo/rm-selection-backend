@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { backfillHistoricalSales } from "./historicalSaleBackfill";
 import { importBreezeRecords } from "./breezeSpeedService";
+import { generateReentryEvents } from "./eventService";
 import { db } from "./db";
 import { config } from "./config";
 import {
@@ -196,6 +197,20 @@ export function startNightlySyncScheduler(): void {
   cron.schedule("0 3 * * *", () => {
     void runNightlySyncCycle();
   });
+
+  // CENTRO DE AVISOS (2026-10-04): reinscritos de los caballos marcados
+  // (decisión o análisis) — cada hora y una vez al arrancar. Solo lee la
+  // base (catálogos ya importados), nunca consulta a la casa de ventas.
+  cron.schedule("17 * * * *", () => {
+    void generateReentryEvents()
+      .then((n) => { if (n > 0) console.log(`[events] ${n} aviso(s) nuevo(s) de reinscritos.`); })
+      .catch((err) => console.error("[events] Error revisando reinscritos:", err));
+  });
+  setTimeout(() => {
+    void generateReentryEvents()
+      .then((n) => console.log(`[events] Revisión de arranque de reinscritos: ${n} aviso(s) nuevo(s).`))
+      .catch((err) => console.error("[events] Error revisando reinscritos:", err));
+  }, 150_000);
   console.log("[nightly-sync] Iniciado (cron diario: 0 3 * * *, hora UTC del servidor) — descubrimiento + catálogo/precios + Media, un solo horario fijo, sin otra cadencia.");
 
   // 2026-09-29: al arrancar, importar una sola vez los catálogos ya

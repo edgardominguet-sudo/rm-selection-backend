@@ -68,6 +68,8 @@ export interface SaleSearchFilters {
   media: { photo: number; video: number; both: number; none: number };
   /** Cuántos HIPs tienen madre velocista ⚡ (hermanos o madre con trabajo élite). */
   speedDam: number;
+  /** Cuántos HIPs de la venta están retirados (OUT). */
+  out: number;
 }
 
 // Fotos/video del catálogo (2026-10-01): mediaJson es un arreglo jsonb de
@@ -182,6 +184,8 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
     dateOfBirth: { min: isoDay(dob?.mn ?? null), max: isoDay(dob?.mx ?? null), withData: Number(dob?.withData ?? 0) },
     bredStates: stateRows.map((r) => ({ value: r.v, count: Number(r.n) })),
     speedDam: Object.keys(await speedDamIndex(sale.id)).length,
+    out: (await db.hip.findMany({ where: { saleId: sale.id }, select: { saleResultJson: true } }))
+      .filter((h) => saleStatusOf(h.saleResultJson as SaleResultInput | null) === "OUT").length,
     media: {
       photo: Number(mediaRows[0]?.photo ?? 0),
       video: Number(mediaRows[0]?.video ?? 0),
@@ -281,8 +285,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
 
   // Todos los filtros de nombre comparan por clave normalizada
   // (upper + espacios), igual que se agruparon las opciones.
-  const rows = await db.$queryRawUnsafe<Array<{ id: string; hipNumber: string; color: string | null }>>(
-    `SELECT h.id, h."hipNumber", h."color"
+  const rows = await db.$queryRawUnsafe<Array<{ id: string; hipNumber: string; color: string | null; saleResultJson: unknown }>>(
+    `SELECT h.id, h."hipNumber", h."color", h."saleResultJson"
        FROM "Hip" h
       WHERE h."saleId" = $1
         AND ($2::text[] IS NULL OR upper(regexp_replace(btrim(h."sire"), '\\s+', ' ', 'g')) = ANY($2::text[]))
@@ -319,6 +323,7 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
   const matching = rows
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
+    .filter((r) => !req.hideOut || saleStatusOf(r.saleResultJson as SaleResultInput | null) !== "OUT")
     .sort((a, b) => compareHips(a.hipNumber, b.hipNumber) || (a.id < b.id ? -1 : 1));
   if (matching.length === 0) return empty;
 

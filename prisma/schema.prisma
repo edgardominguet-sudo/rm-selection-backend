@@ -1505,3 +1505,29 @@ model AppDiagnostic {
 
   @@index([createdAt])
 }
+
+// Centro de Avisos de la app (2026-10-04, pedido de Ramon: "un centro de
+// notificaciones dentro de la app: nuevos reinscritos, nuevas ventas
+// publicadas, OUT…"). Los genera el servidor en el momento en que ocurre
+// cada cosa; iPhone y iPad leen la misma lista (lo leído en uno queda
+// leído en el otro). `dedupeKey` evita repetir el mismo aviso.
+model AppEvent {
+  id                   String    @id @default(cuid())
+  createdAt            DateTime  @default(now())
+  kind                 String
+  title                String
+  body                 String
+  house                String?
+  externalSaleId       String?
+  hipNumber            String?
+  targetHouse          String?
+  targetExternalSaleId String?
+  targetHipNumber      String?
+  hips                 Json?
+  important            Boolean   @default(false)
+  dedupeKey            String    @unique
+  readAt               DateTime?
+  hiddenAt             DateTime?
+
+  @@index([createdAt])
+}

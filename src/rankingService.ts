@@ -15,6 +15,9 @@ import { referenceViewHash } from "./analysis/referenceCalibration";
 import { CatalogMediaItem, CatalogNotYetPublishedError, NormalizedHip, SaleHouseClient } from "./types";
 import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
+import { normalizeHistoryResult } from "./saleHistoryService";
+import { recordOutEvent, recordNewSaleEvent, generateReentryEvents } from "./eventService";
+import { clearReentryCache } from "./reentryService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
@@ -1241,8 +1244,20 @@ export async function importNewlyPublishedCatalogs(excludeSaleIds: string[] = []
   console.log(`[daily-sync][new-catalogs] Ventas futuras sin catálogo o sin calendario: ${candidates.map((s) => `"${s.name}" (${s.house}/${s.externalSaleId})`).join(", ")}.`);
   for (const sale of candidates) {
     try {
+      const countBefore = await db.hip.count({ where: { saleId: sale.id } });
       await syncCatalog(sale);
       const count = await db.hip.count({ where: { saleId: sale.id } });
+      // Centro de Avisos (2026-10-04): catálogo recién llegado → aviso de
+      // venta nueva y revisión de reinscritos contra este catálogo.
+      if (countBefore === 0 && count > 0) {
+        try {
+          await recordNewSaleEvent(sale, count);
+          clearReentryCache();
+          await generateReentryEvents();
+        } catch (err) {
+          console.error(`[events] Error generando avisos de "${sale.name}":`, err);
+        }
+      }
       console.log(`[daily-sync][new-catalogs] "${sale.name}": catálogo importado, ${count} HIPs.`);
       // 2026-09-29 (Ramon: "el calendario de Fasig-Tipton October no se
       // descargó"): el Calendario de Ventas (SaleDay) solo se armaba en el
@@ -1348,6 +1363,12 @@ export async function syncLivePricesForSale(sale: Sale): Promise<{ hipsUpdated: 
   });
 
   let hipsUpdated = 0;
+  const newlyOut: string[] = [];
+  const isOutJson = (json: unknown): boolean => {
+    const r = json as { priceRaw?: string | null; purchaser?: string | null; soldAsCode?: string | null } | null;
+    if (!r) return false;
+    return normalizeHistoryResult(r.priceRaw ?? null, r.purchaser ?? null, r.soldAsCode ?? null).status === "OUT";
+  };
   for (const nh of hips) {
     if (!nh.saleResult) continue;
     const existing = await db.hip.findUnique({
@@ -1367,6 +1388,7 @@ export async function syncLivePricesForSale(sale: Sale): Promise<{ hipsUpdated: 
       data: { saleResultJson: newResultJson },
     });
     hipsUpdated += 1;
+    if (isOutJson(newResultJson) && !isOutJson(existing.saleResultJson)) newlyOut.push(updatedHip.hipNumber);
 
     // Misma base histórica permanente que ya alimenta syncCatalog — un
     // precio nuevo en vivo también debe quedar reflejado ahí, no solo en
@@ -1376,6 +1398,12 @@ export async function syncLivePricesForSale(sale: Sale): Promise<{ hipsUpdated: 
     } catch (err) {
       console.error(`[live-price] Error registrando resultado oficial para Hip ${updatedHip.hipNumber}:`, err);
     }
+  }
+  // Centro de Avisos (2026-10-04): un aviso por tanda de HIPs retirados.
+  try {
+    await recordOutEvent(sale, newlyOut);
+  } catch (err) {
+    console.error(`[events] Error registrando aviso de OUT de "${sale.name}":`, err);
   }
   return { hipsUpdated };
 }

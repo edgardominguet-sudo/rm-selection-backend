@@ -44,6 +44,13 @@ interface RawEntry {
   // con ambos datos). Antes no se leían y en Search quedaban "No disponible".
   color?: string | null;
   foaled?: string | null;
+  // RETIRADO / SCRATCH (2026-10-04, caso real Saratoga Fall Mixed: 17 HIPs
+  // con out=true en fasigtipton.com y 0 OUT en la app). Fasig-Tipton marca
+  // el retiro con este booleano (+ out_date), NO con purchaser ni con
+  // sold_as_code — sold_as_code es el TIPO de lote ("Y" yearling, "W"
+  // weanling, "B" broodmare…), no un resultado.
+  out?: boolean | null;
+  out_date?: string | null;
 }
 
 function buildMedia(entry: RawEntry): CatalogMediaItem[] {
@@ -66,7 +73,8 @@ function buildMedia(entry: RawEntry): CatalogMediaItem[] {
 }
 
 function normalize(entry: RawEntry): NormalizedHip {
-  const hasSaleResult = entry.price != null || entry.purchaser != null || entry.sold_as_code != null;
+  const isOut = entry.out === true;
+  const hasSaleResult = isOut || entry.price != null || entry.purchaser != null || entry.sold_as_code != null;
   return {
     hipNumber: String(entry.hip),
     horseName: entry.name ?? undefined,
@@ -83,7 +91,7 @@ function normalize(entry: RawEntry): NormalizedHip {
     saleResult: hasSaleResult
       ? {
           priceRaw: entry.price ?? undefined,
-          purchaser: entry.purchaser ?? undefined,
+          purchaser: isOut ? "OUT" : entry.purchaser ?? undefined,
           soldAsCode: entry.sold_as_code ?? undefined,
         }
       : undefined,
