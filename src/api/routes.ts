@@ -923,10 +923,23 @@ router.delete("/me/decisions/:hipId", requireUser, async (req, res) => {
 // una fila por (userId, hipId), upsert, tombstone para borrados. El cliente
 // manda el PKDrawing completo serializado en base64 en cada guardado (no
 // hace falta granularidad de trazo por trazo).
+// Alcance opcional de los pulls de sincronización (2026-10-05): además del
+// incremental por `since`, un dispositivo puede pedir TODO lo de un HIP
+// (`hipId`) o de una venta (`house` + `externalSaleId`) para auto-repararse
+// si perdió algo localmente (ver SyncEngine.reconcile* en iOS).
+function syncScopeWhere(req: { query: Record<string, unknown> }): Record<string, unknown> {
+  const hipId = typeof req.query.hipId === "string" ? req.query.hipId : undefined;
+  if (hipId) return { hipId };
+  const house = typeof req.query.house === "string" ? req.query.house : undefined;
+  const externalSaleId = typeof req.query.externalSaleId === "string" ? req.query.externalSaleId : undefined;
+  if (house && externalSaleId) return { hip: { sale: { house: house as never, externalSaleId } } };
+  return {};
+}
+
 router.get("/me/pedigree-annotations", requireUser, async (req, res) => {
   const since = parseSinceParam(req.query.since);
   const rows = await db.pedigreeAnnotation.findMany({
-    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
+    where: { userId: req.user!.id, ...syncScopeWhere(req), ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
     include: { hip: hipIdentitySelect },
   });
@@ -958,7 +971,7 @@ router.delete("/me/pedigree-annotations/:hipId", requireUser, async (req, res) =
 router.get("/me/observations", requireUser, async (req, res) => {
   const since = parseSinceParam(req.query.since);
   const observations = await db.hipObservation.findMany({
-    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
+    where: { userId: req.user!.id, ...syncScopeWhere(req), ...(since ? { updatedAt: { gt: since } } : {}) },
     orderBy: { updatedAt: "asc" },
     include: { hip: hipIdentitySelect },
   });
@@ -1113,7 +1126,7 @@ router.get("/me/media", requireUser, async (req, res) => {
   const assets = await db.mediaAsset.findMany({
     where: {
       userId: req.user!.id,
-      ...(hipId ? { hipId } : {}),
+      ...(hipId ? { hipId } : syncScopeWhere(req)),
       ...(since ? { updatedAt: { gt: since } } : {}),
       OR: [{ uploadStatus: "PROCESSED" }, { deletedAt: { not: null } }],
     },
