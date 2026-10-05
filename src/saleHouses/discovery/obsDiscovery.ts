@@ -102,7 +102,7 @@ export class OBSDiscoveryClient implements SaleDiscoveryClient {
       const startDate = range.start;
 
       results.push({
-        name: title.trim(),
+        name: cleanObsSaleName(title),
         // Sintético: OBS no tiene ningún ID de catálogo real todavía —
         // igual sirve para identificar la venta de forma estable en
         // Sale.externalSaleId (el import manual la referencia por
@@ -177,4 +177,37 @@ function slugify(text: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
+}
+
+const OBS_MONTHS_ES: Record<string, string> = {
+  january: "Enero", february: "Febrero", march: "Marzo", april: "Abril",
+  may: "Mayo", june: "Junio", july: "Julio", august: "Agosto",
+  september: "Septiembre", october: "Octubre", november: "Noviembre", december: "Diciembre",
+};
+
+/**
+ * El titulo del post del blog de OBS es un titular de prensa (ej. "OBS 2026
+ * October Yearling Sale Catalog Now Available Online"), no el nombre de la
+ * venta. El nombre que se guarda es corto y sin año (el año ya lo da la
+ * fecha de la venta): "OBS Octubre Yearlings", "OBS Abril 2YO"... Si el
+ * titulo no trae mes + tipo reconocibles, se limpia el ruido periodistico
+ * conocido y se conserva el resto tal cual (nunca se inventa).
+ */
+export function cleanObsSaleName(rawTitle: string): string {
+  const title = stripHtmlTags(rawTitle).replace(/&#8217;|&rsquo;/g, "'").trim();
+  const monthKey = Object.keys(OBS_MONTHS_ES).find((m) => new RegExp(`\\b${m}\\b`, "i").test(title));
+  let kind: string | null = null;
+  if (/yearling/i.test(title)) kind = "Yearlings";
+  else if (/two[- ]year[- ]olds?|2[- ]?yo|2-year-olds?/i.test(title)) kind = "2YO";
+  else if (/all ages/i.test(title)) kind = "Todas las edades";
+  if (monthKey && kind) return `OBS ${OBS_MONTHS_ES[monthKey]} ${kind}`;
+
+  const cleaned = title
+    .replace(/\b(catalog|catalogue)\b.*$/i, "")
+    .replace(/\b(now )?available( online)?\b/gi, "")
+    .replace(/\b20\d{2}\b/g, "")
+    .replace(/^OBS\s*/i, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return cleaned ? `OBS ${cleaned}` : title;
 }
