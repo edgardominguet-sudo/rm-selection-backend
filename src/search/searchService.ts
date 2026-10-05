@@ -323,7 +323,11 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
   const matching = rows
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
-    .filter((r) => !req.hideOut || saleStatusOf(r.saleResultJson as SaleResultInput | null) !== "OUT")
+    .filter((r) => {
+      if (!req.hideOut && !req.onlyOut) return true;
+      const isOut = saleStatusOf(r.saleResultJson as SaleResultInput | null) === "OUT";
+      return req.onlyOut ? isOut : !isOut;
+    })
     .sort((a, b) => compareHips(a.hipNumber, b.hipNumber) || (a.id < b.id ? -1 : 1));
   if (matching.length === 0) return empty;
 

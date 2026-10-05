@@ -53,6 +53,8 @@ export interface SaleSearchRequest {
   speedDam?: boolean;
   /** Ocultar HIPs retirados (OUT) (2026-10-04). */
   hideOut?: boolean;
+  /** Solo HIPs retirados (OUT). */
+  onlyOut?: boolean;
   page: number;
   pageSize: number;
 }
@@ -124,6 +126,7 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
     })(),
     speedDam: b.speedDam === true ? true : undefined,
     hideOut: b.hideOut === true ? true : undefined,
+    onlyOut: b.onlyOut === true ? true : undefined,
     page: optInt(b.page, "page", 1, 100000) ?? 1,
     pageSize: optInt(b.pageSize, "pageSize", 1, SEARCH_MAX_PAGE_SIZE) ?? SEARCH_DEFAULT_PAGE_SIZE,
   };
@@ -185,7 +188,7 @@ export function saleStatusOf(result: SaleResultInput | null | undefined): SaleSt
   const priceNumber = Number((result.priceRaw ?? "").replace(/[$,\s]/g, ""));
   const hasPrice = (result.priceRaw ?? "").trim() !== "" && Number.isFinite(priceNumber) && priceNumber > 0;
   const withdrawn = ["OUT", "SCRATCHED", "WD", "WITHDRAWN"];
-  if (code === "RNA") return "RNA";
+  if (code === "RNA" || purchaser === "RNA") return "RNA";
   if (code === "PS" && hasPrice) return "SOLD";
   if (withdrawn.includes(code) && !hasPrice) return "OUT";
   if (hasPrice) return "SOLD";
