@@ -823,6 +823,44 @@ router.put("/me/decisions/:hipId", requireUser, async (req, res) => {
   void generateReentryEvents([hipId]).catch((err) => console.error("[events] reentry tras decisión:", err));
 });
 
+// MARCA "REVISADO" DE MIS FAVORITOS (2026-10-04) — compartida entre
+// iPhone y iPad. Gana el cambio más reciente (changedAt del dispositivo).
+router.get("/me/review-marks", requireUser, async (req, res) => {
+  const since = parseSinceParam(req.query.since);
+  const rows = await db.hipReviewMark.findMany({
+    where: { userId: req.user!.id, ...(since ? { updatedAt: { gt: since } } : {}) },
+    orderBy: { updatedAt: "asc" },
+    select: { house: true, externalSaleId: true, hipNumber: true, reviewed: true, changedAt: true, updatedAt: true },
+  });
+  res.json(rows);
+});
+
+router.put("/me/review-marks", requireUser, async (req, res) => {
+  const body = req.body as { marks?: unknown; deviceId?: string };
+  const marks = Array.isArray(body.marks) ? body.marks.slice(0, 2000) : [];
+  const deviceId = typeof body.deviceId === "string" ? body.deviceId : null;
+  let applied = 0;
+  for (const raw of marks) {
+    const m = raw as Record<string, unknown>;
+    const house = typeof m.house === "string" ? m.house.trim() : "";
+    const externalSaleId = typeof m.externalSaleId === "string" ? m.externalSaleId.trim() : "";
+    const hipNumber = typeof m.hipNumber === "string" ? m.hipNumber.trim() : "";
+    const changedAt = typeof m.changedAt === "string" ? new Date(m.changedAt) : new Date();
+    if (!house || !externalSaleId || !hipNumber || typeof m.reviewed !== "boolean" || isNaN(changedAt.getTime())) continue;
+    const key = { userId_house_externalSaleId_hipNumber: { userId: req.user!.id, house, externalSaleId, hipNumber } };
+    const existing = await db.hipReviewMark.findUnique({ where: key, select: { changedAt: true } });
+    if (existing && existing.changedAt > changedAt) continue; // ya hay un cambio más nuevo
+    await db.hipReviewMark.upsert({
+      where: key,
+      create: { userId: req.user!.id, house, externalSaleId, hipNumber, reviewed: m.reviewed, changedAt, deviceId },
+      update: { reviewed: m.reviewed, changedAt, deviceId },
+    });
+    applied += 1;
+  }
+  if (applied > 0) broadcastChange("reviewMarks", deviceId);
+  res.json({ ok: true, applied });
+});
+
 // CENTRO DE AVISOS (2026-10-04) — lista compartida por iPhone y iPad.
 router.get("/me/events", requireUser, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 150, 300);

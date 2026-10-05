@@ -1531,3 +1531,22 @@ model AppEvent {
 
   @@index([createdAt])
 }
+
+// Marca "revisado" (✓) de Mis Favoritos (2026-10-04) — compartida entre
+// iPhone y iPad del mismo usuario. Por identidad estable del HIP (casa +
+// venta + número), igual que el resto de la sincronización.
+model HipReviewMark {
+  id             String   @id @default(cuid())
+  userId         String
+  house          String
+  externalSaleId String
+  hipNumber      String
+  reviewed       Boolean
+  changedAt      DateTime
+  deviceId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, house, externalSaleId, hipNumber])
+  @@index([userId, updatedAt])
+}
