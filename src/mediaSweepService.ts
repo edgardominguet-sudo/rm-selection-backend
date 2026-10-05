@@ -533,6 +533,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
               autoPhotoAnalysis.failed += 1;
               break;
             case "hip_out":
+            case "disabled":
               break;
             case "credit_exhausted":
               autoPhotoAnalysis.creditExhausted += 1;

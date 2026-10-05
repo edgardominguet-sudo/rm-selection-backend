@@ -12,6 +12,16 @@ import { analyzeHipOnDemand } from "../rankingService";
 import { isHipOut } from "../search/searchLogic";
 
 /**
+ * REGLA FIJA (2026-10-05, decisión de Ramon): la IA analiza SOLO cuando
+ * Ramon toca "Analizar". Ningún barrido, en ninguna venta, analiza por su
+ * cuenta — los barridos automáticos solo detectan fotos/videos nuevos que
+ * sube la casa de ventas y los OUT. Con esto en `false`, esta función no
+ * descarga, no clasifica ni gasta crédito de IA, aunque alguien la vuelva
+ * a llamar.
+ */
+export const AUTO_PHOTO_ANALYSIS_ENABLED = false;
+
+/**
  * ANÁLISIS AUTOMÁTICO Y SILENCIOSO DE FOTOS DE MEDIA (2026-09-10, a
  * pedido explícito de Ramon; ajustado el mismo día para procesar TODO el
  * catálogo pendiente por corrida, en paralelo controlado, en vez de un
@@ -128,6 +138,7 @@ export type AutoPhotoAnalysisOutcome =
   | "no_lateral_candidate" // el motor funcionó bien, pero ninguna foto publicada clasificó como LATERAL con confianza suficiente (regla 3) — resultado válido, no es un fallo.
   | "applied" // se encontró una foto LATERAL, se guardó y se analizó correctamente en al menos una organización.
   | "failed" // fallo técnico real (descarga, IA, subida a R2, o base de datos) — se reintentará en la próxima corrida, sujeto al tope de la regla 7.
+  | "disabled" // análisis automático apagado de forma permanente (regla fija 2026-10-05).
   | "hip_out" // el Hip está retirado (OUT): un retirado no se analiza (pedido de Ramon, 2026-10-04).
   | "credit_exhausted"; // AGREGADO 2026-09-15: se agotó el saldo de Anthropic a mitad del barrido — NUNCA cuenta como fallo técnico de este Hip puntual (no toca el tope de reintentos de la regla 7, ver registerFailedAttempt) — es una condición de toda la cuenta. mediaSweepService.ts corta el resto de la corrida apenas ve el primero de estos, en vez de seguir "fallando" Hip por Hip contra una pared.
 
@@ -186,6 +197,7 @@ export async function autoAnalyzeNewCatalogPhotoIfNeeded(hip: {
   autoLateralPhotoFailedAttempts: number;
   autoLateralPhotoLastAttemptedFingerprint: string | null;
 }, freshMedia: CatalogMediaItem[]): Promise<AutoPhotoAnalysisOutcome> {
+  if (!AUTO_PHOTO_ANALYSIS_ENABLED) return "disabled";
   try {
     const photoUrls = catalogPhotoUrls(freshMedia);
     if (photoUrls.length === 0) return "no_photo";
