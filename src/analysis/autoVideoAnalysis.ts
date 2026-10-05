@@ -7,6 +7,9 @@ import { normalizeMediaUrl } from "./mediaFingerprint";
 import { CatalogMediaItem } from "../types";
 import { ViewName } from "./landmarks";
 import { analyzeHipOnDemand } from "../rankingService";
+
+/** Análisis de videos apagado de forma permanente (ver regla arriba). */
+export const VIDEO_ANALYSIS_ENABLED = false;
 import { isHipOut } from "../search/searchLogic";
 
 /**
@@ -72,6 +75,11 @@ export async function autoAnalyzeNewCatalogVideoIfNeeded(hip: {
   horseName: string | null;
   autoVideoFrameSourceUrl: string | null;
 }, freshMedia: CatalogMediaItem[]): Promise<void> {
+  // REGLA FIJA (2026-10-05, decisión de Ramon): RM Selection analiza SOLO
+  // FOTOS en todas las ventas. Los videos quedan guardados en la base de
+  // datos pero inactivos para el análisis — ni fotogramas, ni ffmpeg, ni IA.
+  // Aunque alguien vuelva a llamar a esta función, no hace nada.
+  if (!VIDEO_ANALYSIS_ENABLED) return;
   try {
     const videoUrls = catalogVideoUrls(freshMedia);
     if (videoUrls.length === 0) return;
