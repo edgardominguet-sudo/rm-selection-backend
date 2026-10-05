@@ -743,11 +743,17 @@ router.post("/hips/:hipId/analysis", requireUser, async (req, res) => {
     return;
   }
 
+  // Rastro de cada pedido de análisis (2026-10-05): sin esto, un "Analizar"
+  // que no da resultado no deja ninguna huella del lado del servidor.
+  const startedAt = Date.now();
+  console.log(`[analysis] pedido Hip ${hip.hipNumber} (${hipId}) vista=${view ?? "todas"} device=${deviceId ?? "-"}`);
   try {
     const result = await analyzeHipOnDemand(hip, organizationId, deviceId, view);
     broadcastChange("analysis", deviceId);
+    console.log(`[analysis] Hip ${hip.hipNumber}: listo (${result.reused ? "reutilizado" : "nuevo"}) en ${Date.now() - startedAt} ms`);
     res.json(result);
   } catch (err) {
+    console.log(`[analysis] Hip ${hip.hipNumber}: no se pudo — ${err instanceof Error ? err.constructor.name + ": " + err.message : String(err)}`);
     if (err instanceof MissingReferenceHorseError) {
       res.status(409).json({ error: "Falta configurar el caballo referente para esta organización." });
       return;
