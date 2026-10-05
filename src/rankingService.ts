@@ -1387,6 +1387,11 @@ export interface LivePriceSyncSummary {
 }
 
 /** Encuentra las ventas activas catalogAccess FULL cuya jornada de hoy está en curso, y les actualiza SOLO el precio (ver syncLivePricesForSale). */
+/** Retiros (OUT) previos a la venta: ventana y frecuencia del refresco. */
+const PRE_SALE_RESULTS_DAYS = 10;
+const PRE_SALE_RESULTS_MINUTES = 30;
+const lastPreSaleResultsCheck = new Map<string, number>();
+
 export async function syncLivePricesForActiveSessions(): Promise<LivePriceSyncSummary> {
   const summary: LivePriceSyncSummary = { salesInProgress: 0, hipsUpdated: 0, errors: [] };
   const now = new Date();
@@ -1410,7 +1415,38 @@ export async function syncLivePricesForActiveSessions(): Promise<LivePriceSyncSu
       if (!sessionDate) return false;
       return now.getTime() >= startOfCalendarDay(sessionDate).getTime() && now.getTime() < sessionExpiresAt(sessionDate).getTime();
     });
-    if (!inProgress) continue;
+    if (!inProgress) {
+      // OUT / SCRATCH ANTES DE LA VENTA (2026-10-04, caso real OBS October:
+      // la casa ya publicaba 46 OUT y nosotros teníamos 37). Los retiros se
+      // anuncian sobre todo en los días previos a la subasta, y hasta ahora
+      // el resultado solo se refrescaba en el barrido de las 3am (fuera de
+      // los días de venta). Ahora, desde PRE_SALE_RESULTS_DAYS antes de la
+      // primera jornada, se refresca el resultado cada
+      // PRE_SALE_RESULTS_MINUTES (una sola consulta liviana a la casa de
+      // ventas; solo se escribe Hip.saleResultJson, nada de catálogo/media).
+      const firstSession = sessionDates
+        .map(({ sessionDate }) => sessionDate)
+        .filter((d): d is Date => d != null)
+        .sort((a, b) => a.getTime() - b.getTime())[0] ?? sale.startDate ?? null;
+      if (!firstSession) continue;
+      const msUntil = firstSession.getTime() - now.getTime();
+      const inPreSaleWindow = msUntil > 0 && msUntil <= PRE_SALE_RESULTS_DAYS * 24 * 60 * 60 * 1000;
+      const last = lastPreSaleResultsCheck.get(sale.id) ?? 0;
+      if (!inPreSaleWindow || now.getTime() - last < PRE_SALE_RESULTS_MINUTES * 60 * 1000) continue;
+      lastPreSaleResultsCheck.set(sale.id, now.getTime());
+      try {
+        const { hipsUpdated } = await syncLivePricesForSale(sale);
+        summary.hipsUpdated += hipsUpdated;
+        if (hipsUpdated > 0) console.log(`[live-price] ${sale.name}: ${hipsUpdated} HIP(s) con resultado nuevo antes de la venta (OUT/scratch).`);
+      } catch (err) {
+        if (!(err instanceof CatalogNotYetPublishedError)) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[live-price] Error refrescando OUT previos de "${sale.name}":`, err);
+          summary.errors.push(`${sale.name}: ${message}`);
+        }
+      }
+      continue;
+    }
 
     summary.salesInProgress += 1;
     try {
