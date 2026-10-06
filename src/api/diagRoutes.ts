@@ -151,7 +151,10 @@ diagRouter.post("/app-diagnostics", async (req, res) => {
         osVersion: typeof r.osVersion === "string" ? r.osVersion.slice(0, 80) : null,
         appVersion: typeof r.appVersion === "string" ? r.appVersion.slice(0, 40) : null,
         summary,
-        payload: (r.payload ?? {}) as object,
+        // La pila de llamadas de MetricKit es un árbol muy profundo
+        // (subFrames anidados) que supera el límite de anidamiento de
+        // Prisma ("recursion limit exceeded") — se guarda como texto.
+        payload: { raw: JSON.stringify(r.payload ?? {}) },
       },
     });
     stored += 1;
@@ -176,6 +179,8 @@ function describeDiagnosticPayload(payload: unknown): string[] {
   for (const d of diags.slice(0, 3)) {
     const meta = (d.diagnosticMetaData ?? {}) as Record<string, unknown>;
     const reason = meta.objectiveCexceptionReason as Record<string, unknown> | undefined;
+    const pRec = p ?? {};
+    out.push(`when begin=${pRec.timeStampBegin ?? "-"} end=${pRec.timeStampEnd ?? "-"} appBuild=${meta.appBuildVersion ?? "-"} bundle=${meta.bundleIdentifier ?? "-"}`);
     out.push(
       `meta exceptionType=${meta.exceptionType ?? "-"} signal=${meta.signal ?? "-"} termination=${meta.terminationReason ?? "-"} ` +
         `objc=${reason ? `${reason.exceptionName ?? ""} ${reason.className ?? ""}: ${reason.composedMessage ?? ""}` : "-"}`,
@@ -186,7 +191,9 @@ function describeDiagnosticPayload(payload: unknown): string[] {
     let node = ((thread?.callStackRootFrames as Array<Record<string, unknown>>) ?? [])[0];
     const frames: string[] = [];
     while (node && frames.length < 80) {
-      frames.push(`${node.binaryName ?? "?"}+0x${Number(node.offsetIntoBinaryTextSegment ?? 0).toString(16)}`);
+      const bin = String(node.binaryName ?? "?");
+      const uuid = bin.startsWith("RMSelection") ? `{${String(node.binaryUUID ?? "?")}}` : "";
+      frames.push(`${bin}${uuid}+0x${Number(node.offsetIntoBinaryTextSegment ?? 0).toString(16)}`);
       node = ((node.subFrames as Array<Record<string, unknown>>) ?? [])[0];
     }
     for (let i = 0; i < frames.length; i += 10) {
