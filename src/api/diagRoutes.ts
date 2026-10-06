@@ -139,6 +139,11 @@ diagRouter.post("/app-diagnostics", async (req, res) => {
     const kind = typeof r.kind === "string" && r.kind ? r.kind.slice(0, 40) : "unknown";
     const summary = typeof r.summary === "string" ? r.summary.slice(0, 2000) : null;
     console.log(`APP-DIAGNOSTIC kind=${kind} device=${r.device ?? "-"} os=${r.osVersion ?? "-"} app=${r.appVersion ?? "-"} :: ${summary ?? ""}`);
+    if (kind === "crash" || kind === "hang") {
+      for (const line of describeDiagnosticPayload(r.payload)) {
+        console.log(`APP-DIAGNOSTIC-DETAIL device=${r.device ?? "-"} :: ${line}`);
+      }
+    }
     await db.appDiagnostic.create({
       data: {
         kind,
@@ -153,6 +158,43 @@ diagRouter.post("/app-diagnostics", async (req, res) => {
   }
   res.json({ ok: true, stored });
 });
+
+/**
+ * Pila COMPLETA del hilo que falló + motivo de la excepción, a partir del
+ * JSON de MetricKit (MXDiagnosticPayload). El resumen que arma la app solo
+ * llega a 14 marcos — en un cierre por excepción esos son todos del
+ * sistema (libc++abi, Foundation, UIKit); el marco de RM Selection que la
+ * provocó está más abajo.
+ */
+function describeDiagnosticPayload(payload: unknown): string[] {
+  const out: string[] = [];
+  const p = payload as Record<string, unknown> | null;
+  const diags = [
+    ...((p?.crashDiagnostics as unknown[]) ?? []),
+    ...((p?.hangDiagnostics as unknown[]) ?? []),
+  ] as Array<Record<string, unknown>>;
+  for (const d of diags.slice(0, 3)) {
+    const meta = (d.diagnosticMetaData ?? {}) as Record<string, unknown>;
+    const reason = meta.objectiveCexceptionReason as Record<string, unknown> | undefined;
+    out.push(
+      `meta exceptionType=${meta.exceptionType ?? "-"} signal=${meta.signal ?? "-"} termination=${meta.terminationReason ?? "-"} ` +
+        `objc=${reason ? `${reason.exceptionName ?? ""} ${reason.className ?? ""}: ${reason.composedMessage ?? ""}` : "-"}`,
+    );
+    const tree = (d.callStackTree ?? {}) as Record<string, unknown>;
+    const stacks = (tree.callStacks as Array<Record<string, unknown>>) ?? [];
+    const thread = stacks.find((s) => s.threadAttributed === true) ?? stacks[0];
+    let node = ((thread?.callStackRootFrames as Array<Record<string, unknown>>) ?? [])[0];
+    const frames: string[] = [];
+    while (node && frames.length < 80) {
+      frames.push(`${node.binaryName ?? "?"}+0x${Number(node.offsetIntoBinaryTextSegment ?? 0).toString(16)}`);
+      node = ((node.subFrames as Array<Record<string, unknown>>) ?? [])[0];
+    }
+    for (let i = 0; i < frames.length; i += 10) {
+      out.push(`frames[${i}-${Math.min(i + 9, frames.length - 1)}] ${frames.slice(i, i + 10).join(" < ")}`);
+    }
+  }
+  return out;
+}
 
 diagRouter.get("/app-diagnostics", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
