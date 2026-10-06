@@ -29,6 +29,7 @@ import {
   normalizeColor,
   saleStatusOf,
   salePriceOf,
+  rnaReserveAmountOf,
   aiScoreOf,
   aiClassOf,
   compareHips,
@@ -255,7 +256,7 @@ export interface SearchResultItem {
   sessionDate: Date | null;
   book: string | null;
   sessionNumber: number | null;
-  saleResult: { status: string; priceRaw: string | null; price: number | null; purchaser: string | null; soldAsCode: string | null };
+  saleResult: { status: string; priceRaw: string | null; price: number | null; rnaAmount: number | null; purchaser: string | null; soldAsCode: string | null };
   aiScore: number | null;
   aiClass: string;
   isFavorite: boolean;
@@ -407,6 +408,7 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
         status: saleStatusOf(result),
         priceRaw: result?.priceRaw ?? null,
         price: salePriceOf(result),
+        rnaAmount: rnaReserveAmountOf(result),
         purchaser: result?.purchaser ?? null,
         soldAsCode: result?.soldAsCode ?? null,
       },

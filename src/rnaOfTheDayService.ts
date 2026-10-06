@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { startOfCalendarDay } from "./util/easternCalendarDay";
+import { saleStatusOf, rnaReserveAmountOf } from "./search/searchLogic";
 
 /**
  * "RNA del Día" (2026-09-15, a pedido explícito de Ramon, propuesta
@@ -34,10 +35,24 @@ interface SaleResultJsonShape {
     soldAsCode?: string;
 }
 
-function isRnaResult(raw: unknown): raw is SaleResultJsonShape & { soldAsCode: string } {
+// CORRECCIÓN 2026-10-06 (Ramon: "la lista de RNA no se vio en todo el
+// día" en OBS October): antes solo contaba el código "RNA" de Keeneland;
+// OBS marca el RNA en el comprador ("RNA", código "Y" = tipo de lote) y
+// los 61 RNA del día quedaban fuera. Ahora se usa la MISMA regla única que
+// Buscar y Resultados (saleStatusOf).
+function isRnaResult(raw: unknown): boolean {
     if (!raw || typeof raw !== "object") return false;
-    const code = (raw as SaleResultJsonShape).soldAsCode;
-    return typeof code === "string" && code.trim().toUpperCase() === "RNA";
+    return saleStatusOf(raw as SaleResultJsonShape) === "RNA";
+}
+
+/** Ids de los HIPs que este usuario tiene en Favoritos (con decisión). */
+async function favoriteHipIds(userId: string | undefined, hipIds: string[]): Promise<Set<string>> {
+    if (!userId || hipIds.length === 0) return new Set();
+    const rows = await db.userDecision.findMany({
+        where: { userId, hipId: { in: hipIds }, deletedAt: null },
+        select: { hipId: true },
+    });
+    return new Set(rows.map((r) => r.hipId));
 }
 
 /**
@@ -75,6 +90,8 @@ export interface RnaEntry {
     sire: string | null;
     dam: string | null;
     reserveAmountRaw: string | null;
+    /** true = está en Favoritos del usuario (se muestra en verde). */
+    isFavorite: boolean;
 }
 
 export interface RnaDaySummary {
@@ -95,6 +112,7 @@ export interface RnaDelDiaResult {
 }
 
 interface HipRow {
+    id: string;
     hipNumber: string;
     horseName: string | null;
     sire: string | null;
@@ -103,14 +121,16 @@ interface HipRow {
     saleResultJson: unknown;
 }
 
-function toEntry(hip: HipRow): RnaEntry {
+function toEntry(hip: HipRow, favorites: Set<string>): RnaEntry {
     const json = hip.saleResultJson as SaleResultJsonShape | null;
+    const amount = rnaReserveAmountOf(json);
     return {
           hipNumber: hip.hipNumber,
           horseName: hip.horseName,
           sire: hip.sire,
           dam: hip.dam,
-          reserveAmountRaw: parseRnaReserveAmountRaw(json?.purchaser ?? null),
+          reserveAmountRaw: amount != null ? String(amount) : parseRnaReserveAmountRaw(json?.purchaser ?? null),
+          isFavorite: favorites.has(hip.id),
     };
 }
 
@@ -129,10 +149,10 @@ function isSessionInProgress(sessionDate: Date, now: Date): boolean {
  * que "Días anteriores" se pueda pintar liviano y cargar el detalle
  * completo de cada día recién al tocarlo (ver `getRnaDelDiaForDay`).
  */
-export async function getRnaDelDia(saleId: string): Promise<RnaDelDiaResult> {
+export async function getRnaDelDia(saleId: string, userId?: string): Promise<RnaDelDiaResult> {
     const hips = await db.hip.findMany({
           where: { saleId, sessionDate: { not: null } },
-          select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
+          select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
     });
 
   // CORRECCIÓN 2026-09-24 (a pedido explícito de Ramon: "la lista de RNA
@@ -184,11 +204,12 @@ export async function getRnaDelDia(saleId: string): Promise<RnaDelDiaResult> {
           // mismo tipo de valor sin importar qué endpoint lo devolvió.
           const sessionDate = rows[0].sessionDate!;
           if (!today && isSessionInProgress(sessionDate, now)) {
+                  const favorites = await favoriteHipIds(userId, rows.map((r) => r.id));
                   today = {
 date: sessionDate,
                       rnaCount: rows.length,
                             sessionInProgress: true,
-                            entries: sortByHipNumber(rows.map(toEntry)),
+                            entries: sortByHipNumber(rows.map((r) => toEntry(r, favorites))),
                   };
           } else {
 previousDays.push({ date: sessionDate, rnaCount: rows.length });
@@ -224,19 +245,20 @@ previousDays.push({ date: sessionDate, rnaCount: rows.length });
                        * esta consulta nunca vuelve a escanear el resto del catálogo, sin
                         * importar cuántos Hips tenga la venta ni qué día se pida.
                          */
-export async function getRnaDelDiaForDay(saleId: string, referenceInstant: Date): Promise<RnaDayDetail> {
+export async function getRnaDelDiaForDay(saleId: string, referenceInstant: Date, userId?: string): Promise<RnaDayDetail> {
         const dayStart = startOfCalendarDay(referenceInstant);
         const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
         const hips = await db.hip.findMany({
                       where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
-                      select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
+                      select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
         });
         const rnaRows = hips.filter((h) => isRnaResult(h.saleResultJson));
+        const favorites = await favoriteHipIds(userId, rnaRows.map((r) => r.id));
         return {
                       date: rnaRows[0]?.sessionDate ?? hips[0]?.sessionDate ?? referenceInstant,
                       rnaCount: rnaRows.length,
                       sessionInProgress: isSessionInProgress(referenceInstant, new Date()),
-                      entries: sortByHipNumber(rnaRows.map(toEntry)),
+                      entries: sortByHipNumber(rnaRows.map((r) => toEntry(r, favorites))),
         };
 }
 
@@ -263,14 +285,15 @@ export async function getRnaDelDiaForDay(saleId: string, referenceInstant: Date)
  * (`rnaCount: 0`), igual criterio que el resto de este archivo: nunca se
  * inventa ni se omite un estado real.
  */
-export async function getRnaDelDiaToday(saleId: string, referenceInstant: Date): Promise<RnaDayDetail | null> {
+export async function getRnaDelDiaToday(saleId: string, referenceInstant: Date, userId?: string): Promise<RnaDayDetail | null> {
     const dayStart = startOfCalendarDay(referenceInstant);
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
     const hips = await db.hip.findMany({
         where: { saleId, sessionDate: { gte: dayStart, lt: dayEnd } },
-        select: { hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
+        select: { id: true, hipNumber: true, horseName: true, sire: true, dam: true, sessionDate: true, saleResultJson: true },
     });
     const rnaRows = hips.filter((h) => isRnaResult(h.saleResultJson));
+    const favorites = await favoriteHipIds(userId, rnaRows.map((r) => r.id));
     const now = new Date();
     const sessionInProgress = hips.some((h) => h.sessionDate && isSessionInProgress(h.sessionDate, now));
     if (!sessionInProgress && rnaRows.length === 0) return null;
@@ -278,6 +301,6 @@ export async function getRnaDelDiaToday(saleId: string, referenceInstant: Date):
         date: rnaRows[0]?.sessionDate ?? hips[0]?.sessionDate ?? referenceInstant,
         rnaCount: rnaRows.length,
         sessionInProgress,
-        entries: sortByHipNumber(rnaRows.map(toEntry)),
+        entries: sortByHipNumber(rnaRows.map((r) => toEntry(r, favorites))),
     };
 }

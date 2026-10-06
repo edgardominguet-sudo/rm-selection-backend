@@ -1,6 +1,7 @@
 import { db } from "./db";
 import type { Sale } from "@prisma/client";
 import { getSaleLifecycleStatus } from "./activeSaleService";
+import { rnaReserveAmountOf } from "./search/searchLogic";
 
 /**
  * "Resultados" (2026-09-30, pedido de Ramon: "una ventana de resultados de
@@ -29,6 +30,10 @@ export interface SaleResultRow {
   priceRaw: string | null;
   purchaser: string | null;
   soldAsCode: string | null;
+  /** Monto de la reserva si es RNA (2026-10-06) — null si no hay dato. */
+  rnaAmount: number | null;
+  /** true = está en Favoritos del usuario (se muestra en verde). */
+  isFavorite: boolean;
 }
 
 export interface SaleResultsResponse {
@@ -54,10 +59,11 @@ function str(value: unknown): string | null {
   return null;
 }
 
-export async function getSaleResults(sale: Sale): Promise<SaleResultsResponse> {
+export async function getSaleResults(sale: Sale, userId?: string): Promise<SaleResultsResponse> {
   const hips = await db.hip.findMany({
     where: { saleId: sale.id },
     select: {
+      id: true,
       hipNumber: true,
       horseName: true,
       sex: true,
@@ -72,6 +78,11 @@ export async function getSaleResults(sale: Sale): Promise<SaleResultsResponse> {
     },
   });
 
+  const favoriteIds = new Set(
+    userId
+      ? (await db.userDecision.findMany({ where: { userId, hip: { saleId: sale.id }, deletedAt: null }, select: { hipId: true } })).map((d) => d.hipId)
+      : []
+  );
   const rows: SaleResultRow[] = hips.map((hip) => {
     const result = (hip.saleResultJson ?? null) as Record<string, unknown> | null;
     return {
@@ -89,6 +100,8 @@ export async function getSaleResults(sale: Sale): Promise<SaleResultsResponse> {
       priceRaw: result ? str(result.priceRaw) : null,
       purchaser: result ? str(result.purchaser) : null,
       soldAsCode: result ? str(result.soldAsCode) : null,
+      rnaAmount: result ? rnaReserveAmountOf({ priceRaw: str(result.priceRaw), purchaser: str(result.purchaser), soldAsCode: str(result.soldAsCode) }) : null,
+      isFavorite: favoriteIds.has(hip.id),
     };
   });
 

@@ -1923,7 +1923,7 @@ router.get("/sales/results", requireUser, async (req, res) => {
     return;
   }
   res.setHeader("Cache-Control", "no-store");
-  res.json(await getSaleResults(sale));
+  res.json(await getSaleResults(sale, req.user?.id));
 });
 
 router.get("/sales/rna-del-dia", requireUser, async (req, res) => {
@@ -1941,7 +1941,7 @@ router.get("/sales/rna-del-dia", requireUser, async (req, res) => {
     return;
   }
 
-  const result = await getRnaDelDia(sale.id);
+  const result = await getRnaDelDia(sale.id, req.user!.id);
   res.json({ saleName: sale.name, ...result });
 });
 
@@ -1969,7 +1969,7 @@ router.get("/sales/rna-del-dia/day", requireUser, async (req, res) => {
   // anterior antes de llegar a startOfCalendarDay.
   const day = new Date(`${dateParam}T16:00:00Z`);
   // CORRECCION 2026-09-15: se pasa day (mediodia ET) directo, sin normalizar -- ver comentario en getRnaDelDiaForDay (rnaOfTheDayService.ts).
-  const detail = await getRnaDelDiaForDay(sale.id, day);
+  const detail = await getRnaDelDiaForDay(sale.id, day, req.user!.id);
   res.json({ saleName: sale.name, ...detail });
 });
 
@@ -1999,6 +1999,6 @@ router.get("/sales/rna-del-dia/today", requireUser, async (req, res) => {
           return;
     }
 
-    const today = await getRnaDelDiaToday(sale.id, new Date());
+    const today = await getRnaDelDiaToday(sale.id, new Date(), req.user!.id);
     res.json({ saleName: sale.name, today });
 });

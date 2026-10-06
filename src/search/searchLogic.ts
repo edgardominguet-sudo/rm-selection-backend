@@ -180,6 +180,38 @@ export interface SaleResultInput {
  * SCRATCHED/WD/WITHDRAWN sin precio -> OUT; con precio -> vendido; si no,
  * sin resultado.
  */
+/**
+ * RNA según cada casa (2026-10-06, regla única para servidor y app):
+ * Keeneland → código "RNA" y comprador "R.N.A. (150,000)"; OBS → código
+ * "Y" (tipo de lote) y comprador "RNA"; Fasig-Tipton → comprador/código RNA.
+ */
+function isRnaMark(codeUpper: string, purchaserUpper: string): boolean {
+  if (codeUpper === "RNA") return true;
+  const p = purchaserUpper.replace(/\s+/g, "");
+  return p === "RNA" || p.startsWith("R.N.A") || p.startsWith("RNA(");
+}
+
+/**
+ * Monto de la reserva de un RNA, tal como lo publica la casa (2026-10-06,
+ * Ramon: "en todos los lugares que dice RNA debe decir cuánto es el
+ * monto"). Keeneland lo pone entre paréntesis en el comprador
+ * ("R.N.A. (150,000)"); OBS lo pone en el precio como número negativo
+ * ("-14000" = RNA en $14.000). El "-2.00" de Keeneland es un centinela
+ * sin monto (< 100) y se ignora. Sin dato → null; nunca se inventa.
+ */
+export function rnaReserveAmountOf(result: SaleResultInput | null | undefined): number | null {
+  if (!result || saleStatusOf(result) !== "RNA") return null;
+  const paren = (result.purchaser ?? "").match(/\(([\d,]+(?:\.\d+)?)\)/);
+  if (paren) {
+    const v = Number(paren[1].replace(/,/g, ""));
+    if (Number.isFinite(v) && v >= 100) return v;
+  }
+  const raw = (result.priceRaw ?? "").replace(/[$,\s]/g, "");
+  const n = Number(raw);
+  if (raw !== "" && Number.isFinite(n) && Math.abs(n) >= 100) return Math.abs(n);
+  return null;
+}
+
 export function saleStatusOf(result: SaleResultInput | null | undefined): SaleStatus {
   if (!result) return "NO_RESULT";
   const code = (result.soldAsCode ?? "").trim().toUpperCase();
@@ -189,7 +221,7 @@ export function saleStatusOf(result: SaleResultInput | null | undefined): SaleSt
   const priceNumber = Number((result.priceRaw ?? "").replace(/[$,\s]/g, ""));
   const hasPrice = (result.priceRaw ?? "").trim() !== "" && Number.isFinite(priceNumber) && priceNumber > 0;
   const withdrawn = ["OUT", "SCRATCHED", "WD", "WITHDRAWN"];
-  if (code === "RNA" || purchaser === "RNA") return "RNA";
+  if (isRnaMark(code, purchaser)) return "RNA";
   if (code === "PS" && hasPrice) return "SOLD";
   if (withdrawn.includes(code) && !hasPrice) return "OUT";
   if (hasPrice) return "SOLD";
