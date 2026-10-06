@@ -1480,9 +1480,16 @@ export async function syncLivePricesForActiveSessions(): Promise<LivePriceSyncSu
         .sort((a, b) => a.getTime() - b.getTime())[0] ?? sale.startDate ?? null;
       if (!firstSession) continue;
       const msUntil = firstSession.getTime() - now.getTime();
-      const inPreSaleWindow = msUntil > 0 && msUntil <= PRE_SALE_RESULTS_DAYS * 24 * 60 * 60 * 1000;
+      if (msUntil <= 0) continue;
+      const inPreSaleWindow = msUntil <= PRE_SALE_RESULTS_DAYS * 24 * 60 * 60 * 1000;
+      // Ventas más lejanas (2026-10-06, Ramon: "en la venta de octubre de
+      // Fasig-Tipton no se ven los HIP OUT"): antes NO se revisaban nunca
+      // hasta entrar a los 10 días — un retiro publicado antes quedaba sin
+      // aparecer. Ahora también se revisan, una vez por día (misma consulta
+      // liviana: solo el resultado del HIP).
+      const intervalMs = inPreSaleWindow ? PRE_SALE_RESULTS_MINUTES * 60 * 1000 : 24 * 60 * 60 * 1000;
       const last = lastPreSaleResultsCheck.get(sale.id) ?? 0;
-      if (!inPreSaleWindow || now.getTime() - last < PRE_SALE_RESULTS_MINUTES * 60 * 1000) continue;
+      if (now.getTime() - last < intervalMs) continue;
       lastPreSaleResultsCheck.set(sale.id, now.getTime());
       try {
         const { hipsUpdated } = await syncLivePricesForSale(sale);
