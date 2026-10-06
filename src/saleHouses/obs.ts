@@ -69,6 +69,9 @@ interface RawHip {
   hammer_price?: string | number | null;
   buyer_name?: string | null;
   rna_summary_indicator?: string | null;
+  // "Y" = vendido post-venta (PS), después de pasar por el ring sin
+  // venderse (confirmado con OBS October 2026-10-06: 10 HIPs).
+  post_sale_indicator?: string | null;
   photo_link?: string | null;
   walk_video_link?: string | null;
   // Booleans ya calculados por OBS mismo para el estado de cada Hip — más
@@ -133,7 +136,12 @@ function buildSaleResult(entry: RawHip): SaleResultData | undefined {
   else if (buyerName) purchaser = buyerName;
 
   const priceRaw = entry.hammer_price != null ? String(entry.hammer_price) : undefined;
-  const soldAsCode = entry.rna_summary_indicator?.trim() || undefined;
+  // Post-venta (2026-10-06, Ramon: "los que se vendan Post Sale deben decir
+  // PS delante del precio"): OBS lo marca en `post_sale_indicator` = "Y".
+  // Se guarda como código "PS" — el mismo que ya usan Keeneland y
+  // Fasig-Tipton, así toda la app lo muestra igual ("PS $25,000").
+  const isPostSale = !isOut && !isRna && entry.post_sale_indicator?.trim().toUpperCase() === "Y";
+  const soldAsCode = isPostSale ? "PS" : entry.rna_summary_indicator?.trim() || undefined;
 
   if (purchaser === undefined && priceRaw === undefined && soldAsCode === undefined) return undefined;
   return { priceRaw, purchaser, soldAsCode };
