@@ -1439,6 +1439,25 @@ export interface LivePriceSyncSummary {
 /** Encuentra las ventas activas catalogAccess FULL cuya jornada de hoy está en curso, y les actualiza SOLO el precio (ver syncLivePricesForSale). */
 /** Retiros (OUT) previos a la venta: ventana y frecuencia del refresco. */
 const PRE_SALE_RESULTS_DAYS = 10;
+/**
+ * VENTANA POST-SALE (2026-10-08, pedido de Ramon): "una venta que terminó
+ * queda almacenada... no debe quedar actualizando nada en segundo plano...
+ * solo podrías actualizar algún PS que se haga en las próximas 48 horas".
+ * Durante POST_SALE_PS_WINDOW_HOURS desde el fin del último día de venta
+ * (hora ET) se sigue consultando SOLO el resultado de cada HIP, una vez por
+ * hora (misma consulta liviana: solo Hip.saleResultJson — nunca catálogo,
+ * fotos, videos ni IA). Cumplido ese plazo la venta queda 100% inactiva.
+ */
+const POST_SALE_PS_WINDOW_HOURS = 48;
+const POST_SALE_PS_INTERVAL_MINUTES = 60;
+const lastPostSaleCheck = new Map<string, number>();
+
+export function isWithinPostSaleWindow(sale: { startDate: Date | null; endDate: Date | null }, now: Date = new Date()): boolean {
+  const end = sale.endDate ?? sale.startDate;
+  if (!end) return false;
+  const lastDayEnd = startOfCalendarDay(end).getTime() + 24 * 60 * 60 * 1000;
+  return now.getTime() >= lastDayEnd && now.getTime() < lastDayEnd + POST_SALE_PS_WINDOW_HOURS * 60 * 60 * 1000;
+}
 const PRE_SALE_RESULTS_MINUTES = 30;
 const lastPreSaleResultsCheck = new Map<string, number>();
 
@@ -1454,6 +1473,23 @@ export async function syncLivePricesForActiveSessions(): Promise<LivePriceSyncSu
   // venta COMPLETED nunca debería tener una sessionDate "en curso" hoy, pero
   // se excluye acá también en vez de confiar únicamente en esa otra lógica.
   const nonCompletedSales = sales.filter((sale) => getSaleLifecycleStatus(sale, now) !== "COMPLETED");
+
+  // Ventas ya terminadas: SOLO resultados (PS) durante las 48h posteriores.
+  for (const sale of sales) {
+    if (getSaleLifecycleStatus(sale, now) !== "COMPLETED" || !isWithinPostSaleWindow(sale, now)) continue;
+    const last = lastPostSaleCheck.get(sale.id) ?? 0;
+    if (now.getTime() - last < POST_SALE_PS_INTERVAL_MINUTES * 60 * 1000) continue;
+    lastPostSaleCheck.set(sale.id, now.getTime());
+    try {
+      const { hipsUpdated } = await syncLivePricesForSale(sale);
+      summary.hipsUpdated += hipsUpdated;
+      console.log(`[post-sale] ${sale.name}: revisión de resultados post-venta (PS) — ${hipsUpdated} HIP(s) con resultado nuevo.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[post-sale] Error revisando PS de "${sale.name}":`, err);
+      summary.errors.push(`${sale.name}: ${message}`);
+    }
+  }
 
   for (const sale of nonCompletedSales) {
     const sessionDates = await db.hip.findMany({
