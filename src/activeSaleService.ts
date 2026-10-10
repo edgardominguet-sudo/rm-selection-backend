@@ -162,3 +162,38 @@ export async function resolveSalesForNightlyAutomation(now: Date = new Date()): 
   if (nearest && !selected.some((sale) => sale.id === nearest.id)) selected.unshift(nearest);
   return selected;
 }
+
+/**
+ * Ventas del BARRIDO DE FOTOS/VIDEOS de las 3am (2026-10-09, caso real:
+ * "Kentucky October de Fasig-Tipton tiene muchos videos en su página y en
+ * la app no están"). Causa: el barrido usaba la misma ventana de 10 días que
+ * la sincronización de catálogo, pero las casas publican los videos con
+ * semanas de anticipación — Kentucky October (19/10) quedaba fuera hasta el
+ * 9/10 y sus videos no entraban.
+ *
+ * El barrido de Media es liviano (UNA consulta del catálogo por venta y solo
+ * escribe los HIPs que cambiaron; nunca IA — Sale.autoAiAnalysisEnabled
+ * nace en false), así que cubre toda venta FULL, NO terminada, que ya tenga
+ * su catálogo cargado y empiece dentro de MEDIA_SWEEP_WINDOW_DAYS. Ventas
+ * terminadas: nunca (quedan archivadas).
+ */
+export const MEDIA_SWEEP_WINDOW_DAYS = 45;
+
+export async function resolveSalesForNightlyMediaSweep(now: Date = new Date()): Promise<Sale[]> {
+  const windowEnd = new Date(now.getTime() + MEDIA_SWEEP_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const candidates = await db.sale.findMany({
+    where: {
+      isActive: true,
+      catalogAccess: "FULL",
+      startDate: { not: null, lte: windowEnd },
+      hips: { some: {} },
+    },
+    orderBy: { startDate: "asc" },
+  });
+  const selected = candidates.filter((sale) => getSaleLifecycleStatus(sale, now) !== "COMPLETED");
+  // Mismas ventas que el catálogo nocturno (por si alguna no cumpliera lo de arriba).
+  for (const sale of await resolveSalesForNightlyAutomation(now)) {
+    if (!selected.some((s) => s.id === sale.id)) selected.push(sale);
+  }
+  return selected.sort((a, b) => (a.startDate?.getTime() ?? 0) - (b.startDate?.getTime() ?? 0));
+}

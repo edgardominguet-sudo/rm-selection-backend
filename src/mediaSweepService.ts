@@ -7,7 +7,7 @@ import { CatalogMediaItem, CatalogNotYetPublishedError } from "./types";
 import { autoAnalyzeNewCatalogPhotoIfNeeded, AutoPhotoAnalysisOutcome } from "./analysis/autoPhotoAnalysis";
 import { runWithConcurrencyLimit } from "./util/concurrencyPool";
 import { config } from "./config";
-import { resolveSalesForNightlyAutomation, getSaleLifecycleStatus } from "./activeSaleService";
+import { resolveSalesForNightlyMediaSweep, getSaleLifecycleStatus } from "./activeSaleService";
 
 /**
  * Barrido de Media — pieza única y centralizada de detección/descarga de
@@ -262,7 +262,7 @@ export async function runNightlyMediaSweep(opts: { trigger: "scheduled" | "manua
       // de la ventana (ver resolveSalesForNightlyAutomation) — nunca una
       // venta COMPLETED. Se vuelve a chequear el estado de cada una antes de
       // barrer (defensa en profundidad, igual que antes).
-      const selected = await resolveSalesForNightlyAutomation();
+      const selected = await resolveSalesForNightlyMediaSweep();
       sales = selected.filter((sale) => {
         if (getSaleLifecycleStatus(sale) === "COMPLETED") {
           console.warn(`[media-sweep] "${sale.name}" está COMPLETED -- no se barre.`);
