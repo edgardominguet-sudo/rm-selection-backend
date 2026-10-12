@@ -186,12 +186,16 @@ export interface SaleResultInput {
 /**
  * RNA según cada casa (2026-10-06, regla única para servidor y app):
  * Keeneland → código "RNA" y comprador "R.N.A. (150,000)"; OBS → código
- * "Y" (tipo de lote) y comprador "RNA"; Fasig-Tipton → comprador/código RNA.
+ * "Y" (tipo de lote) y comprador "RNA"; Fasig-Tipton → comprador
+ * "NOT SOLD" con el monto alcanzado en el precio (2026-10-12, caso real
+ * Saratoga Fall Mixed: los RNA no aparecían en la app porque solo se
+ * reconocía "RNA"/"R.N.A."). ÚNICA regla del servidor: la usan también el
+ * historial de ventas y la lista de RNA.
  */
-function isRnaMark(codeUpper: string, purchaserUpper: string): boolean {
+export function isRnaMark(codeUpper: string, purchaserUpper: string): boolean {
   if (codeUpper === "RNA") return true;
   const p = purchaserUpper.replace(/\s+/g, "");
-  return p === "RNA" || p.startsWith("R.N.A") || p.startsWith("RNA(");
+  return p === "RNA" || p.startsWith("R.N.A") || p.startsWith("RNA(") || p === "NOTSOLD" || p === "NOSALE";
 }
 
 /**

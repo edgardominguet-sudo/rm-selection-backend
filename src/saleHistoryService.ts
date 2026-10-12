@@ -1,5 +1,6 @@
 import { Hip, Sale } from "@prisma/client";
 import { db } from "./db";
+import { isRnaMark } from "./search/searchLogic";
 
 /**
  * Historial de Ventas: resuelve si un Hip ya pasó antes por otra venta,
@@ -226,7 +227,7 @@ export function normalizeHistoryResult(
   const hasPrice = Number.isFinite(price) && price > 0;
   const upperCode = code?.trim().toUpperCase() ?? "";
   const upperBuyer = purchaser?.trim().toUpperCase() ?? "";
-  if (upperCode === "RNA" || upperBuyer.startsWith("R.N.A") || upperBuyer.startsWith("RNA")) {
+  if (isRnaMark(upperCode, upperBuyer) || upperBuyer.startsWith("RNA")) {
     const match = purchaser?.match(/\(([\d,]+(?:\.\d+)?)\)/);
     // OBS publica la reserva de un RNA como monto negativo (ej. -90000);
     // Keeneland usa un centinela negativo chico (-2.00) que NO es un monto.
