@@ -71,6 +71,22 @@ export interface SaleSearchFilters {
   speedDam: number;
   /** Cuántos HIPs de la venta están retirados (OUT). */
   out: number;
+  /** Cuántos favoritos tiene el usuario en esta venta (2026-10-11). */
+  favorites: number;
+}
+
+/**
+ * Favoritos del usuario en una venta (2026-10-11, pedido de Ramon: filtro
+ * "★ Favoritos" en Buscar, combinable con el resto). Mismo criterio que la
+ * pantalla Favoritos: una decisión vigente (UserDecision sin deletedAt).
+ */
+async function favoriteHipIdsForSale(userId: string | undefined, saleId: string): Promise<Set<string>> {
+  if (!userId) return new Set();
+  const rows = await db.userDecision.findMany({
+    where: { userId, deletedAt: null, hip: { saleId } },
+    select: { hipId: true },
+  });
+  return new Set(rows.map((r) => r.hipId));
 }
 
 // Fotos/video del catálogo (2026-10-01): mediaJson es un arreglo jsonb de
@@ -107,7 +123,7 @@ function isoDay(d: Date | null): string | null {
   return d ? d.toISOString().slice(0, 10) : null;
 }
 
-export async function getSaleSearchFilters(house: string, externalSaleId: string): Promise<SaleSearchFilters> {
+export async function getSaleSearchFilters(house: string, externalSaleId: string, userId?: string): Promise<SaleSearchFilters> {
   const sale = await resolveSale(house, externalSaleId);
   const [sires, dams, broodmareSires, consignors, sexRows, colorRows, grandsireRows, dobRows, stateRows, mediaRows] = await Promise.all([
     groupedNames(sale.id, NAME_COLUMNS.sire),
@@ -185,6 +201,7 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
     dateOfBirth: { min: isoDay(dob?.mn ?? null), max: isoDay(dob?.mx ?? null), withData: Number(dob?.withData ?? 0) },
     bredStates: stateRows.map((r) => ({ value: r.v, count: Number(r.n) })),
     speedDam: Object.keys(await speedDamIndex(sale.id)).length,
+    favorites: (await favoriteHipIdsForSale(userId, sale.id)).size,
     out: (await db.hip.findMany({ where: { saleId: sale.id }, select: { saleResultJson: true } }))
       .filter((h) => saleStatusOf(h.saleResultJson as SaleResultInput | null) === "OUT").length,
     media: {
@@ -321,7 +338,9 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
 
   const colorSet = req.colors ? new Set(req.colors) : null;
   const speedIndex = await speedDamIndex(sale.id);
+  const favoriteIds = req.favorites ? await favoriteHipIdsForSale(ctx.userId, sale.id) : null;
   const matching = rows
+    .filter((r) => !favoriteIds || favoriteIds.has(r.id))
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
     .filter((r) => {

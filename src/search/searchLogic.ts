@@ -56,6 +56,8 @@ export interface SaleSearchRequest {
   hideOut?: boolean;
   /** Solo HIPs retirados (OUT). */
   onlyOut?: boolean;
+  /** Solo los favoritos del usuario (2026-10-11, pedido de Ramon). */
+  favorites?: boolean;
   page: number;
   pageSize: number;
 }
@@ -128,6 +130,7 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
     speedDam: b.speedDam === true ? true : undefined,
     hideOut: b.hideOut === true ? true : undefined,
     onlyOut: b.onlyOut === true ? true : undefined,
+    favorites: b.favorites === true ? true : undefined,
     page: optInt(b.page, "page", 1, 100000) ?? 1,
     pageSize: optInt(b.pageSize, "pageSize", 1, SEARCH_MAX_PAGE_SIZE) ?? SEARCH_DEFAULT_PAGE_SIZE,
   };

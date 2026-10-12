@@ -161,7 +161,7 @@ router.get("/search/filters", requireUser, async (req, res) => {
   if (!house || !externalSaleId) {
     throw new HttpError(400, "Faltan parámetros: house, externalSaleId.", "INVALID_SEARCH");
   }
-  res.json(await getSaleSearchFilters(house, externalSaleId));
+  res.json(await getSaleSearchFilters(house, externalSaleId, req.user?.id));
 });
 
 router.post("/search", requireUser, async (req, res) => {
