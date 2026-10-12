@@ -472,7 +472,7 @@ router.get("/stallions/first-yearlings", requireUser, async (req, res) => {
     res.status(400).json({ error: "Parámetro 'year' inválido." });
     return;
   }
-  const stallions = await listFirstYearlingStallions(year);
+  const stallions = await listFirstYearlingStallions(year, req.query.includeWeanlings === "1");
   res.json({ stallions });
 });
 

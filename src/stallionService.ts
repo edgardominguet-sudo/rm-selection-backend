@@ -29,10 +29,12 @@ export function normalizeStallionName(name: string): string {
  * `firstYearlingsYear`: el resto (source, fechas) es interno, no le hace
  * falta a la app.
  */
-export async function listFirstYearlingStallions(year?: number) {
+export async function listFirstYearlingStallions(year?: number, includeWeanlings = false) {
   const rows = await db.stallion.findMany({
     where: {
-      firstYearlingsYear: year ?? { not: null },
+      // includeWeanlings (2026-10-12): también los debutantes con weanlings
+      // (primeros yearlings el año siguiente) — la app los pinta en vino tinto.
+      firstYearlingsYear: year ? (includeWeanlings ? { in: [year, year + 1] } : year) : { not: null },
     },
     select: { name: true, firstYearlingsYear: true },
     orderBy: { name: "asc" },

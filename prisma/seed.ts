@@ -37,6 +37,7 @@ async function main() {
   console.log(`Usuario dueño listo: ${user.id} (${user.displayName}) — organización ${organization.id}`);
 
   await seedFirstYearlingStallions();
+  await seedFirstWeanlingStallions();
   await seedStudFees();
 }
 
@@ -341,6 +342,60 @@ async function seedFirstYearlingStallions() {
     });
   }
   console.log(`Padrillos de primera generación 2026 sembrados: ${FIRST_YEARLING_STALLIONS_2026.length}`);
+}
+
+// "Padrillos debutantes con WEANLINGS" (2026-10-12, pedido de Ramon:
+// "Yearlings padrillo debutante (verde). Weanlings padrillos debutantes
+// (vino tinto)"). Padrillos que entraron a servicio en 2025: su primera
+// generación nació en 2026 (weanlings este año) y sus primeros yearlings
+// serán en 2027 — por eso se guardan con firstYearlingsYear = 2027 y el
+// año siguiente pasan solos a verde. Lista VERIFICADA, nunca inventada:
+// cruce de (1) los catálogos de RM Selection (padrillos con weanlings en
+// Saratoga Fall Mixed y NINGÚN hijo anterior en ninguna venta de la base)
+// y (2) prensa especializada. City Wolf quedó afuera a propósito: en
+// servicio en Canadá desde 2024 (primera generación 2025).
+const FIRST_WEANLING_STALLIONS_2026: Array<{ name: string; source: string }> = [
+  { name: "Seize the Grey", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Charge It", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Tapit Trice", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Kingsbarns", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Dornoch", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "National Treasure", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Cogburn", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Heartland", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Timberlake", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Blazing Sevens", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Shirl's Speight", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Casa Creed", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "More Than Looks", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Domestic Product", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Prince of Monaco", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Bright Future", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Gun Pilot", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Newgate", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Stage Raider", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Classic Causeway", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Angel of Empire", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Arabian Knight", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Muth", source: 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions" + sin hijos anteriores en los catalogos de RM Selection' },
+  { name: "Petulante", source: "NYTB/TrueNicks: entra a servicio en 2025 (Irish Hill & Dutchess Views), primer potrillo enero 2026" },
+  { name: "Senor Buscador", source: "TrueNicks/TDN: primer potrillo 2026 (Shawhan Place)" },
+  { name: "Chewing Gum", source: "NYTB/TrueNicks: Rockridge Stud desde 2025, primer potrillo 2026" },
+  { name: "Provocateur", source: "TDN/TrueNicks: McMahon of Saratoga, primer potrillo 2026" },
+  { name: "Front Run the Fed", source: "NYTB: entra a servicio en 2025 en War Horse Place" },
+  { name: "Mystik Dan", source: "TrueNicks: debuta en Airdrie Stud en 2025" },
+];
+
+async function seedFirstWeanlingStallions() {
+  for (const stallion of FIRST_WEANLING_STALLIONS_2026) {
+    const normalized = stallion.name.trim().replace(/\s+/g, " ").toUpperCase();
+    await db.stallion.upsert({
+      where: { name: normalized },
+      create: { name: normalized, firstYearlingsYear: 2027, source: stallion.source },
+      update: { firstYearlingsYear: 2027, source: stallion.source },
+    });
+  }
+  console.log(`Padrillos debutantes con weanlings (primera generación 2026) sembrados: ${FIRST_WEANLING_STALLIONS_2026.length}`);
 }
 
 main()
