@@ -98,6 +98,13 @@ const FIRST_YEARLING_STALLIONS_2026: Array<{ name: string; source: string }> = [
   { name: "Paddington", source: "Confirmado por Ramon (2026-08-19), lista final de padrillos debutantes 2026" },
   { name: "Simplification", source: "Confirmado por Ramon (2026-08-19), lista final de padrillos debutantes 2026" },
   { name: "Smooth Like Strait", source: "Confirmado por Ramon (2026-08-19), lista final de padrillos debutantes 2026" },
+  // Agregados 2026-10-12 (Ramon: "en Eastern Fall Yearlings hay padrillos
+  // debutantes que no están en verde"). Detectados en los catálogos de RM
+  // Selection (yearlings 2026 sin NINGÚN hijo anterior en la base ni en los
+  // breezes de 2 años) y confirmados uno por uno en prensa especializada.
+  { name: "Endorsed", source: "TDN/TrueNicks: primera temporada 2024 en Northview Stallion Station (MD)" },
+  { name: "Warrant", source: "TDN: primera temporada 2024 en Blackstone Farm (PA)" },
+  { name: "Bolden", source: "TDN/TrueNicks: primer potrillo 2025 (Rancho San Miguel, CA)" },
 ];
 
 // Stud Fee 2024/2026 por padrillo (2026-08-25) — investigación completa de
