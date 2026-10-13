@@ -311,6 +311,26 @@ const STUD_FEES_2026: {
   { name: `Yaupon`, studFee2024: `$25,000 S&N`, studFee2026: `$60,000 S&N`, currentFarm: `Spendthrift Farm`, studFeeSource2024: `Spendthrift`, studFeeSource2026: `TDN` },
   { name: `Yorkton`, studFee2024: null, studFee2026: `$5,000 CAD`, currentFarm: `Adena Springs North Ontario (desde Crestwood KY)`, studFeeSource2024: `Crestwood (sin fee 2024)`, studFeeSource2026: `Paulick` },
   { name: `Zandon`, studFee2024: `$12,500 S&N (intro)`, studFee2026: `$7,500 S&N`, currentFarm: `Spendthrift Farm`, studFeeSource2024: `Paulick/BloodHorse`, studFeeSource2026: `spendthriftfarm.com` },
+  { name: `Olympiad`, studFee2024: null, studFee2026: `$20,000`, currentFarm: `Gainesway (KY)`, studFeeSource2024: null, studFeeSource2026: `Gainesway 2026 (gainesway.com)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Drain the Clock`, studFee2024: null, studFee2026: `$10,000`, currentFarm: `Gainesway (KY)`, studFeeSource2024: null, studFeeSource2026: `Gainesway 2026 (gainesway.com)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Raging Bull (FR)`, studFee2024: null, studFee2026: `$7,500`, currentFarm: `Gainesway (KY)`, studFeeSource2024: null, studFeeSource2026: `Gainesway 2026 (gainesway.com)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Endorsed`, studFee2024: null, studFee2026: `$2,500`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Engage`, studFee2024: null, studFee2026: `$2,500`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Golden Lad`, studFee2024: null, studFee2026: `$2,500`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Uncle Lino`, studFee2024: null, studFee2026: `$1,500`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `First Mondays`, studFee2024: null, studFee2026: `$1,000`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Galawi (IRE)`, studFee2024: null, studFee2026: `$1,000`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Great Notion`, studFee2024: null, studFee2026: `Private`, currentFarm: `Northview (MD)`, studFeeSource2024: null, studFeeSource2026: `Northview 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Candy Ride (ARG)`, studFee2024: null, studFee2026: `$60,000`, currentFarm: `Lane's End (KY)`, studFeeSource2024: null, studFeeSource2026: `Lane's End 2026 (TDN)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Quality Road`, studFee2024: null, studFee2026: `$100,000`, currentFarm: `Lane's End (KY)`, studFeeSource2024: null, studFeeSource2026: `Lane's End 2026 (TDN)` },  // 2026-10-12 Fasig-Tipton
+  { name: `The Factor`, studFee2024: null, studFee2026: `$5,000`, currentFarm: `Lane's End (KY)`, studFeeSource2024: null, studFeeSource2026: `Lane's End 2026 (TDN)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Tonalist`, studFee2024: null, studFee2026: `$10,000`, currentFarm: `Lane's End (KY)`, studFeeSource2024: null, studFeeSource2026: `Lane's End 2026 (TDN)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Union Rags`, studFee2024: null, studFee2026: `$10,000`, currentFarm: `Lane's End (KY)`, studFeeSource2024: null, studFeeSource2026: `Lane's End 2026 (TDN)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Instilled Regard`, studFee2024: null, studFee2026: `$8,000`, currentFarm: `Taylor Made (KY)`, studFeeSource2024: null, studFeeSource2026: `Taylor Made 2026 (taylormadestallions.com)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Promises Fulfilled`, studFee2024: null, studFee2026: `$2,500`, currentFarm: `WinStar (KY)`, studFeeSource2024: null, studFeeSource2026: `WinStar 2026 (TrueNicks)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Khozan`, studFee2024: null, studFee2026: `$6,000 S&N`, currentFarm: `Ocala Stud (FL)`, studFeeSource2024: null, studFeeSource2026: `Ocala Stud 2026 (ocalastud.com)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Roadster`, studFee2024: null, studFee2026: `$7,500 LFSN`, currentFarm: `Ocala Stud (FL)`, studFeeSource2024: null, studFeeSource2026: `Ocala Stud 2026 (ocalastud.com)` },  // 2026-10-12 Fasig-Tipton
+  { name: `Pappacap`, studFee2024: `$12,500`, studFee2026: null, currentFarm: `Walmac (KY)`, studFeeSource2024: `TDN: Walmac Roster Doubles with Pappacap and Fulsome (2024)`, studFeeSource2026: null },  // 2026-10-12 Fasig-Tipton
 ];
 
 async function seedStudFees() {
