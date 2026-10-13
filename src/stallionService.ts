@@ -39,7 +39,36 @@ export async function listFirstYearlingStallions(year?: number, includeWeanlings
     select: { name: true, firstYearlingsYear: true },
     orderBy: { name: "asc" },
   });
-  return rows;
+  // `speed` (2026-10-12, Debutantes veloces ⚡ / Padre velocista): solo
+  // viaja si hay dato verificado; la app lo usa para la lista ordenada y el
+  // rayo vino tinto.
+  const speeds = await stallionSpeeds();
+  return rows.map((r) => ({
+    name: r.name,
+    firstYearlingsYear: r.firstYearlingsYear,
+    ...(speeds.has(r.name) ? { speed: speeds.get(r.name) } : {}),
+  }));
+}
+
+/** name -> speedJson de los padrillos con dato de velocidad verificado. */
+async function stallionSpeeds(): Promise<Map<string, unknown>> {
+  const rows = await db.$queryRawUnsafe<Array<{ name: string; speedJson: unknown }>>(
+    `SELECT "name", "speedJson" FROM "Stallion" WHERE "speedJson" IS NOT NULL`
+  );
+  return new Map(rows.map((r) => [r.name, r.speedJson]));
+}
+
+/**
+ * Claves (mismo criterio que la app: mayúsculas, sin sufijo de país tipo
+ * "(IRE)", solo letras y números) de los padrillos con dato de velocidad.
+ */
+export async function fastSireKeys(): Promise<Set<string>> {
+  const speeds = await stallionSpeeds();
+  return new Set([...speeds.keys()].map(stallionMatchKey));
+}
+
+export function stallionMatchKey(name: string): string {
+  return name.toUpperCase().trim().replace(/\s*\([A-Z]{2,4}\)\s*$/, "").replace(/[^A-Z0-9]/g, "");
 }
 
 /**

@@ -16,6 +16,7 @@
 // app lo muestra como "Not available" — nunca se infiere ni se inventa.
 import { db } from "../db";
 import { speedDamIndex } from "../breezeSpeedService";
+import { fastSireKeys, stallionMatchKey } from "../stallionService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getSaleLifecycleStatus } from "../activeSaleService";
 import { resolveReadUrl } from "../storage/r2Client";
@@ -69,6 +70,10 @@ export interface SaleSearchFilters {
   media: { photo: number; video: number; both: number; none: number };
   /** Cuántos HIPs tienen madre velocista ⚡ (hermanos o madre con trabajo élite). */
   speedDam: number;
+  /** HIPs cuyo padre está en Debutantes veloces ⚡ (2026-10-12). */
+  fastSire: number;
+  /** Cruce veloz ⚡: padre veloz + madre velocista (2026-10-12). */
+  fastCross: number;
   /** Cuántos HIPs de la venta están retirados (OUT). */
   out: number;
   /** Cuántos favoritos tiene el usuario en esta venta (2026-10-11). */
@@ -200,7 +205,17 @@ export async function getSaleSearchFilters(house: string, externalSaleId: string
     colors: CANONICAL_COLORS.filter((c) => colorCounts.has(c)).map((c) => ({ value: c, count: colorCounts.get(c)! })),
     dateOfBirth: { min: isoDay(dob?.mn ?? null), max: isoDay(dob?.mx ?? null), withData: Number(dob?.withData ?? 0) },
     bredStates: stateRows.map((r) => ({ value: r.v, count: Number(r.n) })),
-    speedDam: Object.keys(await speedDamIndex(sale.id)).length,
+    ...(await (async () => {
+      const speedIdx = await speedDamIndex(sale.id);
+      const fastKeys = await fastSireKeys();
+      const hipSires = await db.hip.findMany({ where: { saleId: sale.id }, select: { hipNumber: true, sire: true } });
+      const fast = hipSires.filter((h) => h.sire && fastKeys.has(stallionMatchKey(h.sire)));
+      return {
+        speedDam: Object.keys(speedIdx).length,
+        fastSire: fast.length,
+        fastCross: fast.filter((h) => speedIdx[h.hipNumber] !== undefined).length,
+      };
+    })()),
     favorites: (await favoriteHipIdsForSale(userId, sale.id)).size,
     out: (await db.hip.findMany({ where: { saleId: sale.id }, select: { saleResultJson: true } }))
       .filter((h) => saleStatusOf(h.saleResultJson as SaleResultInput | null) === "OUT").length,
@@ -303,8 +318,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
 
   // Todos los filtros de nombre comparan por clave normalizada
   // (upper + espacios), igual que se agruparon las opciones.
-  const rows = await db.$queryRawUnsafe<Array<{ id: string; hipNumber: string; color: string | null; saleResultJson: unknown }>>(
-    `SELECT h.id, h."hipNumber", h."color", h."saleResultJson"
+  const rows = await db.$queryRawUnsafe<Array<{ id: string; hipNumber: string; color: string | null; sire: string | null; saleResultJson: unknown }>>(
+    `SELECT h.id, h."hipNumber", h."color", h."sire", h."saleResultJson"
        FROM "Hip" h
       WHERE h."saleId" = $1
         AND ($2::text[] IS NULL OR upper(regexp_replace(btrim(h."sire"), '\\s+', ' ', 'g')) = ANY($2::text[]))
@@ -339,10 +354,14 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
   const colorSet = req.colors ? new Set(req.colors) : null;
   const speedIndex = await speedDamIndex(sale.id);
   const favoriteIds = req.favorites ? await favoriteHipIdsForSale(ctx.userId, sale.id) : null;
+  const needsFast = req.fastSire === true || req.fastCross === true;
+  const fastKeys = needsFast ? await fastSireKeys() : null;
   const matching = rows
     .filter((r) => !favoriteIds || favoriteIds.has(r.id))
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
+    .filter((r) => !needsFast || (!!r.sire && fastKeys!.has(stallionMatchKey(r.sire))))
+    .filter((r) => !req.fastCross || speedIndex[r.hipNumber] !== undefined)
     .filter((r) => {
       if (!req.hideOut && !req.onlyOut) return true;
       const isOut = saleStatusOf(r.saleResultJson as SaleResultInput | null) === "OUT";

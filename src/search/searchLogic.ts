@@ -52,6 +52,10 @@ export interface SaleSearchRequest {
   media?: MediaFilter;
   /** Madres velocistas ⚡ (2026-10-02): solo HIPs con un trabajo élite en la familia. */
   speedDam?: boolean;
+  /** Padre en la lista de Debutantes veloces ⚡ (2026-10-12). */
+  fastSire?: boolean;
+  /** Cruce veloz ⚡: padre veloz Y madre velocista a la vez (2026-10-12). */
+  fastCross?: boolean;
   /** Ocultar HIPs retirados (OUT) (2026-10-04). */
   hideOut?: boolean;
   /** Solo HIPs retirados (OUT). */
@@ -128,6 +132,8 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
       return b.media as MediaFilter;
     })(),
     speedDam: b.speedDam === true ? true : undefined,
+    fastSire: b.fastSire === true ? true : undefined,
+    fastCross: b.fastCross === true ? true : undefined,
     hideOut: b.hideOut === true ? true : undefined,
     onlyOut: b.onlyOut === true ? true : undefined,
     favorites: b.favorites === true ? true : undefined,

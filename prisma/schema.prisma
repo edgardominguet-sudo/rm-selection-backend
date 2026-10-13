@@ -1398,6 +1398,13 @@ model Stallion {
   // De dónde salió sireName (ej. "Pedigree PDF · <venta> · HIP 1").
   sireNameSource      String?
 
+  // Debutantes veloces ⚡ (2026-10-12, pedido de Ramon): mejor dato de
+  // velocidad VERIFICADO hasta 7 furlongs (figura Beyer/ESF/Brisnet y/o
+  // tiempo, distancia, carrera, superficie, fuente). Se carga una sola vez
+  // (la campaña del padrillo ya terminó, no cambia). null = sin dato
+  // verificado a una milla o menos -> no aparece en la lista.
+  speedJson           Json?
+
   @@index([firstYearlingsYear])
 }
 

@@ -38,6 +38,7 @@ async function main() {
 
   await seedFirstYearlingStallions();
   await seedFirstWeanlingStallions();
+  await seedDebutantSpeed2026();
   await seedStudFees();
 }
 
@@ -403,6 +404,67 @@ async function seedFirstWeanlingStallions() {
     });
   }
   console.log(`Padrillos debutantes con weanlings (primera generación 2026) sembrados: ${FIRST_WEANLING_STALLIONS_2026.length}`);
+}
+
+/**
+ * DEBUTANTES VELOCES ⚡ (2026-10-12, pedido de Ramon): mejor dato de
+ * velocidad VERIFICADO hasta 7 furlongs de los padrillos con primera
+ * generación de yearlings 2026. Solo datos publicados con fuente (Equibase
+ * bloquea la lectura automática -> fuentes públicas: haras, TDN, TrueNicks,
+ * Brisnet, America's Best Racing). Las escalas NO son comparables entre sí
+ * (Beyer = DRF, ESF = Equibase, BRIS = Brisnet): por eso viaja el tipo.
+ * `rank` = orden de la lista (más rápido primero; grama al final). Sin
+ * dato verificado a una milla o menos -> no se carga (no aparece).
+ */
+type DebutantSpeed = {
+  name: string;
+  rank: number;
+  surface: "DIRT" | "TURF";
+  figure: number | null;
+  figureType: "BEYER" | "ESF" | "BRIS" | null;
+  time: string | null;
+  distance: string;
+  race: string;
+  source: string;
+};
+const DEBUTANT_SPEED_2026: DebutantSpeed[] = [
+  // Regla (2026-10-12, Ramon): solo carreras de HASTA 7 FURLONGS.
+  { name: "Cody's Wish", rank: 1, surface: "DIRT", figure: 112, figureType: "BEYER", time: null, distance: "7f", race: "Forego G1 (7f) · Churchill Downs S. G1 (7f) · Vosburgh G2 (7f)", source: "https://www.darleyamerica.com/node/36933" },
+  { name: "Elite Power", rank: 2, surface: "DIRT", figure: 111, figureType: "ESF", time: "1:08.34", distance: "6f", race: "2× Breeders' Cup Sprint G1", source: "https://www.truenicks.com/articles/266229/breeders-cup-victory-propels-elite-power" },
+  { name: "Arabian Lion", rank: 3, surface: "DIRT", figure: 109, figureType: "BEYER", time: "1:21.70", distance: "7f", race: "Woody Stephens G1", source: "https://www.spendthriftfarm.com/news/arabian-lion-g1-winner-by-justify-retires-to-spendthrift/" },
+  { name: "Dr. Schivel", rank: 4, surface: "DIRT", figure: 109, figureType: "ESF", time: null, distance: "6f", race: "Allowance Santa Anita · Del Mar Futurity G1 (7f) · Bing Crosby G1 (6f)", source: "https://www.americasbestracing.net/the-sport/2021-getting-know-dr-schivel-and-evaluating-his-breeders-cup-sprint-chances" },
+  { name: "Gunite", rank: 5, surface: "DIRT", figure: 108, figureType: "BEYER", time: "1:21.53", distance: "7f", race: "Aristides (108 Beyer) · Forego G1 7f 1:21.53", source: "https://wp.tdn.pmadv.com/gunite-turns-tables-on-elite-power-in-forego/" },
+  { name: "Taiba", rank: 6, surface: "DIRT", figure: 106, figureType: "ESF", time: "1:21.75", distance: "7f", race: "Malibu G1", source: "https://truenicks.com/articles/271966/taiba-retired-to-stud-at-spendthrift-farm" },
+  { name: "Loggins", rank: 7, surface: "DIRT", figure: 100, figureType: "ESF", time: "1:15.87", distance: "6½f", race: "Maiden Churchill Downs (por 8½ cuerpos)", source: "https://www.truenicks.com/articles/269050/loggins-retired-stud-plans-pending" },
+  { name: "Verifying", rank: 8, surface: "DIRT", figure: 97, figureType: "BRIS", time: null, distance: "6f", race: "Maiden", source: "https://www.thelines.com/verifying-kentucky-derby-horse-racing-profile-2023/" },
+  { name: "Forte", rank: 9, surface: "DIRT", figure: null, figureType: null, time: "1:22.58", distance: "7f", race: "Hopeful G1 (pista barrosa; luego descalificado)", source: "https://www.americasbestracing.net/the-sport/2022-strong-rally-carries-forte-hopeful-victory" },
+  { name: "Pappacap", rank: 10, surface: "DIRT", figure: null, figureType: null, time: "1:11.66", distance: "6f", race: "Best Pal G2", source: "https://www.brisnet.com/racing/news/pappacap-lives-up-to-billing-in-best-pal-princess-grace-stylish-in-yellow-ribbon" },
+];
+
+// Padrillos que tuvieron dato cargado y ya NO cumplen la regla (más de
+// 7f): se les quita el dato para que no queden en la lista.
+const DEBUTANT_SPEED_REMOVED_2026 = ["Americanrevolution", "Annapolis", "Smooth Like Strait"];
+
+async function seedDebutantSpeed2026() {
+  let updated = 0;
+  for (const entry of DEBUTANT_SPEED_2026) {
+    const normalized = entry.name.trim().replace(/\s+/g, " ").toUpperCase();
+    const { name: _name, ...speed } = entry;
+    // Solo actualiza padrillos YA cargados como debutantes: nunca crea uno.
+    // SQL directo: columna nueva (migración 20261012230000_stallion_speed).
+    updated += await db.$executeRawUnsafe(
+      `UPDATE "Stallion" SET "speedJson" = $1::jsonb, "updatedAt" = now() WHERE "name" = $2`,
+      JSON.stringify(speed),
+      normalized
+    );
+  }
+  for (const name of DEBUTANT_SPEED_REMOVED_2026) {
+    await db.$executeRawUnsafe(
+      `UPDATE "Stallion" SET "speedJson" = NULL WHERE "name" = $1 AND "speedJson" IS NOT NULL`,
+      name.trim().replace(/\s+/g, " ").toUpperCase()
+    );
+  }
+  console.log(`Debutantes veloces ⚡ (hasta 7f) con dato de velocidad: ${updated}/${DEBUTANT_SPEED_2026.length}`);
 }
 
 main()
