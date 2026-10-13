@@ -308,12 +308,67 @@ export interface SearchResponse {
   pageSize: number;
   totalPages: number;
   results: SearchResultItem[];
+  /**
+   * Resumen de resultados de venta de TODO lo que coincide con los filtros
+   * (no solo la página), sin aplicar "ocultar/solo OUT" — así un padrillo
+   * muestra sus vendidos, RNA y OUT reales. null si la venta aún no tiene
+   * ningún resultado publicado para esa selección.
+   */
+  summary: SaleSearchSummary | null;
+}
+
+export interface SaleSearchSummary {
+  cataloged: number;
+  sold: number;
+  rna: number;
+  out: number;
+  pending: number;
+  gross: number;
+  average: number | null;
+  median: number | null;
+  max: { hipNumber: string; price: number } | null;
+  min: { hipNumber: string; price: number } | null;
+  /** RNA / (vendidos + RNA): porcentaje de los que salieron al ring y no se vendieron. */
+  rnaRate: number | null;
+}
+
+export function buildSaleSearchSummary(rows: Array<{ hipNumber: string; saleResultJson: unknown }>): SaleSearchSummary | null {
+  let sold = 0, rna = 0, out = 0, pending = 0, gross = 0;
+  const prices: Array<{ hipNumber: string; price: number }> = [];
+  for (const r of rows) {
+    const result = r.saleResultJson as SaleResultInput | null;
+    const status = saleStatusOf(result);
+    if (status === "SOLD") {
+      sold++;
+      const price = salePriceOf(result);
+      if (price !== null) { prices.push({ hipNumber: r.hipNumber, price }); gross += price; }
+    } else if (status === "RNA") rna++;
+    else if (status === "OUT") out++;
+    else pending++;
+  }
+  if (sold + rna + out === 0) return null;
+  const sorted = [...prices].sort((a, b) => a.price - b.price);
+  const n = sorted.length;
+  const median = n === 0 ? null : n % 2 ? sorted[(n - 1) / 2].price : Math.round((sorted[n / 2 - 1].price + sorted[n / 2].price) / 2);
+  return {
+    cataloged: rows.length,
+    sold,
+    rna,
+    out,
+    pending,
+    gross,
+    average: n ? Math.round(gross / n) : null,
+    median,
+    max: n ? sorted[n - 1] : null,
+    min: n ? sorted[0] : null,
+    rnaRate: sold + rna > 0 ? rna / (sold + rna) : null,
+  };
 }
 
 /** Busca dentro de UNA venta (solo lectura) para el usuario/organización autenticados. */
 export async function runSaleSearch(ctx: { organizationId: string; userId: string }, req: SaleSearchRequest): Promise<SearchResponse> {
   const sale = await resolveSale(req.house, req.externalSaleId);
-  const empty: SearchResponse = { total: 0, page: req.page, pageSize: req.pageSize, totalPages: 0, results: [] };
+  const empty: SearchResponse = { total: 0, page: req.page, pageSize: req.pageSize, totalPages: 0, results: [], summary: null };
   const keys = (list?: string[]) => (list && list.length ? list.map(nameKey) : null);
 
   // Todos los filtros de nombre comparan por clave normalizada
@@ -356,23 +411,25 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
   const favoriteIds = req.favorites ? await favoriteHipIdsForSale(ctx.userId, sale.id) : null;
   const needsFast = req.fastSire === true || req.fastCross === true;
   const fastKeys = needsFast ? await fastSireKeys() : null;
-  const matching = rows
+  const selected = rows
     .filter((r) => !favoriteIds || favoriteIds.has(r.id))
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
     .filter((r) => !needsFast || (!!r.sire && fastKeys!.has(stallionMatchKey(r.sire))))
-    .filter((r) => !req.fastCross || speedIndex[r.hipNumber] !== undefined)
+    .filter((r) => !req.fastCross || speedIndex[r.hipNumber] !== undefined);
+  const summary = buildSaleSearchSummary(selected);
+  const matching = selected
     .filter((r) => {
       if (!req.hideOut && !req.onlyOut) return true;
       const isOut = saleStatusOf(r.saleResultJson as SaleResultInput | null) === "OUT";
       return req.onlyOut ? isOut : !isOut;
     })
     .sort((a, b) => compareHips(a.hipNumber, b.hipNumber) || (a.id < b.id ? -1 : 1));
-  if (matching.length === 0) return empty;
+  if (matching.length === 0) return { ...empty, summary };
 
   const totalPages = Math.ceil(matching.length / req.pageSize);
   const pageRows = paginate(matching, req.page, req.pageSize);
-  if (pageRows.length === 0) return { ...empty, total: matching.length, totalPages };
+  if (pageRows.length === 0) return { ...empty, total: matching.length, totalPages, summary };
 
   // Detalle SOLO de la página pedida.
   const pageIds = pageRows.map((r) => r.id);
@@ -462,5 +519,5 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
     };
   });
 
-  return { total: matching.length, page: req.page, pageSize: req.pageSize, totalPages, results };
+  return { total: matching.length, page: req.page, pageSize: req.pageSize, totalPages, results, summary };
 }
