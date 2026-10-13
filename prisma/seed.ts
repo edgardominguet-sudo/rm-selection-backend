@@ -437,8 +437,8 @@ const DEBUTANT_SPEED_2026: DebutantSpeed[] = [
   { name: "Taiba", rank: 6, surface: "DIRT", figure: 106, figureType: "ESF", time: "1:21.75", distance: "7f", race: "Malibu G1", source: "https://truenicks.com/articles/271966/taiba-retired-to-stud-at-spendthrift-farm" },
   { name: "Loggins", rank: 7, surface: "DIRT", figure: 100, figureType: "ESF", time: "1:15.87", distance: "6½f", race: "Maiden Churchill Downs (por 8½ cuerpos)", source: "https://www.truenicks.com/articles/269050/loggins-retired-stud-plans-pending" },
   { name: "Verifying", rank: 8, surface: "DIRT", figure: 97, figureType: "BRIS", time: null, distance: "6f", race: "Maiden", source: "https://www.thelines.com/verifying-kentucky-derby-horse-racing-profile-2023/" },
-  { name: "Endorsed", rank: 9, surface: "DIRT", figure: null, figureType: null, time: "1:08.78", distance: "6f", race: "Allowance Belmont Park (pista rápida)", source: "https://wp.tdn.pmadv.com/?p=209390" },
-  { name: "Mage", rank: 10, surface: "DIRT", figure: null, figureType: null, time: "1:22.54", distance: "7f", race: "Maiden Gulfstream Park (28-ene-2023)", source: "https://en.wikipedia.org/wiki/Mage_(horse)" },
+  { name: "Endorsed", rank: 9, surface: "DIRT", figure: null, figureType: null, time: "1:08.78", distance: "6f", race: "Allowance Belmont Park", source: "https://wp.tdn.pmadv.com/?p=209390" },
+  { name: "Mage", rank: 10, surface: "DIRT", figure: null, figureType: null, time: "1:22.54", distance: "7f", race: "Maiden Gulfstream Park", source: "https://en.wikipedia.org/wiki/Mage_(horse)" },
   { name: "Forte", rank: 11, surface: "DIRT", figure: null, figureType: null, time: "1:22.58", distance: "7f", race: "Hopeful G1 (pista barrosa; luego descalificado)", source: "https://www.americasbestracing.net/the-sport/2022-strong-rally-carries-forte-hopeful-victory" },
   { name: "Pappacap", rank: 12, surface: "DIRT", figure: null, figureType: null, time: "1:11.66", distance: "6f", race: "Best Pal G2", source: "https://www.brisnet.com/racing/news/pappacap-lives-up-to-billing-in-best-pal-princess-grace-stylish-in-yellow-ribbon" },
 ];
