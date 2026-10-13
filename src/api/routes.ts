@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { shouldRelay, createRelayUploadUrl } from "../storage/mediaRelay";
 import { Router, Request, Response } from "express";
 import { withAsyncErrors } from "./asyncRouter";
 import { HttpError } from "./errorHandler";
@@ -1092,7 +1093,11 @@ router.post("/me/media", requireUser, async (req, res) => {
     update: data,
   });
   try {
-    const uploadUrl = createUploadUrl(storageKey);
+    // Fotos: subida a través del servidor (ver storage/mediaRelay.ts) — ya
+    // no dependen de que el dispositivo llegue directo a Cloudflare R2.
+    // Igual se valida que R2 esté configurado (createUploadUrl lanza si no).
+    createUploadUrl(storageKey);
+    const uploadUrl = shouldRelay(kind) ? createRelayUploadUrl(req, asset.id) : createUploadUrl(storageKey);
     res.json({ id: asset.id, storageKey, uploadUrl, expiresInSeconds: 900 });
   } catch (err) {
     if (err instanceof ObjectStorageNotConfiguredError) {

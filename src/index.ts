@@ -19,6 +19,7 @@ import { attachRealtime } from "./realtime";
 import { withAsyncErrors } from "./api/asyncRouter";
 import { apiErrorHandler } from "./api/errorHandler";
 import { installProcessSafetyNet } from "./processSafety";
+import { mediaRelayBodyParser, handleMediaRelayUpload } from "./storage/mediaRelay";
 
 // Red de seguridad del proceso (2026-09-26) — ver processSafety.ts.
 installProcessSafetyNet();
@@ -297,6 +298,12 @@ const noStoreMiddleware: express.RequestHandler = (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   next();
 };
+// Subida de fotos a través del servidor (2026-10-13) — ANTES de
+// requireApiKey: la autoriza la firma con vencimiento de la URL, igual que
+// una URL prefirmada de R2 (ver storage/mediaRelay.ts).
+app.put("/api/v1/media-relay/:id", mediaRelayBodyParser, (req, res, next) => {
+  handleMediaRelayUpload(req, res).catch(next);
+});
 app.use("/api/v1/diag", requireApiKey, noStoreMiddleware, diagRouter);
 app.use("/api/v1", requireApiKey, noStoreMiddleware, router);
 
