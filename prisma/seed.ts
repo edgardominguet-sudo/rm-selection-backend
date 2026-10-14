@@ -40,6 +40,7 @@ async function main() {
   await seedFirstWeanlingStallions();
   await seedDebutantSpeed2026();
   await seedStudFees();
+  await seedWeanlingStudFees();
 }
 
 // "Padrillos de primera generación de yearlings 2026" (2026-08-19, a
@@ -411,8 +412,13 @@ const FIRST_WEANLING_STALLIONS_2026: Array<{ name: string; source: string }> = [
   { name: "Chewing Gum", source: "NYTB/TrueNicks: Rockridge Stud desde 2025, primer potrillo 2026" },
   { name: "Provocateur", source: "TDN/TrueNicks: McMahon of Saratoga, primer potrillo 2026" },
   { name: "Front Run the Fed", source: "NYTB: entra a servicio en 2025 en War Horse Place" },
-  { name: "Mystik Dan", source: "TrueNicks: debuta en Airdrie Stud en 2025" },
 ];
+
+// Corregido 2026-10-14: Mystik Dan NO tiene weanlings en 2026 — su primera
+// temporada en Airdrie es 2026 (Airdrie, "2026 Stud Fees": newcomer, fee
+// inicial $15,000), así que su primera generación nace en 2027. Se le quita
+// la marca de debutante con weanlings (no se borra nada más).
+const FIRST_WEANLING_REMOVED_2026 = ["Mystik Dan"];
 
 async function seedFirstWeanlingStallions() {
   for (const stallion of FIRST_WEANLING_STALLIONS_2026) {
@@ -423,7 +429,79 @@ async function seedFirstWeanlingStallions() {
       update: { firstYearlingsYear: 2027, source: stallion.source },
     });
   }
+  for (const name of FIRST_WEANLING_REMOVED_2026) {
+    await db.stallion.updateMany({
+      where: { name: name.trim().replace(/\s+/g, " ").toUpperCase(), firstYearlingsYear: 2027 },
+      data: { firstYearlingsYear: null },
+    });
+  }
   console.log(`Padrillos debutantes con weanlings (primera generación 2026) sembrados: ${FIRST_WEANLING_STALLIONS_2026.length}`);
+}
+
+// STUD FEE de los debutantes con WEANLINGS (2026-10-14, Ramon: "en la venta
+// de noviembre de Fasig-Tipton los debutantes con weanlings no tienen el
+// Stud Fee"). Para un weanling 2026 el salto que lo produjo es el de 2025
+// (temporada inaugural), por eso se guarda 2025 + 2026. Solo datos oficiales
+// de la granja o de prensa especializada; null = no publicado (nunca se
+// inventa). "Private" = la granja no publica la cifra.
+const TDN_VALUE_2025 = 'TDN "Kentucky Value Sires For 2025 - Part I: New Stallions"';
+const STUD_FEES_WEANLING_2026: Array<{
+  name: string;
+  studFee2025: string | null;
+  studFee2026: string | null;
+  currentFarm: string;
+  source2025: string | null;
+  source2026: string | null;
+}> = [
+  { name: "Seize the Grey", studFee2025: "$30,000 LFSN", studFee2026: "$25,000", currentFarm: "Gainesway Farm (KY)", source2025: "TDN (Gainesway, fee inaugural)", source2026: "gainesway.com 2026" },
+  { name: "Charge It", studFee2025: "$12,500", studFee2026: "$12,500", currentFarm: "Gainesway Farm (KY)", source2025: TDN_VALUE_2025, source2026: "gainesway.com 2026" },
+  { name: "Tapit Trice", studFee2025: "$20,000 LFSN", studFee2026: "$10,000", currentFarm: "Gainesway Farm (KY)", source2025: "TDN (Gainesway, fee inaugural)", source2026: "gainesway.com 2026" },
+  { name: "Muth", studFee2025: "$35,000 LFSN", studFee2026: "$30,000", currentFarm: "Gainesway Farm (KY)", source2025: "TDN (Gainesway, fee inaugural)", source2026: "gainesway.com 2026" },
+  { name: "Kingsbarns", studFee2025: "$20,000", studFee2026: "$17,500 S&N", currentFarm: "Spendthrift Farm (KY)", source2025: TDN_VALUE_2025, source2026: "spendthriftfarm.com 2026" },
+  { name: "Dornoch", studFee2025: "$40,000", studFee2026: "$30,000 S&N", currentFarm: "Spendthrift Farm (KY)", source2025: TDN_VALUE_2025, source2026: "spendthriftfarm.com 2026" },
+  { name: "National Treasure", studFee2025: "$40,000", studFee2026: "$35,000 S&N", currentFarm: "Spendthrift Farm (KY)", source2025: TDN_VALUE_2025, source2026: "spendthriftfarm.com 2026" },
+  { name: "Cogburn", studFee2025: "$30,000", studFee2026: "$25,000", currentFarm: "WinStar Farm (KY)", source2025: TDN_VALUE_2025, source2026: "TrueNicks: WinStar 2026" },
+  { name: "Timberlake", studFee2025: "$20,000", studFee2026: "$15,000", currentFarm: "WinStar Farm (KY)", source2025: "Racing Post / TDN: WinStar 2025", source2026: "TrueNicks: WinStar 2026" },
+  { name: "Heartland", studFee2025: "$10,000", studFee2026: "$10,000", currentFarm: "WinStar Farm (KY)", source2025: "Racing Post: WinStar 2025", source2026: "TrueNicks: WinStar 2026" },
+  { name: "Blazing Sevens", studFee2025: "$12,500 S&N", studFee2026: "$10,000 S&N", currentFarm: "Darby Dan Farm (KY)", source2025: "darbydan.com 2025", source2026: "darbydan.com 2026 (23-oct-2025)" },
+  { name: "Shirl's Speight", studFee2025: "$5,000 S&N", studFee2026: "$5,000", currentFarm: "Darby Dan Farm (KY)", source2025: "darbydan.com 2025", source2026: "darbydan.com 2026 (23-oct-2025)" },
+  { name: "Casa Creed", studFee2025: "$10,000", studFee2026: "$8,500", currentFarm: "Mill Ridge Farm (KY)", source2025: TDN_VALUE_2025, source2026: "TDN: Mill Ridge 2026" },
+  { name: "More Than Looks", studFee2025: "$15,000", studFee2026: "$15,000", currentFarm: "Lane's End (KY)", source2025: TDN_VALUE_2025, source2026: "TrueNicks: Lane's End 2026" },
+  { name: "Senor Buscador", studFee2025: "$7,500 LFSN", studFee2026: "$7,500", currentFarm: "Lane's End (KY)", source2025: "TDN: Senor Buscador a Lane's End por $7,500 LFSN", source2026: "TrueNicks: Lane's End 2026" },
+  { name: "Domestic Product", studFee2025: "$30,000", studFee2026: "$25,000", currentFarm: "Ashford Stud / Coolmore America (KY)", source2025: TDN_VALUE_2025, source2026: "TDN: Coolmore America 2026" },
+  { name: "Prince of Monaco", studFee2025: "$30,000", studFee2026: "$30,000", currentFarm: "Claiborne Farm (KY)", source2025: TDN_VALUE_2025, source2026: "claibornefarm.com 2026 (15-oct-2025)" },
+  { name: "Bright Future", studFee2025: "$12,500", studFee2026: "$10,000", currentFarm: "Claiborne Farm (KY)", source2025: "Racing Post: Claiborne 2025", source2026: "claibornefarm.com 2026 (15-oct-2025)" },
+  { name: "Gun Pilot", studFee2025: "$17,500", studFee2026: "$12,500 LFSN", currentFarm: "Three Chimneys Farm (KY)", source2025: "TDN: Three Chimneys, Gun Pilot $17,500", source2026: "threechimneys.com 2026 (17-oct-2025)" },
+  { name: "Newgate", studFee2025: "$20,000", studFee2026: "$17,500 LFSN", currentFarm: "Three Chimneys Farm (KY)", source2025: TDN_VALUE_2025, source2026: "threechimneys.com 2026 (17-oct-2025)" },
+  { name: "Stage Raider", studFee2025: "$6,500 LFSN", studFee2026: null, currentFarm: "Crestwood Farm (KY)", source2025: "TrueNicks 30-oct-2024 (Crestwood)", source2026: null },
+  { name: "Classic Causeway", studFee2025: "$6,500 LFSN", studFee2026: null, currentFarm: "Crestwood Farm (KY)", source2025: "TrueNicks (Crestwood, dic-2024)", source2026: null },
+  { name: "Angel of Empire", studFee2025: "$7,500", studFee2026: "$5,000 S&N", currentFarm: "Taylor Made Stallions (KY)", source2025: TDN_VALUE_2025, source2026: "taylormadestallions.com 2026" },
+  { name: "Arabian Knight", studFee2025: "$30,000", studFee2026: "$30,000", currentFarm: "Hill 'n' Dale at Xalapa (KY)", source2025: TDN_VALUE_2025, source2026: "TrueNicks: Hill 'n' Dale 2026" },
+  { name: "Petulante", studFee2025: "$5,000 LFSN", studFee2026: null, currentFarm: "Irish Hill & Dutchess Views (NY)", source2025: "TrueNicks: fee inaugural", source2026: null },
+  { name: "Provocateur", studFee2025: "$5,000 LFSN", studFee2026: null, currentFarm: "McMahon of Saratoga (NY)", source2025: "mcmahonthoroughbreds.com 2025", source2026: null },
+  { name: "Chewing Gum", studFee2025: "Private", studFee2026: "Private", currentFarm: "Rockridge Stud (NY)", source2025: "TDN: Rockridge 2025 (fee privado)", source2026: "TDN: primer potrillo (fee privado 2026)" },
+  { name: "Front Run the Fed", studFee2025: null, studFee2026: "$2,500", currentFarm: "Ocampo Stallions Farm (NY)", source2025: null, source2026: "NYTB 1-abr-2026" },
+];
+
+async function seedWeanlingStudFees() {
+  let updated = 0;
+  for (const entry of STUD_FEES_WEANLING_2026) {
+    const normalized = entry.name.trim().replace(/\s+/g, " ").toUpperCase();
+    await db.stallion.upsert({
+      where: { name: normalized },
+      create: { name: normalized, studFee2026: entry.studFee2026, currentFarm: entry.currentFarm, studFeeSource2026: entry.source2026 },
+      update: { studFee2026: entry.studFee2026, currentFarm: entry.currentFarm, studFeeSource2026: entry.source2026 },
+    });
+    // Columnas 2025 por SQL directo (mismo criterio que speedJson).
+    await db.$executeRawUnsafe(
+      `UPDATE "Stallion" SET "studFee2025" = $1, "studFeeSource2025" = $2 WHERE "name" = $3`,
+      entry.studFee2025,
+      entry.source2025,
+      normalized
+    );
+    updated++;
+  }
+  console.log(`Stud Fees 2025/2026 de debutantes con weanlings sembrados: ${updated}`);
 }
 
 /**

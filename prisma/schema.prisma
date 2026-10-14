@@ -1381,10 +1381,12 @@ model Stallion {
   // completo con fuente por dato y segunda verificación (fallecidos,
   // pensionados, reubicados, discrepancias).
   studFee2024        String?
+  studFee2025         String?
   studFee2026         String?
   // Fuente de cada dato (auditable, nunca valores reales de credenciales
   // acá — son URLs/nombres de publicaciones, dato público de por sí).
   studFeeSource2024   String?
+  studFeeSource2025   String?
   studFeeSource2026   String?
   // Granja/stud actual (2026) — puede diferir de donde estuvo en 2024 (ver
   // comentario arriba: varios padrillos investigados cambiaron de granja o

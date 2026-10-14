@@ -86,17 +86,12 @@ export function stallionMatchKey(name: string): string {
  * nunca como cero ni inventar un valor.
  */
 export async function listStudFees() {
-  const rows = await db.stallion.findMany({
-    where: {
-      OR: [{ studFee2024: { not: null } }, { studFee2026: { not: null } }],
-    },
-    select: {
-      name: true,
-      studFee2024: true,
-      studFee2026: true,
-      currentFarm: true,
-    },
-    orderBy: { name: "asc" },
-  });
-  return rows;
+  // SQL directo para incluir "studFee2025" (columna agregada 2026-10-14 para
+  // los debutantes con weanlings; el cliente de Prisma no se regenera acá).
+  return db.$queryRawUnsafe<Array<{ name: string; studFee2024: string | null; studFee2025: string | null; studFee2026: string | null; currentFarm: string | null }>>(
+    `SELECT "name", "studFee2024", "studFee2025", "studFee2026", "currentFarm"
+       FROM "Stallion"
+      WHERE "studFee2024" IS NOT NULL OR "studFee2025" IS NOT NULL OR "studFee2026" IS NOT NULL
+      ORDER BY "name" ASC`
+  );
 }
