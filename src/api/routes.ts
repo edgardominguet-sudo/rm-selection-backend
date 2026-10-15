@@ -1117,6 +1117,19 @@ router.put("/me/media/:id/confirm", requireUser, async (req, res) => {
     return;
   }
   const updated = await db.mediaAsset.update({ where: { id }, data: { uploadStatus: "PROCESSED" } });
+  // UN solo árbol genealógico por Hip (2026-10-14, Ramon: en Keeneland
+  // September el pedigree se veía repetido 3 veces). Cada equipo generaba
+  // su propia imagen del PDF del catálogo y la subía; se acumulaban copias
+  // del MISMO pedigree. Al confirmarse uno nuevo, los anteriores del mismo
+  // Hip quedan dados de baja (borrado suave: deletedAt, nunca se borra el
+  // archivo) y los demás equipos los quitan solos en la próxima sincronización.
+  if (asset.kind === "PEDIGREE_CHART") {
+    const superseded = await db.mediaAsset.updateMany({
+      where: { hipId: asset.hipId, organizationId: asset.organizationId, kind: "PEDIGREE_CHART", deletedAt: null, id: { not: id } },
+      data: { deletedAt: new Date() },
+    });
+    if (superseded.count > 0) console.log(`[media] Hip ${asset.hipId}: ${superseded.count} árbol(es) genealógico(s) repetido(s) dado(s) de baja`);
+  }
   broadcastChange("media", asset.deviceId);
   res.json(updated);
 });
