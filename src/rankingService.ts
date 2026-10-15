@@ -50,6 +50,45 @@ async function resolveAIAnalysisMedia(hipId: string, organizationId: string): Pr
 }
 
 /**
+ * "Analizar" en el PRIMER intento (2026-10-14, auditoría pedida por Ramon:
+ * "en el primer intento no da resultado, al segundo sí"). Causa real, vista
+ * en los registros: la foto recién tomada (3–5 MB) tardaba ~15 s en subir
+ * desde el iPad y el pedido de análisis llegaba antes — el servidor no la
+ * encontraba (NoPhotosError) o, si el Hip ya tenía una foto anterior,
+ * analizaba la VIEJA. Ahora, si hay una foto de Análisis IA de esa vista
+ * que se empezó a subir hace poco y todavía no terminó, el servidor la
+ * espera (hasta 60 s, revisando cada segundo) antes de resolver la media.
+ * Sin subidas pendientes no espera nada: cero costo en el caso normal.
+ */
+async function resolveAIAnalysisMediaAwaitingUploads(
+  hipId: string,
+  organizationId: string,
+  view: string | undefined
+): Promise<CatalogMediaItem[]> {
+  const deadline = Date.now() + 60_000;
+  let waited = false;
+  for (;;) {
+    const pending = await db.mediaAsset.count({
+      where: {
+        hipId,
+        organizationId,
+        kind: "AI_ANALYSIS_PHOTO",
+        uploadStatus: "PENDING_UPLOAD",
+        deletedAt: null,
+        createdAt: { gt: new Date(Date.now() - 5 * 60_000) },
+        ...(view ? { conformationView: view } : {}),
+      },
+    });
+    if (pending === 0 || Date.now() >= deadline) {
+      if (waited) console.log(`[analysis] Hip ${hipId}: ${pending === 0 ? "subida de la foto completada, se analiza" : "la subida no terminó en 60 s, se sigue con lo que hay"}`);
+      return resolveAIAnalysisMedia(hipId, organizationId);
+    }
+    waited = true;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+/**
  * Agrupa la media de Análisis IA vigente de un Hip por vista
  * (frontal/lateral/posterior), usando el tag que el dispositivo de origen
  * grabó en cada foto (`conformationView`, ver MediaAsset en schema.prisma)
@@ -604,7 +643,7 @@ export async function analyzeHipOnDemand(
   // Análisis IA (2026-08-13): SOLO las fotos que el usuario tomó desde la
   // pantalla Análisis (IA) de este Hip — nunca el catálogo (hip.mediaJson)
   // ni Media general. Ver resolveAIAnalysisMedia.
-  const rawMedia = await resolveAIAnalysisMedia(hip.id, organizationId);
+  const rawMedia = await resolveAIAnalysisMediaAwaitingUploads(hip.id, organizationId, RM_SINGLE_LATERAL_ANALYSIS_MODE ? "lateral" : requestedView);
   // MODO LATERAL ÚNICA (2026-09-26, decisión explícita de Ramon --
   // condiciones 1-3: "Solo la lateral debe participar en los nuevos
   // análisis IA", "el score debe calcularse exclusivamente a partir de
