@@ -109,7 +109,36 @@ export function pickConformationPhoto(html: string, page: string, stallionName =
   const all = [...seen.values()];
   const named = all.filter((c) => c.named).sort((a, b) => b.score - a.score);
   if (named.length) return named[0].url;
-  return all.length === 1 ? all[0].url : null;
+  // Sin el nombre: solo si es la ÚNICA foto de conformación y no lleva el
+  // nombre de OTRO padrillo conocido (ej. la página de Two Phil's mostraba
+  // la de Timberlake en el menú del haras).
+  const others = STALLION_FARM_PAGES.map(([n]) => compact(n)).filter((n) => n.length >= 4 && n !== name);
+  const unnamed = all.filter((c) => {
+    const text = compact(decodeURIComponentSafe(c.url.split("?")[0].split("/").pop() ?? ""));
+    return !others.some((o) => text.includes(o));
+  });
+  return all.length === 1 && unnamed.length === 1 ? unnamed[0].url : null;
+}
+
+function decodeURIComponentSafe(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+
+/** Diagnóstico: qué recibe el servidor de la página del haras. */
+export async function conformationPhotoDebug(name: string) {
+  const pageUrl = farmPageFor(name);
+  if (!pageUrl) return { pageUrl: null };
+  try {
+    const response = await fetch(pageUrl, {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const html = await response.text();
+    const imgs = [...candidates(html, pageUrl), ...rawImageUrls(html)].map((c) => c.url).filter((u) => /\.(jpe?g|png|webp)/i.test(u));
+    return { pageUrl, status: response.status, length: html.length, images: imgs.slice(0, 40) };
+  } catch (err) {
+    return { pageUrl, error: String(err) };
+  }
 }
 
 export async function conformationPhotoFor(name: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {

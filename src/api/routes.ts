@@ -22,7 +22,7 @@ import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { fetchAndDownscale } from "../analysis/imageDownscale";
 import { stallionFarmPages } from "../stallionFarmPages";
-import { conformationPhotoFor } from "../stallionConformationPhoto";
+import { conformationPhotoFor, conformationPhotoDebug } from "../stallionConformationPhoto";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "../activeSaleService";
 import {
@@ -508,7 +508,7 @@ router.get("/stallions/farm-pages", requireUser, (_req, res) => {
 router.get("/stallions/conformation-photo", requireUser, async (req, res) => {
   const name = typeof req.query.name === "string" ? req.query.name.trim() : "";
   if (!name) throw new HttpError(400, "Falta el parámetro name.", "INVALID_STALLION");
-  res.json(await conformationPhotoFor(name));
+  res.json(req.query.debug === "1" ? await conformationPhotoDebug(name) : await conformationPhotoFor(name));
 });
 
 router.get("/stallions/stud-fees", requireUser, async (req, res) => {
