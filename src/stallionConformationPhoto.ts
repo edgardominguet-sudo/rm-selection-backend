@@ -141,8 +141,31 @@ export async function conformationPhotoDebug(name: string) {
   }
 }
 
+/**
+ * Foto de conformación verificada a mano para haras cuya página bloquea al
+ * servidor (Coolmore responde 403 a pedidos que no vienen de un navegador).
+ * Tomadas de la página oficial de cada padrillo (oct-2026). Solo enlaces.
+ */
+const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
+  ["American Pharoah", "https://media.coolmore.com/uploads/2025/10/American-Pharoah-conformation-shot-1.jpg"],
+  ["Citizen Bull", "https://media.coolmore.com/uploads/2025/11/Citizen-Bull-conformation-shot.jpg"],
+  ["Corniche", "https://media.coolmore.com/uploads/2025/10/Corniche-conformation-shot-1.jpg"],
+  ["Domestic Product", "https://media.coolmore.com/uploads/2025/10/Domestic-Product-conformation-shot.jpg"],
+  ["Epicenter", "https://media.coolmore.com/uploads/2025/10/Epicenter-conformation-shot-1.jpg"],
+  ["Fierceness", "https://media.coolmore.com/uploads/2025/11/Fierceness-conformation-shot.jpg"],
+  ["Golden Pal", "https://media.coolmore.com/uploads/2025/10/Golden-Pal-conformation-shot-1.jpg"],
+  ["Gunite", "https://media.coolmore.com/uploads/2025/10/Gunite-conformation-shot-1.jpg"],
+  ["Jack Christopher", "https://media.coolmore.com/uploads/2025/10/Jack-Christopher-conformation-shot-1.jpg"],
+  ["Justify", "https://media.coolmore.com/uploads/2025/10/Justify-conformation-shot.jpg"],
+  ["Munnings", "https://media.coolmore.com/uploads/2025/10/Munnings-conformation-shot.jpg"],
+  ["Practical Joke", "https://media.coolmore.com/uploads/2025/10/Practical-Joke-conformation-shot.jpg"],
+  ["Sierra Leone", "https://media.coolmore.com/uploads/2025/10/Sierra-Leone-Conformation-2026.jpg"],
+];
+
 export async function conformationPhotoFor(name: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {
   const pageUrl = farmPageFor(name);
+  const verified = VERIFIED_CONFORMATION_PHOTOS.find(([n]) => key(n) === key(name));
+  if (verified) return { pageUrl, photoUrl: verified[1] };
   if (!pageUrl) return { pageUrl: null, photoUrl: null };
   const cached = cache.get(pageUrl);
   if (cached && Date.now() - cached.at < TTL_MS) return { pageUrl, photoUrl: cached.value };
