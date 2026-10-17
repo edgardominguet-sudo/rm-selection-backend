@@ -511,6 +511,26 @@ router.get("/stallions/conformation-photo", requireUser, async (req, res) => {
   res.json(req.query.debug === "1" ? await conformationPhotoDebug(name) : await conformationPhotoFor(name));
 });
 
+// Qué padrillos tienen hoy foto lateral (2026-10-17): la app lo usa para
+// saltar, al navegar la comparación hijo/padre, los HIPs cuyo padre no tiene
+// foto. Se consulta en cada apertura (nada queda marcado para siempre: si el
+// haras sube la foto, aparece). Cada padrillo usa la caché de 24 h de
+// `conformationPhotoFor`, así que en régimen normal responde al instante.
+router.get("/stallions/conformation-photos", requireUser, async (_req, res) => {
+  const names = stallionFarmPages().map((p) => p.name);
+  const photos: Record<string, string> = {};
+  let next = 0;
+  const worker = async () => {
+    while (next < names.length) {
+      const name = names[next++];
+      const { photoUrl } = await conformationPhotoFor(name);
+      if (photoUrl) photos[name] = photoUrl;
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  res.json({ photos });
+});
+
 router.get("/stallions/stud-fees", requireUser, async (req, res) => {
   const stallions = await listStudFees();
   res.json({ stallions });
