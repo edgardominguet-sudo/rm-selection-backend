@@ -200,16 +200,27 @@ export async function conformationPhotoFor(name: string): Promise<{ pageUrl: str
   const cached = cache.get(pageUrl);
   if (cached && Date.now() - cached.at < TTL_MS) return { pageUrl, photoUrl: cached.value };
   let photoUrl: string | null = null;
-  try {
-    const response = await fetch(pageUrl, {
-      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (response.ok) photoUrl = pickConformationPhoto(await response.text(), pageUrl, name);
-  } catch {
-    /* sin red o página caída: null, se reintenta en el próximo pedido */
-    return { pageUrl, photoUrl: null };
+  let answered = false;
+  // Un 429/5xx del haras (límite de pedidos, caída) no es "no hay foto":
+  // se reintenta una vez y, si sigue fallando, NO se guarda en caché.
+  for (let attempt = 0; attempt < 2 && !answered; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const response = await fetch(pageUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (response.ok) {
+        photoUrl = pickConformationPhoto(await response.text(), pageUrl, name);
+        answered = true;
+      } else if (response.status === 404 || response.status === 410) {
+        answered = true;
+      }
+    } catch {
+      /* sin red o página caída: se reintenta */
+    }
   }
+  if (!answered) return { pageUrl, photoUrl: null };
   cache.set(pageUrl, { at: Date.now(), value: photoUrl });
   return { pageUrl, photoUrl };
 }
