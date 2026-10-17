@@ -142,8 +142,9 @@ export async function conformationPhotoDebug(name: string) {
 }
 
 /**
- * Foto de conformación verificada a mano para haras cuya página bloquea al
- * servidor (Coolmore responde 403 a pedidos que no vienen de un navegador).
+ * Foto de conformación verificada a mano: haras cuya página bloquea al
+ * servidor (Coolmore responde 403 a pedidos que no vienen de un navegador)
+ * y haras que no rotulan la foto de perfil como "conformation".
  * Tomadas de la página oficial de cada padrillo (oct-2026). Solo enlaces.
  */
 const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
@@ -160,6 +161,35 @@ const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
   ["Munnings", "https://media.coolmore.com/uploads/2025/10/Munnings-conformation-shot.jpg"],
   ["Practical Joke", "https://media.coolmore.com/uploads/2025/10/Practical-Joke-conformation-shot.jpg"],
   ["Sierra Leone", "https://media.coolmore.com/uploads/2025/10/Sierra-Leone-Conformation-2026.jpg"],
+  // Revisadas a ojo (2026-10-17): foto de perfil de pie del propio padrillo,
+  // en haras que no la rotulan como "conformation".
+  ["Two Phil's", "https://www.winstarfarm.com/wp-content/uploads/2023/08/TwoPhils__pm_0898-Resized-1.png"],
+  ["Street Sense", "https://cdn.darleystallions.com/sites/default/files/drupal-media/stallion-images/USA/street-sense/st-sense-739-5021.jpg"],
+  ["Beau Liam", "https://www.airdriestud.com/wp-content/uploads/2024/02/Beau-Liam2_resized9-30-2022-8-49-46-862-1.jpg"],
+  ["Girvin", "https://www.airdriestud.com/wp-content/uploads/2024/02/Girvin_resized9-12-2022-10-50-58-155.jpg"],
+  ["Happy Saver", "https://www.airdriestud.com/wp-content/uploads/2024/02/24_0520_Happy-Saver_mw-1888-scaled.jpg"],
+  ["Highly Motivated", "https://www.airdriestud.com/wp-content/uploads/2024/02/24_0520_Highly-Motivated_mw-1966-scaled.jpg"],
+  ["Annapolis", "https://claibornefarm.com/wp-content/uploads/2024/01/Annapolis.2-e1778770809170.jpg"],
+  ["Johannes", "https://claibornefarm.com/wp-content/uploads/2025/11/Johannes.jpg"],
+  ["Bright Future", "https://claibornefarm.com/wp-content/uploads/2024/10/20250514-2205.jpg"],
+  ["Mindframe", "https://claibornefarm.com/wp-content/uploads/2025/11/Mindframe.jpg"],
+  ["Prince of Monaco", "https://claibornefarm.com/wp-content/uploads/2024/10/2026-10-08-Prince-of-Monaco-6795.jpg"],
+  ["Casa Creed", "https://images.squarespace-cdn.com/content/v1/60ae5a9fe8089d20ef160c5b/a7c66bc2-577d-4c5a-9934-d0776d7090fa/CasaCreed10-16-24Z10307.JPG"],
+  ["Oscar Performance", "https://images.squarespace-cdn.com/content/v1/60ae5a9fe8089d20ef160c5b/a41f73a1-7d3a-4837-8c21-53ebd539aafb/OscarPerformanceZ647.JPG"],
+  ["Aloha West", "https://images.squarespace-cdn.com/content/v1/60ae5a9fe8089d20ef160c5b/05b29ddd-cdbf-43ba-9e4b-dc164e286e20/thumbnail_AW+final2.jpg"],
+  ["Charge It", "https://gainesway.com/wp-content/uploads/2024/09/ChargeIt_S35_5431_4x3-scaled.jpg"],
+  ["Muth", "https://gainesway.com/wp-content/uploads/2024/11/Muth_S54_5128_4x3-1-scaled.jpg"],
+  ["Elite Power", "https://cms.juddmonte.com/content/uploads/sites/3/2026/09/35977_crop.jpg"],
+  ["Mandaloun", "https://cms.juddmonte.com/content/uploads/sites/3/2022/09/34213-scaled-e1688989522207.jpg"],
+  ["Hightail", "https://www.calumetfarm.com/wp-content/uploads/2019/10/Hightail.png"],
+  ["Ransom the Moon", "https://www.calumetfarm.com/wp-content/uploads/2019/11/RansomTheMoon2.png"],
+  ["Into Mischief", "https://www.spendthriftfarm.com/wp-content/uploads/2018/11/Into-Mischief-2.png"],
+  ["Temple City", "https://www.spendthriftfarm.com/wp-content/uploads/2018/11/Temple-City.png"],
+  ["Baeza", "https://www.spendthriftfarm.com/wp-content/uploads/2026/08/yearling-baeza.jpg"],
+  ["Liam's Map", "https://www.lanesend.com/sites/default/files/inline-images/LiamsMap-Gallery-4-optimized.jpg"],
+  ["Mineshaft", "https://www.lanesend.com/sites/default/files/inline-images/Mineshaft-Gallery-9-optimized.jpg"],
+  ["Tonalist", "https://www.lanesend.com/sites/default/files/inline-images/Tonalist-Gallery-6-optimized.jpg"],
+  ["Not This Time", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Not-This-Time.png"],
 ];
 
 export async function conformationPhotoFor(name: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {
