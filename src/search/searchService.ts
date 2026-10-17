@@ -109,17 +109,20 @@ const HAS_VIDEO_SQL = `h."mediaJson" @> '[{"kind":"video"}]'::jsonb`;
 const CONSIGNOR_NAME_SQL = `COALESCE(NULLIF(btrim("consignorBase"), ''), NULLIF(btrim(regexp_replace(btrim("consignor"), '${AGENT_SUFFIX_SQL_PATTERN}', '', 'i')), ''))`;
 const NAME_COLUMNS = { sire: `"sire"`, dam: `"dam"`, damSire: `"damSire"`, consignor: CONSIGNOR_NAME_SQL } as const;
 
-async function groupedNames(saleId: string, column: string): Promise<FilterValue[]> {
+async function groupedNames(saleId: string, column: string, onlyHipIds: string[] | null = null): Promise<FilterValue[]> {
   // Agrupa sin distinguir mayúsculas/espacios y muestra la variante escrita
   // en mixto si existe ("Into Mischief" antes que "INTO MISCHIEF").
+  // `onlyHipIds` (facetas, 2026-10-16): limita a esos HIPs; null = toda la venta.
   const rows = await db.$queryRawUnsafe<Array<{ v: string; n: number }>>(
     `SELECT (array_agg(btrim(${column}) ORDER BY (btrim(${column}) = upper(btrim(${column}))), btrim(${column})))[1] AS v,
             count(*)::int AS n
        FROM "Hip"
       WHERE "saleId" = $1 AND ${column} IS NOT NULL AND btrim(${column}) <> ''
+        AND ($2::text[] IS NULL OR "id" = ANY($2::text[]))
       GROUP BY upper(btrim(${column}))
       ORDER BY upper(btrim(min(${column}))) ASC`,
-    saleId
+    saleId,
+    onlyHipIds
   );
   return rows.map((r) => ({ value: r.v, count: Number(r.n) }));
 }
@@ -366,14 +369,21 @@ export function buildSaleSearchSummary(rows: Array<{ hipNumber: string; saleResu
 }
 
 /** Busca dentro de UNA venta (solo lectura) para el usuario/organización autenticados. */
-export async function runSaleSearch(ctx: { organizationId: string; userId: string }, req: SaleSearchRequest): Promise<SearchResponse> {
-  const sale = await resolveSale(req.house, req.externalSaleId);
-  const empty: SearchResponse = { total: 0, page: req.page, pageSize: req.pageSize, totalPages: 0, results: [], summary: null };
+type FilterRow = { id: string; hipNumber: string; color: string | null; sire: string | null; saleResultJson: unknown };
+
+/**
+ * ÚNICA fuente de los filtros de Search (2026-10-16): la usan la búsqueda
+ * (`runSaleSearch`) y las listas combinables (`getSearchFacet`), así una
+ * lista nunca ofrece un valor que la búsqueda después no encuentre.
+ * `selected` = todos los filtros salvo OUT (para el resumen de la venta);
+ * `matching` = además el modo OUT, ordenado por HIP.
+ */
+async function filterSaleRows(userId: string | undefined, saleId: string, req: SaleSearchRequest): Promise<{ selected: FilterRow[]; matching: FilterRow[]; speedIndex: Awaited<ReturnType<typeof speedDamIndex>> }> {
   const keys = (list?: string[]) => (list && list.length ? list.map(nameKey) : null);
 
   // Todos los filtros de nombre comparan por clave normalizada
   // (upper + espacios), igual que se agruparon las opciones.
-  const rows = await db.$queryRawUnsafe<Array<{ id: string; hipNumber: string; color: string | null; sire: string | null; saleResultJson: unknown }>>(
+  const rows = await db.$queryRawUnsafe<FilterRow[]>(
     `SELECT h.id, h."hipNumber", h."color", h."sire", h."saleResultJson"
        FROM "Hip" h
       WHERE h."saleId" = $1
@@ -393,7 +403,7 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
              OR ($11 = 'VIDEO' AND ${HAS_VIDEO_SQL})
              OR ($11 = 'BOTH' AND ${HAS_PHOTO_SQL} AND ${HAS_VIDEO_SQL})
              OR ($11 = 'NONE' AND NOT ${HAS_PHOTO_SQL} AND NOT ${HAS_VIDEO_SQL}))`,
-    sale.id,
+    saleId,
     keys(req.sires),
     keys(req.dams),
     keys(req.broodmareSires),
@@ -407,8 +417,8 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
   );
 
   const colorSet = req.colors ? new Set(req.colors) : null;
-  const speedIndex = await speedDamIndex(sale.id);
-  const favoriteIds = req.favorites ? await favoriteHipIdsForSale(ctx.userId, sale.id) : null;
+  const speedIndex = await speedDamIndex(saleId);
+  const favoriteIds = req.favorites ? await favoriteHipIdsForSale(userId, saleId) : null;
   const needsFast = req.fastSire === true || req.fastCross === true;
   const fastKeys = needsFast ? await fastSireKeys() : null;
   const selected = rows
@@ -417,7 +427,6 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
     .filter((r) => !needsFast || (!!r.sire && fastKeys!.has(stallionMatchKey(r.sire))))
     .filter((r) => !req.fastCross || speedIndex[r.hipNumber] !== undefined);
-  const summary = buildSaleSearchSummary(selected);
   const matching = selected
     .filter((r) => {
       if (!req.hideOut && !req.onlyOut) return true;
@@ -425,6 +434,70 @@ export async function runSaleSearch(ctx: { organizationId: string; userId: strin
       return req.onlyOut ? isOut : !isOut;
     })
     .sort((a, b) => compareHips(a.hipNumber, b.hipNumber) || (a.id < b.id ? -1 : 1));
+  return { selected, matching, speedIndex };
+}
+
+export const SEARCH_FACET_FIELDS = ["sire", "dam", "grandsire", "broodmareSire", "consignor", "bredState"] as const;
+export type SearchFacetField = (typeof SEARCH_FACET_FIELDS)[number];
+
+/**
+ * Listas combinables de Search (2026-10-16, pedido de Ramon: "al elegir el
+ * abuelo materno me borra el padre"). Devuelve los valores de UNA lista que
+ * existen entre los HIPs que cumplen TODOS los demás filtros elegidos (el
+ * filtro de la propia lista no cuenta: se puede cambiar de valor), con la
+ * cantidad de HIPs de cada uno en esa combinación. Solo lectura.
+ */
+export async function getSearchFacet(userId: string | undefined, req: SaleSearchRequest, field: SearchFacetField): Promise<FilterValue[]> {
+  const sale = await resolveSale(req.house, req.externalSaleId);
+  const others: SaleSearchRequest = { ...req };
+  switch (field) {
+    case "sire": others.sires = undefined; break;
+    case "dam": others.dams = undefined; break;
+    case "grandsire": others.grandsires = undefined; break;
+    case "broodmareSire": others.broodmareSires = undefined; break;
+    case "consignor": others.consignors = undefined; break;
+    case "bredState": others.bredStates = undefined; break;
+  }
+  const { matching } = await filterSaleRows(userId, sale.id, others);
+  if (matching.length === 0) return [];
+  const ids = matching.map((r) => r.id);
+  switch (field) {
+    case "sire": return groupedNames(sale.id, NAME_COLUMNS.sire, ids);
+    case "dam": return groupedNames(sale.id, NAME_COLUMNS.dam, ids);
+    case "broodmareSire": return groupedNames(sale.id, NAME_COLUMNS.damSire, ids);
+    case "consignor": return groupedNames(sale.id, NAME_COLUMNS.consignor, ids);
+    case "grandsire": {
+      const rows = await db.$queryRawUnsafe<Array<{ v: string; n: number }>>(
+        `SELECT (array_agg(btrim(s."sireName") ORDER BY (btrim(s."sireName") = upper(btrim(s."sireName"))), btrim(s."sireName")))[1] AS v,
+                count(h.id)::int AS n
+           FROM "Hip" h
+           JOIN "Stallion" s ON upper(btrim(s."name")) = upper(btrim(h."sire"))
+          WHERE h."saleId" = $1 AND h."id" = ANY($2::text[]) AND s."sireName" IS NOT NULL AND btrim(s."sireName") <> ''
+          GROUP BY upper(btrim(s."sireName"))
+          ORDER BY upper(btrim(min(s."sireName"))) ASC`,
+        sale.id,
+        ids
+      );
+      return rows.map((r) => ({ value: r.v, count: Number(r.n) }));
+    }
+    case "bredState": {
+      const rows = await db.$queryRawUnsafe<Array<{ v: string; n: number }>>(
+        `SELECT upper(btrim("bredState")) AS v, count(*)::int AS n FROM "Hip"
+          WHERE "saleId" = $1 AND "id" = ANY($2::text[]) AND "bredState" IS NOT NULL AND btrim("bredState") <> ''
+          GROUP BY upper(btrim("bredState")) ORDER BY 2 DESC, 1 ASC`,
+        sale.id,
+        ids
+      );
+      return rows.map((r) => ({ value: r.v, count: Number(r.n) }));
+    }
+  }
+}
+
+export async function runSaleSearch(ctx: { organizationId: string; userId: string }, req: SaleSearchRequest): Promise<SearchResponse> {
+  const sale = await resolveSale(req.house, req.externalSaleId);
+  const empty: SearchResponse = { total: 0, page: req.page, pageSize: req.pageSize, totalPages: 0, results: [], summary: null };
+  const { selected, matching, speedIndex } = await filterSaleRows(ctx.userId, sale.id, req);
+  const summary = buildSaleSearchSummary(selected);
   if (matching.length === 0) return { ...empty, summary };
 
   const totalPages = Math.ceil(matching.length / req.pageSize);

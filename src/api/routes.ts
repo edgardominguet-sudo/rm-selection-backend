@@ -4,7 +4,7 @@ import { Router, Request, Response } from "express";
 import { withAsyncErrors } from "./asyncRouter";
 import { HttpError } from "./errorHandler";
 import { parseSaleSearchRequest, saleStatusOf, SaleResultInput } from "../search/searchLogic";
-import { runSaleSearch, getSaleSearchFilters } from "../search/searchService";
+import { runSaleSearch, getSaleSearchFilters, getSearchFacet, SEARCH_FACET_FIELDS, SearchFacetField } from "../search/searchService";
 import { db } from "../db";
 import { config } from "../config";
 import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
@@ -163,6 +163,17 @@ router.get("/search/filters", requireUser, async (req, res) => {
     throw new HttpError(400, "Faltan parámetros: house, externalSaleId.", "INVALID_SEARCH");
   }
   res.json(await getSaleSearchFilters(house, externalSaleId, req.user?.id));
+});
+
+// Listas combinables (2026-10-16): valores de UNA lista que existen junto
+// con todos los demás filtros elegidos. Mismo cuerpo que /search + "field".
+router.post("/search/facets", requireUser, async (req, res) => {
+  const field = (req.body as { field?: unknown } | undefined)?.field;
+  if (typeof field !== "string" || !(SEARCH_FACET_FIELDS as readonly string[]).includes(field)) {
+    throw new HttpError(400, "'field' debe ser sire, dam, grandsire, broodmareSire, consignor o bredState.", "INVALID_SEARCH");
+  }
+  const request = parseSaleSearchRequest(req.body);
+  res.json({ field, values: await getSearchFacet(req.user?.id, request, field as SearchFacetField) });
 });
 
 router.post("/search", requireUser, async (req, res) => {
