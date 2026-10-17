@@ -22,6 +22,7 @@ import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { fetchAndDownscale } from "../analysis/imageDownscale";
 import { stallionFarmPages } from "../stallionFarmPages";
+import { conformationPhotoFor } from "../stallionConformationPhoto";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "../activeSaleService";
 import {
@@ -500,6 +501,14 @@ router.get("/stallions/first-yearlings", requireUser, async (req, res) => {
 // stallionFarmPages.ts. Solo enlaces: nunca se copian fotos de padrillos.
 router.get("/stallions/farm-pages", requireUser, (_req, res) => {
   res.json({ pages: stallionFarmPages() });
+});
+
+// Foto lateral (conformación) del padrillo, tomada de su página oficial
+// (2026-10-17) — ver stallionConformationPhoto.ts. Solo el enlace.
+router.get("/stallions/conformation-photo", requireUser, async (req, res) => {
+  const name = typeof req.query.name === "string" ? req.query.name.trim() : "";
+  if (!name) throw new HttpError(400, "Falta el parámetro name.", "INVALID_STALLION");
+  res.json(await conformationPhotoFor(name));
 });
 
 router.get("/stallions/stud-fees", requireUser, async (req, res) => {
