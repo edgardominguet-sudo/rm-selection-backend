@@ -21,6 +21,7 @@ import { listEvents, generateReentryEvents } from "../eventService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { fetchAndDownscale } from "../analysis/imageDownscale";
+import { stallionFarmPages } from "../stallionFarmPages";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "../activeSaleService";
 import {
@@ -495,6 +496,12 @@ router.get("/stallions/first-yearlings", requireUser, async (req, res) => {
 // Pedigree.sire de cada Hip. Devuelve solo los padrillos con al menos un
 // dato de fee cargado (ver listStudFees) — nunca inventa un valor para el
 // resto.
+// Página oficial de cada padrillo en su haras (2026-10-17) — ver
+// stallionFarmPages.ts. Solo enlaces: nunca se copian fotos de padrillos.
+router.get("/stallions/farm-pages", requireUser, (_req, res) => {
+  res.json({ pages: stallionFarmPages() });
+});
+
 router.get("/stallions/stud-fees", requireUser, async (req, res) => {
   const stallions = await listStudFees();
   res.json({ stallions });
