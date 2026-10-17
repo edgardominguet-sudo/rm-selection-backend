@@ -15,7 +15,10 @@ import { STALLION_FARM_PAGES } from "./stallionFarmPages";
  * foto equivocada).
  */
 
-const CONFORMATION = /conformation|conform|confo\b|\bconf\b|[-_]cn[-_]|stallion[-_ ]?shot|standing/i;
+// "confo"/"conf" seguidos de algo que no sea letra ("Blame-confo_dell",
+// "Confo_Curlin", "CONF_Essential_Quality"); "cutout" = foto de perfil
+// recortada (Calumet, Spendthrift).
+const CONFORMATION = /conformation|conform|confo(?![a-z])|(?<![a-z])conf(?![a-z])|[-_]cn[-_]|stallion[-_ ]?shot|standing|cutout/i;
 const NOT_CONFORMATION =
   /head[-_ ]?shot|headshot|logo|silk|swatch|pedigree|race[-_ ]?record|paddock|gallery|foal|filly|colt|weanling|yearling|hip[-_ ]?\d|derby|stakes|travers|belmont|breeders|walking|stallplate|plate|nicks|goldmine|\.svg|background|feature|rectangle|social|icon|banner/i;
 
@@ -65,17 +68,48 @@ function candidates(html: string, page: string): Candidate[] {
   return out;
 }
 
-export function pickConformationPhoto(html: string, page: string): string | null {
-  let best: { url: string; score: number } | null = null;
-  for (const c of candidates(html, page)) {
-    const file = decodeURIComponent(c.url.split("?")[0].split("/").pop() ?? "");
+/** Además de <img>: cualquier enlace a imagen escrito en la página (sitios
+ * que arman la galería con JavaScript, ej. Coolmore). */
+function rawImageUrls(html: string): Candidate[] {
+  const decoded = html
+    .replace(/\\u002F/gi, "/")
+    .replace(/\\\//g, "/")
+    .replace(/%2F/gi, "/")
+    .replace(/%3A/gi, ":");
+  const out: Candidate[] = [];
+  for (const m of decoded.matchAll(/https?:\/\/[^"'\s<>()\\]+?\.(?:jpe?g|png|webp)/gi)) out.push({ url: m[0], alt: "" });
+  return out;
+}
+
+const compact = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Elige la foto de conformación DE ESTE padrillo. Muchas páginas muestran
+ * además las de otros padrillos del haras (menú, "ver también"): se exige
+ * el nombre del padrillo en el archivo o el texto alternativo; solo si
+ * ninguna lo tiene y hay UNA sola foto de conformación en la página, se
+ * acepta esa (ej. "FA-2yo-confo.jpg" para Further Ado).
+ */
+export function pickConformationPhoto(html: string, page: string, stallionName = ""): string | null {
+  const name = compact(stallionName.replace(/\s*\([A-Z]{2,3}\)\s*$/, ""));
+  const seen = new Map<string, { url: string; named: boolean; score: number }>();
+  for (const c of [...candidates(html, page), ...rawImageUrls(html)]) {
+    let file = c.url.split("?")[0].split("/").pop() ?? "";
+    try { file = decodeURIComponent(file); } catch { /* nombre tal cual */ }
     const text = `${file} ${c.alt}`;
     if (!CONFORMATION.test(text) || NOT_CONFORMATION.test(text)) continue;
+    const named = name.length > 0 && compact(text).includes(name);
     // Preferir la versión grande (sin sufijo de miniatura "-300x200").
-    const score = 100 - (/-\d{2,4}x\d{2,4}\./.test(file) ? 10 : 0);
-    if (!best || score > best.score) best = { url: c.url, score };
+    const score = (named ? 100 : 0) + (/-\d{2,4}x\d{2,4}\./.test(file) ? 0 : 10);
+    // Misma foto en otro tamaño cuenta una sola vez.
+    const base = file.replace(/-\d{2,4}x\d{2,4}(?=\.)/, "").replace(/-scaled(?=\.)/, "").toLowerCase();
+    const prev = seen.get(base);
+    if (!prev || score > prev.score) seen.set(base, { url: c.url, named, score });
   }
-  return best?.url ?? null;
+  const all = [...seen.values()];
+  const named = all.filter((c) => c.named).sort((a, b) => b.score - a.score);
+  if (named.length) return named[0].url;
+  return all.length === 1 ? all[0].url : null;
 }
 
 export async function conformationPhotoFor(name: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {
@@ -89,7 +123,7 @@ export async function conformationPhotoFor(name: string): Promise<{ pageUrl: str
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" },
       signal: AbortSignal.timeout(15_000),
     });
-    if (response.ok) photoUrl = pickConformationPhoto(await response.text(), pageUrl);
+    if (response.ok) photoUrl = pickConformationPhoto(await response.text(), pageUrl, name);
   } catch {
     /* sin red o página caída: null, se reintenta en el próximo pedido */
     return { pageUrl, photoUrl: null };
