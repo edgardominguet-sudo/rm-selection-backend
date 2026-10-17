@@ -20,6 +20,7 @@ import { reentryIndex, reentryCheck } from "../reentryService";
 import { listEvents, generateReentryEvents } from "../eventService";
 import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
+import { fetchAndDownscale } from "../analysis/imageDownscale";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "../activeSaleService";
 import {
@@ -1143,6 +1144,64 @@ router.put("/me/media/:id/confirm", requireUser, async (req, res) => {
   }
   broadcastChange("media", asset.deviceId);
   res.json(updated);
+});
+
+// FOTO DE MEDIA → ANÁLISIS IA, SIN SUBIDA DESDE EL EQUIPO (2026-10-17,
+// Ramon: "por qué tarda tanto cuando mandas una foto de Media a análisis").
+// Antes el equipo bajaba la foto del catálogo (3–6 MB) y la volvía a SUBIR
+// al servidor — con señal celular eso tardaba decenas de segundos o se
+// cortaba. La foto ya es pública en el catálogo: el servidor la toma él
+// mismo (red de datacenter, < 1 s), la reduce a 2048 px y la guarda como
+// foto de Análisis IA con el MISMO id que el equipo. Solo se aceptan
+// fotos que el catálogo de ESE Hip publica (nunca una URL arbitraria).
+router.post("/me/media/import-catalog-photo", requireUser, async (req, res) => {
+  const { id, hipId, sourceUrl, deviceId, conformationView } = req.body as {
+    id?: string;
+    hipId?: string;
+    sourceUrl?: string;
+    deviceId?: string;
+    conformationView?: string;
+  };
+  if (!id || !hipId || !sourceUrl) throw new HttpError(400, "Faltan campos requeridos: id, hipId, sourceUrl.", "INVALID_MEDIA");
+  const hip = await db.hip.findUnique({ where: { id: hipId }, select: { id: true, mediaJson: true } });
+  if (!hip) throw new HttpError(404, "Hip no encontrado.", "NOT_FOUND");
+  const catalogPhotos = Array.isArray(hip.mediaJson) ? (hip.mediaJson as Array<{ kind?: string; url?: string }>) : [];
+  if (!catalogPhotos.some((m) => m.kind === "photo" && m.url === sourceUrl)) {
+    throw new HttpError(400, "La foto no pertenece al catálogo de este Hip.", "INVALID_MEDIA");
+  }
+  const existing = await db.mediaAsset.findFirst({ where: { id } });
+  if (existing?.deletedAt) {
+    res.status(409).json({ error: "MediaAsset ya fue eliminado; no se puede recrear con el mismo id.", deletedAt: existing.deletedAt });
+    return;
+  }
+  if (existing?.uploadStatus === "PROCESSED") {
+    res.json(existing);
+    return;
+  }
+  const started = Date.now();
+  const jpeg = await fetchAndDownscale(sourceUrl, 2048, 88);
+  if (!jpeg) throw new HttpError(502, "No se pudo leer la foto del catálogo.", "CATALOG_FETCH_FAILED");
+  const contentType = "image/jpeg";
+  const kind = "AI_ANALYSIS_PHOTO" as const;
+  const storageKey = buildStorageKey({ organizationId: req.user!.organizationId, hipId, kind, mediaAssetId: id, contentType });
+  const upstream = await fetch(createUploadUrl(storageKey), { method: "PUT", body: jpeg, headers: { "Content-Type": contentType } });
+  if (!upstream.ok) throw new HttpError(502, `Almacenamiento respondió ${upstream.status}.`, "STORAGE_FAILED");
+  const data = {
+    userId: req.user!.id,
+    organizationId: req.user!.organizationId,
+    hipId,
+    deviceId,
+    kind,
+    contentType,
+    byteSize: jpeg.length,
+    storageKey,
+    conformationView,
+    uploadStatus: "PROCESSED" as const,
+  };
+  const asset = await db.mediaAsset.upsert({ where: { id }, create: { id, ...data }, update: data });
+  console.log(`[media] Hip ${hipId}: foto de catálogo importada a Análisis IA (${jpeg.length} bytes) en ${Date.now() - started} ms`);
+  broadcastChange("media", deviceId);
+  res.json(asset);
 });
 
 // Delta — mismo patrón que /me/decisions y /me/observations. Solo se
