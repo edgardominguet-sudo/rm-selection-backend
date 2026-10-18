@@ -256,9 +256,9 @@ async function lookUpConformationPhoto(name: string, pageUrl: string): Promise<{
       if (response.ok) {
         photoUrl = pickConformationPhoto(await response.text(), pageUrl, name);
         answered = true;
-      } else if (response.status === 403 || response.status === 404 || response.status === 410) {
-        // 403: el haras no deja leer la página al servidor (Coolmore) — es
-        // una respuesta definitiva, no una falla pasajera.
+      } else if (response.status === 404 || response.status === 410) {
+        // (403 NO es definitivo: un haras puede bloquear un rato por exceso
+        // de pedidos — se reintenta a los 10 min, mientras tanto "sin foto".)
         answered = true;
       }
     } catch {
