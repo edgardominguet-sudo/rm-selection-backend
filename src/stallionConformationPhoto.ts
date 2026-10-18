@@ -191,6 +191,8 @@ const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
   ["Tonalist", "https://www.lanesend.com/sites/default/files/inline-images/Tonalist-Gallery-6-optimized.jpg"],
   ["Not This Time", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Not-This-Time.png"],
   ["Tiz the Law", "https://media.coolmore.com/uploads/2025/10/Tiz-The-Law.jpg"],
+  ["Blame", "https://claibornefarm.com/wp-content/uploads/2024/07/2024-06-24_Blame-confo_dell-1.jpg"],
+  ["War Front", "https://claibornefarm.com/wp-content/uploads/2024/07/2024-06-24_War-Front-confo_dell-1.jpg"],
   ["Knicks Go", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Knicks-Go.png"],
   ["Tacitus", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Tacitus.png"],
 ];
