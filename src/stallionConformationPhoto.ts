@@ -190,6 +190,9 @@ const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
   ["Mineshaft", "https://www.lanesend.com/sites/default/files/inline-images/Mineshaft-Gallery-9-optimized.jpg"],
   ["Tonalist", "https://www.lanesend.com/sites/default/files/inline-images/Tonalist-Gallery-6-optimized.jpg"],
   ["Not This Time", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Not-This-Time.png"],
+  ["Tiz the Law", "https://media.coolmore.com/uploads/2025/10/Tiz-The-Law.jpg"],
+  ["Knicks Go", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Knicks-Go.png"],
+  ["Tacitus", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Tacitus.png"],
 ];
 
 export async function conformationPhotoFor(name: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {
