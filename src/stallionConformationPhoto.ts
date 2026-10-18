@@ -256,7 +256,9 @@ async function lookUpConformationPhoto(name: string, pageUrl: string): Promise<{
       if (response.ok) {
         photoUrl = pickConformationPhoto(await response.text(), pageUrl, name);
         answered = true;
-      } else if (response.status === 404 || response.status === 410) {
+      } else if (response.status === 403 || response.status === 404 || response.status === 410) {
+        // 403: el haras no deja leer la página al servidor (Coolmore) — es
+        // una respuesta definitiva, no una falla pasajera.
         answered = true;
       }
     } catch {
@@ -278,5 +280,7 @@ export function conformationPhotoKnown(name: string): boolean {
   const pageUrl = farmPageFor(name);
   if (!pageUrl) return true;
   const cached = cache.get(pageUrl);
-  return !!cached && Date.now() - cached.at < TTL_MS;
+  if (cached && Date.now() - cached.at < TTL_MS) return true;
+  const failedAt = unanswered.get(pageUrl);
+  return !!failedAt && Date.now() - failedAt < RETRY_MS;
 }

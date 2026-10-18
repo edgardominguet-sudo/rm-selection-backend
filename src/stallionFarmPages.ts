@@ -95,7 +95,8 @@ export const STALLION_FARM_PAGES: ReadonlyArray<readonly [string, string]> = [
   ["Jonathan's Way", "https://www.airdriestud.com/horse/jonathans-way/"],
   ["Mage", "https://www.airdriestud.com/horse/mage/"],
   ["Mystik Dan", "https://www.airdriestud.com/horse/mystik-dan/"],
-  ["Upstart", "https://www.airdriestud.com/horse/upstart/"],
+  // Upstart: su página en airdriestud.com sirve hoy contenido ajeno (spam,
+  // revisado 2026-10-17) — se quita hasta que el haras la repare.
   ["Annapolis", "https://claibornefarm.com/stallions/annapolis/"],
   ["Blame", "https://claibornefarm.com/stallions/blame/"],
   ["Bright Future", "https://claibornefarm.com/stallions/bright-future/"],
