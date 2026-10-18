@@ -195,6 +195,12 @@ const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
   ["Tacitus", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Tacitus.png"],
 ];
 
+/** Un solo pedido al haras por página aunque lleguen varios a la vez. */
+const inFlight = new Map<string, Promise<{ pageUrl: string | null; photoUrl: string | null }>>();
+/** Haras que no respondió: no se vuelve a intentar por 10 min (no se guarda como "sin foto"). */
+const unanswered = new Map<string, number>();
+const RETRY_MS = 10 * 60 * 1000;
+
 export async function conformationPhotoFor(name: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {
   const pageUrl = farmPageFor(name);
   const verified = VERIFIED_CONFORMATION_PHOTOS.find(([n]) => key(n) === key(name));
@@ -202,6 +208,16 @@ export async function conformationPhotoFor(name: string): Promise<{ pageUrl: str
   if (!pageUrl) return { pageUrl: null, photoUrl: null };
   const cached = cache.get(pageUrl);
   if (cached && Date.now() - cached.at < TTL_MS) return { pageUrl, photoUrl: cached.value };
+  const failedAt = unanswered.get(pageUrl);
+  if (failedAt && Date.now() - failedAt < RETRY_MS) return { pageUrl, photoUrl: null };
+  const running = inFlight.get(pageUrl);
+  if (running) return running;
+  const task = lookUpConformationPhoto(name, pageUrl).finally(() => inFlight.delete(pageUrl));
+  inFlight.set(pageUrl, task);
+  return task;
+}
+
+async function lookUpConformationPhoto(name: string, pageUrl: string): Promise<{ pageUrl: string | null; photoUrl: string | null }> {
   let photoUrl: string | null = null;
   let answered = false;
   // Un 429/5xx del haras (límite de pedidos, caída) no es "no hay foto":
@@ -223,7 +239,20 @@ export async function conformationPhotoFor(name: string): Promise<{ pageUrl: str
       /* sin red o página caída: se reintenta */
     }
   }
-  if (!answered) return { pageUrl, photoUrl: null };
+  if (!answered) {
+    unanswered.set(pageUrl, Date.now());
+    return { pageUrl, photoUrl: null };
+  }
+  unanswered.delete(pageUrl);
   cache.set(pageUrl, { at: Date.now(), value: photoUrl });
   return { pageUrl, photoUrl };
+}
+
+/** ¿Ya se sabe (en caché) la respuesta de este padrillo? */
+export function conformationPhotoKnown(name: string): boolean {
+  if (VERIFIED_CONFORMATION_PHOTOS.some(([n]) => key(n) === key(name))) return true;
+  const pageUrl = farmPageFor(name);
+  if (!pageUrl) return true;
+  const cached = cache.get(pageUrl);
+  return !!cached && Date.now() - cached.at < TTL_MS;
 }
