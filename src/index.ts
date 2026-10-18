@@ -19,6 +19,8 @@ import { attachRealtime } from "./realtime";
 import { withAsyncErrors } from "./api/asyncRouter";
 import { apiErrorHandler } from "./api/errorHandler";
 import { installProcessSafetyNet } from "./processSafety";
+import { warmConformationPhotos } from "./stallionConformationPhoto";
+import { stallionFarmPages } from "./stallionFarmPages";
 import { mediaRelayBodyParser, handleMediaRelayUpload } from "./storage/mediaRelay";
 
 // Red de seguridad del proceso (2026-09-26) — ver processSafety.ts.
@@ -313,6 +315,7 @@ app.use("/api/v1", requireApiKey, noStoreMiddleware, router);
 app.use(apiErrorHandler);
 
 const server = app.listen(config.port, () => {
+  warmConformationPhotos(stallionFarmPages().map((p) => p.name));
   console.log(`[server] RM Selection backend escuchando en el puerto ${config.port}`);
   startScheduler();
   startNightlySyncScheduler();

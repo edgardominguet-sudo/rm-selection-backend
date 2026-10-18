@@ -22,7 +22,7 @@ import { ViewName } from "../analysis/landmarks";
 import { resolveVimeoPlayableUrl, vimeoIdFromUrl } from "../analysis/frameExtraction";
 import { fetchAndDownscale } from "../analysis/imageDownscale";
 import { stallionFarmPages } from "../stallionFarmPages";
-import { conformationPhotoFor, conformationPhotoDebug } from "../stallionConformationPhoto";
+import { conformationPhotoFor, conformationPhotoDebug, conformationPhotoKnown } from "../stallionConformationPhoto";
 import { runNightlyMediaSweep } from "../mediaSweepService";
 import { resolveActiveSaleForAutomation, getSaleLifecycleStatus } from "../activeSaleService";
 import {
@@ -517,25 +517,21 @@ router.get("/stallions/conformation-photo", requireUser, async (req, res) => {
 // haras sube la foto, aparece). Cada padrillo usa la caché de 24 h de
 // `conformationPhotoFor`, así que en régimen normal responde al instante.
 router.get("/stallions/conformation-photos", requireUser, async (_req, res) => {
-  // Responde en ≤ 8 s con lo que ya se sabe; lo que todavía se está
-  // consultando a los haras va en `pending` (la app no lo salta) y queda
-  // listo para el próximo pedido.
-  const names = stallionFarmPages().map((p) => p.name);
+  // Responde al instante con lo que ya se sabe (fotos verificadas y caché,
+  // que el servidor precalienta al arrancar). Lo que todavía se está
+  // consultando a los haras va en `pending`: la app no lo salta.
   const photos: Record<string, string> = {};
-  const done = new Set<string>();
-  let next = 0;
-  const worker = async () => {
-    while (next < names.length) {
-      const name = names[next++];
+  const pending: string[] = [];
+  for (const { name } of stallionFarmPages()) {
+    if (conformationPhotoKnown(name)) {
       const { photoUrl } = await conformationPhotoFor(name);
       if (photoUrl) photos[name] = photoUrl;
-      done.add(name);
+    } else {
+      pending.push(name);
+      void conformationPhotoFor(name).catch(() => undefined);
     }
-  };
-  const all = Promise.all(Array.from({ length: 8 }, worker));
-  await Promise.race([all, new Promise((r) => setTimeout(r, 8000))]);
-  const pending = names.filter((n) => !done.has(n) && !photos[n]);
-  res.json({ photos: { ...photos }, pending });
+  }
+  res.json({ photos, pending });
 });
 
 router.get("/stallions/stud-fees", requireUser, async (req, res) => {

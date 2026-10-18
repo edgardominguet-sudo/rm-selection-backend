@@ -195,6 +195,30 @@ const VERIFIED_CONFORMATION_PHOTOS: ReadonlyArray<readonly [string, string]> = [
   ["Tacitus", "https://www.taylormadestallions.com/wp-content/uploads/2023/08/Tacitus.png"],
 ];
 
+/** Como mucho 4 páginas de haras a la vez (evita que los haras corten por exceso de pedidos). */
+let activeFarmRequests = 0;
+const waitingFarmRequests: Array<() => void> = [];
+async function withFarmSlot<T>(job: () => Promise<T>): Promise<T> {
+  if (activeFarmRequests >= 4) await new Promise<void>((r) => waitingFarmRequests.push(r));
+  activeFarmRequests++;
+  try {
+    return await job();
+  } finally {
+    activeFarmRequests--;
+    waitingFarmRequests.shift()?.();
+  }
+}
+
+/**
+ * Precalienta la caché de fotos de todos los padrillos (al arrancar el
+ * servidor y cada 12 h), para que la app tenga la lista completa al instante.
+ */
+export function warmConformationPhotos(names: string[]): void {
+  const run = () => { for (const name of names) void conformationPhotoFor(name).catch(() => undefined); };
+  setTimeout(run, 5_000);
+  setInterval(run, 12 * 60 * 60 * 1000).unref?.();
+}
+
 /** Un solo pedido al haras por página aunque lleguen varios a la vez. */
 const inFlight = new Map<string, Promise<{ pageUrl: string | null; photoUrl: string | null }>>();
 /** Haras que no respondió: no se vuelve a intentar por 10 min (no se guarda como "sin foto"). */
@@ -212,7 +236,7 @@ export async function conformationPhotoFor(name: string): Promise<{ pageUrl: str
   if (failedAt && Date.now() - failedAt < RETRY_MS) return { pageUrl, photoUrl: null };
   const running = inFlight.get(pageUrl);
   if (running) return running;
-  const task = lookUpConformationPhoto(name, pageUrl).finally(() => inFlight.delete(pageUrl));
+  const task = withFarmSlot(() => lookUpConformationPhoto(name, pageUrl)).finally(() => inFlight.delete(pageUrl));
   inFlight.set(pageUrl, task);
   return task;
 }
