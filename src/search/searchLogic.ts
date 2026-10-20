@@ -62,6 +62,9 @@ export interface SaleSearchRequest {
   onlyOut?: boolean;
   /** Solo los favoritos del usuario (2026-10-11, pedido de Ramon). */
   favorites?: boolean;
+  /** Precio de venta (2026-10-20, pedido de Ramon): solo vendidos dentro del rango, en dólares. */
+  priceMin?: number;
+  priceMax?: number;
   page: number;
   pageSize: number;
 }
@@ -106,6 +109,22 @@ function optInt(v: unknown, name: string, min: number, max: number): number | un
 }
 
 /** Valida el pedido de búsqueda de UNA venta. Errores -> HttpError 400 "INVALID_SEARCH". */
+function optPrice(v: unknown, name: string): number | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(n) || n < 0 || n > 100_000_000) bad(`'${name}' debe ser un precio válido.`);
+  return n;
+}
+
+/** ¿El HIP se vendió dentro del rango de precio pedido? Sin rango: siempre sí. */
+export function matchesPriceRange(price: number | null, min?: number, max?: number): boolean {
+  if (min === undefined && max === undefined) return true;
+  if (price === null) return false;
+  if (min !== undefined && price < min) return false;
+  if (max !== undefined && price > max) return false;
+  return true;
+}
+
 export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
   if (!body || typeof body !== "object" || Array.isArray(body)) bad("El pedido de búsqueda debe ser un objeto JSON.");
   const b = body as Record<string, unknown>;
@@ -137,10 +156,15 @@ export function parseSaleSearchRequest(body: unknown): SaleSearchRequest {
     hideOut: b.hideOut === true ? true : undefined,
     onlyOut: b.onlyOut === true ? true : undefined,
     favorites: b.favorites === true ? true : undefined,
+    priceMin: optPrice(b.priceMin, "priceMin"),
+    priceMax: optPrice(b.priceMax, "priceMax"),
     page: optInt(b.page, "page", 1, 100000) ?? 1,
     pageSize: optInt(b.pageSize, "pageSize", 1, SEARCH_MAX_PAGE_SIZE) ?? SEARCH_DEFAULT_PAGE_SIZE,
   };
   if (req.dobFrom && req.dobTo && req.dobFrom > req.dobTo) bad("'dobFrom' no puede ser posterior a 'dobTo'.");
+  if (req.priceMin !== undefined && req.priceMax !== undefined && req.priceMin > req.priceMax) {
+    bad("'priceMin' no puede ser mayor que 'priceMax'.");
+  }
   return req;
 }
 

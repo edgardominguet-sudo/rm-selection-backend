@@ -36,6 +36,7 @@ import {
   compareHips,
   paginate,
   SaleResultInput,
+  matchesPriceRange,
 } from "./searchLogic";
 
 const ANALYSIS_CHUNK = 500;
@@ -426,7 +427,8 @@ async function filterSaleRows(userId: string | undefined, saleId: string, req: S
     .filter((r) => !colorSet || colorSet.has(normalizeColor(r.color) ?? ""))
     .filter((r) => !req.speedDam || speedIndex[r.hipNumber] !== undefined)
     .filter((r) => !needsFast || (!!r.sire && fastKeys!.has(stallionMatchKey(r.sire))))
-    .filter((r) => !req.fastCross || speedIndex[r.hipNumber] !== undefined);
+    .filter((r) => !req.fastCross || speedIndex[r.hipNumber] !== undefined)
+    .filter((r) => matchesPriceRange(salePriceOf(r.saleResultJson as SaleResultInput | null), req.priceMin, req.priceMax));
   const matching = selected
     .filter((r) => {
       if (!req.hideOut && !req.onlyOut) return true;
