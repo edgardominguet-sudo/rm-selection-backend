@@ -51,6 +51,11 @@ interface RawEntry {
   // weanling, "B" broodmare…), no un resultado.
   out?: boolean | null;
   out_date?: string | null;
+  // POST SALE (2026-10-20, Ramon: "los PS se registran como vendidos en el
+  // Ring"). Fasig-Tipton marca la venta privada después del ring con este
+  // booleano; price/purchaser traen el precio y comprador de esa venta.
+  // Confirmado en Kentucky October 2026: hips 10, 39, 180, 251, 296, 342, 433.
+  private_sale?: boolean | null;
 }
 
 function buildMedia(entry: RawEntry): CatalogMediaItem[] {
@@ -70,6 +75,12 @@ function buildMedia(entry: RawEntry): CatalogMediaItem[] {
   add(entry.enhanced_featured_video, "video");
 
   return items;
+}
+
+function isPostSale(entry: RawEntry): boolean {
+  if (entry.private_sale !== true || entry.out === true) return false;
+  const price = Number((entry.price ?? "").replace(/[$,\s]/g, ""));
+  return Number.isFinite(price) && price > 0;
 }
 
 function normalize(entry: RawEntry): NormalizedHip {
@@ -92,7 +103,9 @@ function normalize(entry: RawEntry): NormalizedHip {
       ? {
           priceRaw: entry.price ?? undefined,
           purchaser: isOut ? "OUT" : entry.purchaser ?? undefined,
-          soldAsCode: entry.sold_as_code ?? undefined,
+          // "PS" = mismo código que ya usan Keeneland y OBS: toda la app lo
+          // muestra como "PS $35,000" y lo cuenta como vendido.
+          soldAsCode: isPostSale(entry) ? "PS" : entry.sold_as_code ?? undefined,
         }
       : undefined,
   };
