@@ -1,4 +1,5 @@
 import { Sale } from "@prisma/client";
+import { getSaleResults } from "./saleResultsService";
 import { consignorBaseName } from "./catalogNames";
 import { enrichGrandSiresFromPedigreePdfs } from "./grandSireEnrichment";
 import { db } from "./db";
@@ -1466,6 +1467,8 @@ export async function syncLivePricesForSale(sale: Sale): Promise<{ hipsUpdated: 
   } catch (err) {
     console.error(`[events] Error registrando aviso de OUT de "${sale.name}":`, err);
   }
+  // Anota el avance del ring (ritmo para la hora estimada de favoritos).
+  void getSaleResults(sale).catch(() => undefined);
   return { hipsUpdated };
 }
 

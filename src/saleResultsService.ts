@@ -1,7 +1,7 @@
 import { db } from "./db";
 import type { Sale } from "@prisma/client";
 import { getSaleLifecycleStatus } from "./activeSaleService";
-import { rnaReserveAmountOf } from "./search/searchLogic";
+import { rnaReserveAmountOf, saleStatusOf } from "./search/searchLogic";
 
 /**
  * "Resultados" (2026-09-30, pedido de Ramon: "una ventana de resultados de
@@ -34,6 +34,20 @@ export interface SaleResultRow {
   rnaAmount: number | null;
   /** true = está en Favoritos del usuario (se muestra en verde). */
   isFavorite: boolean;
+  /** Barn del catálogo (2026-10-20, Próximos favoritos al ring). */
+  barn: string | null;
+  /** Decisión del usuario: "Comprar" | "Revisar" | "Descartar" | null. */
+  decision: string | null;
+}
+
+/** Ritmo real del ring HOY: minutos por lote, medido por el servidor. */
+export interface RingPace {
+  day: string;
+  minutesPerLot: number;
+  /** Lote (en orden de ring, sin retirados) del último HIP que ya salió. */
+  lastLot: number;
+  /** Cuándo se vio ese último lote por primera vez. */
+  observedAt: string;
 }
 
 export interface SaleResultsResponse {
@@ -41,6 +55,39 @@ export interface SaleResultsResponse {
   status: "UPCOMING" | "ACTIVE" | "COMPLETED";
   generatedAt: string;
   rows: SaleResultRow[];
+  ringPace: RingPace | null;
+}
+
+// ---------------------------------------------------------------------------
+// Ritmo del ring (2026-10-20, Ramon: hora estimada de salida de cada
+// favorito). Cada vez que se arma la lista (pedido de la app cada 2 min, y
+// el ciclo de precios en vivo cada 10) se anota en qué lote va el ring y
+// cuándo se vio por primera vez. Minutos por lote = tiempo / lotes entre la
+// observación más vieja de los últimos 90 min y la más nueva. Solo memoria:
+// tras un reinicio del servidor se recupera solo en ~20 min.
+// ---------------------------------------------------------------------------
+const paceObservations = new Map<string, Array<{ t: number; lot: number }>>();
+
+function recordRingLot(key: string, lot: number, now: number) {
+  const list = paceObservations.get(key) ?? [];
+  const last = list[list.length - 1];
+  if (last && lot < last.lot) list.length = 0; // datos corregidos: se empieza de nuevo
+  if (!last || lot > last.lot || list.length === 0) list.push({ t: now, lot });
+  while (list.length > 0 && now - list[0].t > 3 * 60 * 60 * 1000) list.shift();
+  paceObservations.set(key, list);
+}
+
+function ringPaceFor(key: string, day: string, now: number): RingPace | null {
+  const list = paceObservations.get(key);
+  if (!list || list.length < 2) return null;
+  const newest = list[list.length - 1];
+  const window = list.filter((o) => now - o.t <= 90 * 60 * 1000);
+  const oldest = window.length >= 2 ? window[0] : list[0];
+  const lots = newest.lot - oldest.lot;
+  const minutes = (newest.t - oldest.t) / 60000;
+  if (lots < 4 || minutes < 8) return null;
+  const minutesPerLot = Math.min(8, Math.max(0.5, minutes / lots));
+  return { day, minutesPerLot: Math.round(minutesPerLot * 100) / 100, lastLot: newest.lot, observedAt: new Date(newest.t).toISOString() };
 }
 
 const etDay = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
@@ -75,14 +122,15 @@ export async function getSaleResults(sale: Sale, userId?: string): Promise<SaleR
       consignorBase: true,
       sessionDate: true,
       saleResultJson: true,
+      barn: true,
     },
   });
 
-  const favoriteIds = new Set(
-    userId
-      ? (await db.userDecision.findMany({ where: { userId, hip: { saleId: sale.id }, deletedAt: null }, select: { hipId: true } })).map((d) => d.hipId)
-      : []
-  );
+  const decisions = userId
+    ? await db.userDecision.findMany({ where: { userId, hip: { saleId: sale.id }, deletedAt: null }, select: { hipId: true, finalCall: true } })
+    : [];
+  const favoriteIds = new Set(decisions.map((d) => d.hipId));
+  const decisionByHip = new Map(decisions.map((d) => [d.hipId, d.finalCall]));
   const rows: SaleResultRow[] = hips.map((hip) => {
     const result = (hip.saleResultJson ?? null) as Record<string, unknown> | null;
     return {
@@ -102,6 +150,8 @@ export async function getSaleResults(sale: Sale, userId?: string): Promise<SaleR
       soldAsCode: result ? str(result.soldAsCode) : null,
       rnaAmount: result ? rnaReserveAmountOf({ priceRaw: str(result.priceRaw), purchaser: str(result.purchaser), soldAsCode: str(result.soldAsCode) }) : null,
       isFavorite: favoriteIds.has(hip.id),
+      barn: hip.barn?.trim() || null,
+      decision: decisionByHip.get(hip.id) ?? null,
     };
   });
 
@@ -111,10 +161,26 @@ export async function getSaleResults(sale: Sale, userId?: string): Promise<SaleR
     return na !== nb ? na - nb : sa.localeCompare(sb);
   });
 
+  // Ritmo del ring de HOY: lote (sin retirados) del último HIP que ya salió.
+  const now = Date.now();
+  const today = etDay.format(new Date(now));
+  let lot = 0;
+  let lastLot = 0;
+  for (const row of rows) {
+    if (row.day !== today) continue;
+    const status = saleStatusOf({ priceRaw: row.priceRaw, purchaser: row.purchaser, soldAsCode: row.soldAsCode });
+    if (status === "OUT") continue;
+    lot += 1;
+    if (status === "SOLD" || status === "RNA") lastLot = lot;
+  }
+  const paceKey = `${sale.id}|${today}`;
+  if (lastLot > 0) recordRingLot(paceKey, lastLot, now);
+
   return {
     saleName: sale.name,
     status: getSaleLifecycleStatus(sale as unknown as { startDate: Date | null; endDate: Date | null }),
     generatedAt: new Date().toISOString(),
     rows,
+    ringPace: lastLot > 0 ? ringPaceFor(paceKey, today, now) : null,
   };
 }
