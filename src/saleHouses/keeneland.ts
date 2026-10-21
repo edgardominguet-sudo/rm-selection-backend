@@ -148,7 +148,15 @@ function normalize(entry: RawEntry): NormalizedHip {
   const rawPrice = entry.field_price?.trim();
   const priceNumber = rawPrice ? Number(rawPrice) : NaN;
   const hasRealPrice = !!rawPrice && Number.isFinite(priceNumber) && priceNumber > 0;
-  const isRna = entry.field_rna_indicator?.trim().toUpperCase() === "Y";
+  const rnaIndicator = entry.field_rna_indicator?.trim().toUpperCase();
+  const isRna = rnaIndicator === "Y";
+  // POST SALE (2026-10-20, Ramon: regla general de todas las casas — un
+  // caballo negociado debajo del ring es "PS"). Keeneland lo marca con
+  // field_rna_indicator = "P" (pasó como RNA y se vendió después) y trae
+  // en field_price / field_buyer_name el precio y comprador de esa venta.
+  // Confirmado: 178 HIPs "P" en September Yearling Sale 2026 (ej. Hip 13,
+  // $200,000, Red Wings Enterprises).
+  const isPostSale = rnaIndicator === "P";
   const isOut = entry.field_out?.trim().toUpperCase() === "Y";
 
   const hasSaleResult =
@@ -176,7 +184,7 @@ function normalize(entry: RawEntry): NormalizedHip {
           ? {
                       priceRaw: hasRealPrice ? rawPrice : undefined,
                       purchaser: entry.field_buyer_name || undefined,
-                      soldAsCode: isRna ? "RNA" : isOut ? "OUT" : undefined,
+                      soldAsCode: isRna ? "RNA" : isOut ? "OUT" : isPostSale && hasRealPrice ? "PS" : undefined,
           }
                 : undefined,
   };

@@ -197,7 +197,10 @@ export function parseManualCatalogCsv(csvText: string): ManualCatalogParseResult
 
     const priceRaw = get("price");
     const purchaser = get("purchaser");
-    const soldAsCode = get("soldAsCode");
+    // Post Sale en cualquier forma ("P", "Post Sale", "Private Sale"...) se
+    // guarda como "PS", igual que en las demás casas (2026-10-20).
+    const soldAsCodeRaw = get("soldAsCode");
+    const soldAsCode = soldAsCodeRaw && /^(P|PS|POST[\s-]?SALE|PRIVATE[\s-]?SALE)$/i.test(soldAsCodeRaw.trim()) ? "PS" : soldAsCodeRaw;
     const saleResult: SaleResultData | undefined =
       priceRaw || purchaser || soldAsCode ? { priceRaw, purchaser, soldAsCode } : undefined;
 

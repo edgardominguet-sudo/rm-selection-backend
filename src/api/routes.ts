@@ -11,7 +11,7 @@ import { setReferenceHorse, getReferenceHorse } from "../referenceHorse";
 import { requireUser } from "./auth";
 import { resolveSaleHistoryForHip, readSaleHistory, saleHistoryIndex } from "../saleHistoryService";
 import { listFirstYearlingStallions, listStudFees } from "../stallionService";
-import { analyzeHipOnDemand, syncCatalog } from "../rankingService";
+import { analyzeHipOnDemand, syncCatalog, syncLivePricesForSale } from "../rankingService";
 import { startOfCalendarDay } from "../util/easternCalendarDay";
 import { getRnaDelDia, getRnaDelDiaForDay, getRnaDelDiaToday } from "../rnaOfTheDayService";
 import { getSaleResults } from "../saleResultsService";
@@ -1643,6 +1643,21 @@ router.post("/sales/:saleId/catalog/resync", async (req, res) => {
 // en vez del id interno (los mismos datos públicos que ya expone GET
 // /sales). Pensada para poder forzar el chequeo a mano sin herramientas
 // adicionales, ej. GET /api/v1/sales/resync?house=KEENELAND&externalSaleId=12.
+// Corrección de RESULTADOS (precio / comprador / RNA / PS / OUT) de una
+// venta, incluso ya terminada (2026-10-20, Ramon: los Post Sale deben
+// figurar como PS en todas las ventas). Solo reescribe saleResult — nunca
+// catálogo, media, pedigree ni el estado de la venta (sigue inactiva).
+router.get("/sales/results/refresh", requireUser, async (req, res) => {
+  const house = req.query.house as string | undefined;
+  const externalSaleId = req.query.externalSaleId as string | undefined;
+  if (!house || !externalSaleId) throw new HttpError(400, "Faltan parámetros: house, externalSaleId.", "INVALID_SALE");
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house: house as never, externalSaleId } } });
+  if (!sale) throw new HttpError(404, "Venta no encontrada.", "SALE_NOT_FOUND");
+  if (sale.catalogAccess !== "FULL") throw new HttpError(400, "Esta venta no tiene API en vivo.", "NO_LIVE_API");
+  const { hipsUpdated } = await syncLivePricesForSale(sale);
+  res.json({ ok: true, saleName: sale.name, hipsUpdated });
+});
+
 router.get("/sales/resync", async (req, res) => {
   const house = req.query.house as string | undefined;
   const externalSaleId = req.query.externalSaleId as string | undefined;
