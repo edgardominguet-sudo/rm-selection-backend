@@ -292,3 +292,28 @@ export async function isHipOut(hipId: string): Promise<boolean> {
   const row = await db.hip.findUnique({ where: { id: hipId }, select: { saleResultJson: true } });
   return saleStatusOf((row?.saleResultJson ?? null) as SaleResultInput | null) === "OUT";
 }
+
+/**
+ * Resultado a guardar sin perder información ya conocida (2026-10-21,
+ * Ramon: "al final de la tarde se borraban los precios del RNA" en RNA
+ * del Día). La casa de ventas a veces publica por un rato un resultado
+ * más pobre que el que ya teníamos (el RNA sin el monto, o el Hip sin
+ * resultado). Reglas:
+ *  - Si lo nuevo no trae nada (null / vacío) y ya había un resultado → se
+ *    conserva el que había.
+ *  - Si los dos son RNA, el nuevo no trae monto y el anterior sí → se
+ *    conserva el anterior (mismo RNA, mismo monto).
+ * Cualquier cambio real (RNA → PS, vendido, OUT, otro monto) se aplica.
+ */
+export function preserveKnownSaleResult(existing: unknown, incoming: unknown): unknown {
+  const asInput = (v: unknown): SaleResultInput | null => (v && typeof v === "object" ? (v as SaleResultInput) : null);
+  const prev = asInput(existing);
+  const next = asInput(incoming);
+  const isEmpty = (r: SaleResultInput | null) =>
+    !r || ![r.priceRaw, r.purchaser, r.soldAsCode].some((x) => typeof x === "string" && x.trim() !== "");
+  if (isEmpty(next)) return isEmpty(prev) ? incoming ?? null : existing;
+  if (prev && saleStatusOf(prev) === "RNA" && saleStatusOf(next) === "RNA") {
+    if (rnaReserveAmountOf(next) == null && rnaReserveAmountOf(prev) != null) return existing;
+  }
+  return incoming;
+}

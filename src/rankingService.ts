@@ -18,7 +18,7 @@ import { resolveSaleHistoryForHip } from "./saleHistoryService";
 import { recordOfficialSaleResult } from "./officialSaleResultService";
 import { normalizeHistoryResult } from "./saleHistoryService";
 import { recordOutEvent, recordNewSaleEvent, generateReentryEvents } from "./eventService";
-import { saleStatusOf, SaleResultInput } from "./search/searchLogic";
+import { saleStatusOf, SaleResultInput, preserveKnownSaleResult } from "./search/searchLogic";
 import { clearReentryCache } from "./reentryService";
 import { resolveReadUrl } from "./storage/r2Client";
 import { resolveSaleDaysFromSessionDates } from "./saleHouses/sessionDateSaleDays";
@@ -148,9 +148,9 @@ export interface UpsertSummary {
  * null — así un dato bueno cargado antes por otra fuente nunca se pierde.
  */
 export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[], sessionDates: Map<string, Date>): Promise<UpsertSummary> {
-  const existingHipNumbers = new Set(
-    (await db.hip.findMany({ where: { saleId }, select: { hipNumber: true } })).map((h) => h.hipNumber)
-  );
+  const existingRows = await db.hip.findMany({ where: { saleId }, select: { hipNumber: true, saleResultJson: true } });
+  const existingHipNumbers = new Set(existingRows.map((h) => h.hipNumber));
+  const existingResults = new Map(existingRows.map((h) => [h.hipNumber, h.saleResultJson as unknown]));
   // Se busca acá adentro (una sola vez por lote) en vez de agregar un
   // parámetro `sale: Sale` a la firma — así ninguno de los dos call sites
   // (syncCatalog acá abajo, y manualCatalogImport.ts, que solo trae un
@@ -201,7 +201,8 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
         consignorBase: hip.consignorBase ?? consignorBaseName(hip.consignor) ?? undefined,
         sessionDate,
         mediaJson: hip.media as unknown as object,
-        saleResultJson: (hip.saleResult ?? null) as unknown as object,
+        // Nunca se pierde un resultado/monto RNA ya conocido (2026-10-21).
+        saleResultJson: (preserveKnownSaleResult(existingResults.get(hip.hipNumber), hip.saleResult ?? null) ?? null) as unknown as object,
         lastCatalogSyncAt: new Date(),
       },
     });
@@ -1441,7 +1442,9 @@ export async function syncLivePricesForSale(sale: Sale): Promise<{ hipsUpdated: 
     // solo actualiza precio de Hips que el job de las 3am ya trajo.
     if (!existing) continue;
 
-    const newResultJson = nh.saleResult as unknown as object;
+    // Nunca se pierde un resultado/monto RNA ya conocido (2026-10-21,
+    // Ramon: "se borraban los precios del RNA" al final de la tarde).
+    const newResultJson = preserveKnownSaleResult(existing.saleResultJson, nh.saleResult) as unknown as object;
     const unchanged = JSON.stringify(existing.saleResultJson ?? null) === JSON.stringify(newResultJson);
     if (unchanged) continue;
 
