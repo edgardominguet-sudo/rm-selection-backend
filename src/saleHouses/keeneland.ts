@@ -209,14 +209,19 @@ export class KeenelandClient implements SaleHouseClient {
       // siempre (API vieja) para no romper ninguna venta ya funcionando.
       const catalogBackendId = CATALOG_BACKEND_SALE_ID[externalSaleId];
       const url = catalogBackendId
-                ? `https://catalog-backend.keeneland.com/sites/default/files/json_hde/sale_data_${catalogBackendId}.json`
+                // `?t=` igual que la web oficial de Keeneland: el archivo se
+                // sirve con Cache-Control max-age=1 año, y sin este parametro
+                // una cache intermedia devolvia una copia vieja (vacia, de
+                // antes de publicarse el catalogo) — caso real Championship
+                // Sale 2026-10-23: el navegador veia 14 lotes y el servidor 0.
+                ? `https://catalog-backend.keeneland.com/sites/default/files/json_hde/sale_data_${catalogBackendId}.json?t=${Date.now()}`
                 : `https://www.keeneland.com/json/sale_api/get/catalog/${externalSaleId}`;
         // CORRECCION 2026-09-15 (a pedido explicito de Ramon, ver util/httpRetry.ts
         // para la investigacion completa): reintenta unas pocas veces con backoff
         // corto ante un 5xx transitorio de Cloudflare/Keeneland (confirmado real el
         // 2026-09-14, 17:00-17:50 UTC: 522/503/521/502, justo cuando arranco la
         // sesion en vivo) en vez de perder el ciclo de 10 minutos completo.
-        const response = await fetchWithRetry(url, { headers: { Accept: "application/json" } });
+        const response = await fetchWithRetry(url, { headers: { Accept: "application/json", "Cache-Control": "no-cache" } });
         const rawBody = await response.text();
         if (!response.ok) {
                 throw new Error(`Keeneland catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
