@@ -275,17 +275,46 @@ export class KeenelandClient implements SaleHouseClient {
   async resolveSessionDates(
         _externalSaleId: string,
         _hips: NormalizedHip[],
-        opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+        opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
       ): Promise<Map<string, Date>> {
-        if (!opts.scheduleYear || !opts.scheduleSlug) return new Map();
-        return resolveKeenelandHipDates(opts.scheduleYear, _externalSaleId, opts.scheduleSlug);
+        const official =
+                opts.scheduleYear && opts.scheduleSlug
+                        ? await resolveKeenelandHipDates(opts.scheduleYear, _externalSaleId, opts.scheduleSlug)
+                        : new Map<string, Date>();
+        if (official.size > 0) return official;
+        // Venta de UNA sola noche sin "Hip Summary" publicado (Championship
+        // Sale, 2026-10-23): todos los lotes se venden el mismo dia, asi que
+        // su fecha de sesion es la fecha de la venta. Sin esto quedaban sin
+        // sessionDate y el refresco de precios/resultados en vivo los
+        // ignoraba el dia de la venta.
+        const singleDay = singleEveningSaleDate(opts.saleName, opts.startDate);
+        if (!singleDay) return official;
+        return new Map(_hips.map((h) => [h.hipNumber, singleDay] as [string, Date]));
   }
 
   async resolveSaleDays(
         externalSaleId: string,
-        opts: { scheduleYear?: number | null; scheduleSlug?: string | null }
+        opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
       ): Promise<ResolvedSaleDay[]> {
-        if (!opts.scheduleYear || !opts.scheduleSlug) return [];
-        return resolveKeenelandSaleDays(opts.scheduleYear, externalSaleId, opts.scheduleSlug);
+        const official =
+                opts.scheduleYear && opts.scheduleSlug
+                        ? await resolveKeenelandSaleDays(opts.scheduleYear, externalSaleId, opts.scheduleSlug)
+                        : [];
+        if (official.length > 0) return official;
+        const singleDay = singleEveningSaleDate(opts.saleName, opts.startDate);
+        return singleDay ? [{ date: singleDay, sessionNumber: 1, source: "KEENELAND_SINGLE_EVENING_SALE" }] : [];
   }
+}
+
+/**
+ * Ventas de Keeneland de una sola noche (hoy: Championship Sale) — devuelve
+ * el dia de la venta normalizado a ~12:00 ET (16:00 UTC, misma convencion
+ * que keenelandSchedule.ts), o null si no aplica.
+ */
+function singleEveningSaleDate(saleName?: string, startDate?: Date | null): Date | null {
+        if (!startDate || !saleName || !/championship/i.test(saleName)) return null;
+        const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "numeric", day: "numeric" })
+                .formatToParts(startDate)
+                .reduce<Record<string, number>>((acc, p) => (p.type === "literal" ? acc : { ...acc, [p.type]: Number(p.value) }), {});
+        return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 16, 0, 0));
 }
