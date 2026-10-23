@@ -44,6 +44,10 @@ import { parseFoalingDate } from "./dateParsing";
 // (nunca autodetectado, siempre confirmado y hardcodeado a mano por venta).
 const CATALOG_BACKEND_SALE_ID: Record<string, string> = {
     "12": "132", // September Yearling Sale 2026 — ver comentario arriba.
+    // Championship Sale 2026 (28 oct, Castleton). Confirmado real
+    // 2026-10-23: la pagina catalog-grid oficial de la venta 13 pide
+    // sale_data_134.json — 14 lotes (Hip 1-14), todos con foto.
+    "13": "134",
 };
 
 // Forma cruda de la API interna de Keeneland — misma forma para la API

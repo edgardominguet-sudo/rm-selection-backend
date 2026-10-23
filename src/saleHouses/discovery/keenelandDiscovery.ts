@@ -67,6 +67,9 @@ export class KeenelandDiscoveryClient implements SaleDiscoveryClient {
     // sin parar aunque nunca fueran a tener un catálogo relevante. Se
     // descartan acá, antes de darlas de alta — así ni siquiera generan una
     // fila en Sale ni una alerta de "Novedades".
-    return Array.from(seen.values()).filter((sale) => /yearling/i.test(sale.name));
+    // EXCEPCION (2026-10-23, pedido de Ramon): la "Championship Sale" no es
+    // de yearlings pero si se sigue en la app — sin esta excepcion nunca se
+    // daba de alta sola y su catalogo no se descargaba.
+    return Array.from(seen.values()).filter((sale) => /yearling|championship/i.test(sale.name));
   }
 }
