@@ -290,7 +290,30 @@ export class KeenelandClient implements SaleHouseClient {
                 opts.scheduleYear && opts.scheduleSlug
                         ? await resolveKeenelandHipDates(opts.scheduleYear, _externalSaleId, opts.scheduleSlug)
                         : new Map<string, Date>();
-        if (official.size > 0) return official;
+        if (official.size > 0) {
+                // HIPs que el "Schedule of Sale" por HIP todavía no lista (agregados
+                // de último momento, ej. 267-268 de Breeding Stock y 4126-4128 de
+                // HRA, 2026-10-26): se toman del rango de jornadas del calendario
+                // oficial (Hip Summary). Nunca se pisa una fecha ya resuelta.
+                const missing = _hips.filter((h) => !official.has(h.hipNumber));
+                if (missing.length > 0 && opts.scheduleYear && opts.scheduleSlug) {
+                        try {
+                                const days = await resolveKeenelandSaleDays(opts.scheduleYear, _externalSaleId, opts.scheduleSlug);
+                                for (const hip of missing) {
+                                        const n = parseInt(hip.hipNumber, 10);
+                                        const day = days.find((d) => {
+                                                const start = parseInt(d.hipRangeStart ?? "", 10);
+                                                const end = parseInt(d.hipRangeEnd ?? "", 10);
+                                                return !isNaN(n) && !isNaN(start) && !isNaN(end) && n >= start && n <= end;
+                                        });
+                                        if (day) official.set(hip.hipNumber, day.date);
+                                }
+                        } catch (err) {
+                                console.error(`[keeneland] No se pudieron completar fechas desde el calendario de ${_externalSaleId}:`, err);
+                        }
+                }
+                return official;
+        }
         // Venta de UNA sola noche sin "Hip Summary" publicado (Championship
         // Sale, 2026-10-23): todos los lotes se venden el mismo dia, asi que
         // su fecha de sesion es la fecha de la venta. Sin esto quedaban sin
