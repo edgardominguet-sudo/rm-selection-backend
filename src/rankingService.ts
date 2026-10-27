@@ -390,7 +390,11 @@ export async function ensureSaleDaysPopulated(sale: Sale, client: SaleHouseClien
     let missingStartTime = false;
     if (existingSaleDayCount > 0 && sale.catalogAccess === "FULL" && getSaleLifecycleStatus(sale) !== "COMPLETED") {
       const stale = await db.saleDay.findFirst({
-        where: { saleId: sale.id, startTimeLabel: null, updatedAt: { lt: new Date(Date.now() - 6 * 60 * 60 * 1000) } },
+        // 2026-10-26: cualquier jornada con más de 6 h (no solo las sin
+        // hora): las casas corrigen sus calendarios (el PDF de Keeneland dice
+        // "Updated 10/20/26") y una jornada que el lector no reconocía la
+        // primera vez (ej. sesión 1 de Breeding Stock) debe aparecer sola.
+        where: { saleId: sale.id, updatedAt: { lt: new Date(Date.now() - 6 * 60 * 60 * 1000) } },
         select: { id: true },
       });
       missingStartTime = !!stale;
