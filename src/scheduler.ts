@@ -193,9 +193,48 @@ let nightlySyncIsRunning = false;
  * paso va en su propio try/catch: si uno falla, los otros dos igual
  * corren.
  */
+// VIGILANTE DE VENTAS Y CATÁLOGOS NUEVOS (2026-10-26, pedido de Ramon: "te
+// tengo que decir cuándo hay catálogos publicados... eso debería estar
+// automatizado"). Cada 6 horas (y una vez al arrancar) revisa las páginas
+// públicas de las tres casas, da de alta las ventas anunciadas y descarga
+// el catálogo de las que ya lo publicaron. Liviano a propósito: solo lee las
+// páginas de anuncios y baja catálogos de ventas futuras SIN catálogo —
+// nunca toca precios, fotos/videos ni ventas terminadas (eso sigue en el
+// ciclo nocturno de las 3am, sin cambios).
+let catalogWatchIsRunning = false;
+
+export async function runCatalogWatch(trigger: string): Promise<void> {
+  if (catalogWatchIsRunning || nightlySyncIsRunning) return;
+  catalogWatchIsRunning = true;
+  try {
+    try {
+      const summary = await runSaleDiscovery();
+      console.log(`[catalog-watch][${trigger}] Ventas anunciadas: ${summary.found}, nuevas: ${summary.created}${summary.errors.length ? `, errores: ${summary.errors.join(" | ")}` : ""}`);
+    } catch (err) {
+      console.error(`[catalog-watch][${trigger}] Error en el descubrimiento:`, err);
+    }
+    try {
+      await autoResolvePendingFasigTiptonSaleIds();
+    } catch (err) {
+      console.error(`[catalog-watch][${trigger}] Error resolviendo IDs de Fasig-Tipton:`, err);
+    }
+    try {
+      await importNewlyPublishedCatalogs();
+    } catch (err) {
+      console.error(`[catalog-watch][${trigger}] Error importando catálogos nuevos:`, err);
+    }
+  } finally {
+    catalogWatchIsRunning = false;
+  }
+}
+
 export function startNightlySyncScheduler(): void {
   cron.schedule("0 3 * * *", () => {
     void runNightlySyncCycle();
+  });
+
+  cron.schedule("40 */6 * * *", () => {
+    void runCatalogWatch("cada-6h");
   });
 
   // CENTRO DE AVISOS (2026-10-04): reinscritos de los caballos marcados
@@ -218,8 +257,8 @@ export function startNightlySyncScheduler(): void {
   // importNewlyPublishedCatalogs en rankingService.ts). Solo catálogo, solo
   // ventas sin HIPs — si no hay ninguna es una única consulta a la base.
   setTimeout(() => {
-    importNewlyPublishedCatalogs()
-      .catch((err) => console.error("[nightly-sync][new-catalogs] Error en la revisión de arranque:", err))
+    runCatalogWatch("arranque")
+      .catch((err) => console.error("[catalog-watch][arranque] Error:", err))
       // Y el Calendario de Ventas de toda venta no finalizada que todavía
       // no lo tenga (solo consulta la casa si SaleDay está vacío).
       .then(() => ensureSaleDaysForAllFullAccessSales())

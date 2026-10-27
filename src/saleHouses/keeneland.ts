@@ -4,6 +4,7 @@ import { fetchWithRetry } from "../util/httpRetry";
 import { resolveKeenelandHipDates } from "./keenelandSchedule";
 import { deriveKeenelandPedigreeSaleCode, probeKeenelandCatalogViaPedigreePdfs } from "./keenelandPedigreePdfCatalog";
 import { resolveKeenelandSaleDays } from "./keenelandHipGrouping";
+import { resolveKeenelandCatalogId } from "./keenelandCatalogIds";
 import { parseFoalingDate } from "./dateParsing";
 
 // CORRECCION DE RAIZ (2026-09-03, a pedido explicito de Ramon: "HIP 3 y
@@ -207,7 +208,10 @@ export class KeenelandClient implements SaleHouseClient {
       // en vivo NUEVO cuando ya confirmamos a mano el ID real de esta
       // venta en ese sistema; si no esta en el mapa, mismo camino de
       // siempre (API vieja) para no romper ninguna venta ya funcionando.
-      const catalogBackendId = CATALOG_BACKEND_SALE_ID[externalSaleId];
+      // 2026-10-26: el ID interno se resuelve SOLO desde la pagina publica
+      // de ventas de Keeneland (ver keenelandCatalogIds.ts); el mapa manual
+      // queda solo como respaldo de las ventas ya confirmadas a mano.
+      const catalogBackendId = CATALOG_BACKEND_SALE_ID[externalSaleId] ?? (await resolveKeenelandCatalogId(externalSaleId));
       const url = catalogBackendId
                 // `?t=` igual que la web oficial de Keeneland: el archivo se
                 // sirve con Cache-Control max-age=1 año, y sin este parametro
@@ -223,6 +227,11 @@ export class KeenelandClient implements SaleHouseClient {
         // sesion en vivo) en vez de perder el ciclo de 10 minutos completo.
         const response = await fetchWithRetry(url, { headers: { Accept: "application/json", "Cache-Control": "no-cache" } });
         const rawBody = await response.text();
+        // El archivo de catálogo de una venta anunciada pero todavía sin
+        // catálogo no existe (404): eso es "todavía no publicado", no un error.
+        if (catalogBackendId && response.status === 404) {
+                throw new CatalogNotYetPublishedError("Keeneland", externalSaleId);
+        }
         if (!response.ok) {
                 throw new Error(`Keeneland catalog fetch failed (${response.status}) for sale ${externalSaleId}: ${rawBody.slice(0, 500)}`);
         }

@@ -188,17 +188,8 @@ export function hipKey(house: string, externalSaleId: string, hipNumber: string)
   return `${house}::${externalSaleId}::${hipNumber}`;
 }
 
-export function normalizeColor(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const c = raw.trim().toUpperCase().replace(/\./g, "");
-  if (!c) return null;
-  if (c === "B" || c === "BAY") return "Bay";
-  if (c === "CH" || c === "CHESTNUT") return "Chestnut";
-  if (c === "BLK" || c === "BL" || c === "BLACK") return "Black";
-  if (c.startsWith("GR") || c.includes("GRAY") || c.includes("GREY") || c.includes("ROAN")) return "Gray/Roan";
-  if (c.startsWith("DB") || c.startsWith("DK") || c.includes("DARK BAY") || c.includes("BROWN") || c === "BR") return "Dark Bay/Brown";
-  return null;
-}
+// Regla única de colores: vive en catalogFormat.ts (también la usa el guardado de catálogo).
+export { normalizeColor } from "../catalogFormat";
 
 export interface SaleResultInput {
   priceRaw?: string | null;

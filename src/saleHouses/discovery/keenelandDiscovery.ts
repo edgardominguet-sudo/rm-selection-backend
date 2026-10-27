@@ -59,17 +59,10 @@ export class KeenelandDiscoveryClient implements SaleDiscoveryClient {
       });
     }
 
-    // RM Selection evalúa yearlings — Keeneland también organiza ventas de
-    // otro tipo en la misma página de "Upcoming Sales" (ej. "January
-    // Horses of All Ages Sale", ventas de breeding stock, horses of racing
-    // age) que no le sirven de nada a la app pero antes se registraban
-    // igual con catalogAccess FULL, así que el scheduler las sincronizaba
-    // sin parar aunque nunca fueran a tener un catálogo relevante. Se
-    // descartan acá, antes de darlas de alta — así ni siquiera generan una
-    // fila en Sale ni una alerta de "Novedades".
-    // EXCEPCION (2026-10-23, pedido de Ramon): la "Championship Sale" no es
-    // de yearlings pero si se sigue en la app — sin esta excepcion nunca se
-    // daba de alta sola y su catalogo no se descargaba.
-    return Array.from(seen.values()).filter((sale) => /yearling|championship/i.test(sale.name));
+    // TODAS las ventas publicadas de Keeneland (2026-10-26, pedido de
+    // Ramon): antes solo se daban de alta las de yearlings y las de
+    // noviembre / enero nunca aparecían. Una venta anunciada sin catálogo
+    // queda registrada y su catálogo se descarga solo apenas se publica.
+    return Array.from(seen.values());
   }
 }

@@ -1,4 +1,5 @@
 import { Sale } from "@prisma/client";
+import { canonicalizeNormalizedHip } from "./catalogFormat";
 import { getSaleResults } from "./saleResultsService";
 import { consignorBaseName } from "./catalogNames";
 import { enrichGrandSiresFromPedigreePdfs } from "./grandSireEnrichment";
@@ -148,6 +149,8 @@ export interface UpsertSummary {
  * null — así un dato bueno cargado antes por otra fuente nunca se pierde.
  */
 export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[], sessionDates: Map<string, Date>): Promise<UpsertSummary> {
+  // Formato único para TODAS las casas y ventas (2026-10-26) — ver catalogFormat.ts.
+  hips = hips.map(canonicalizeNormalizedHip);
   const existingRows = await db.hip.findMany({ where: { saleId }, select: { hipNumber: true, saleResultJson: true } });
   const existingHipNumbers = new Set(existingRows.map((h) => h.hipNumber));
   const existingResults = new Map(existingRows.map((h) => [h.hipNumber, h.saleResultJson as unknown]));
