@@ -109,7 +109,9 @@ const BOOK_LINE = /^(\d{1,2}[A-Za-z]?)$/;
 // => sessionNumber, weekday(ignorado), month, day, startTime, hipStart, hipEnd, headCount.
 // El número de sesión es opcional: una venta de una sola jornada lo omite
 // ("Thursday, November 12 12:00 pm 4001 - 4128 128", Horses of Racing Age 2026).
-const SESSION_LINE = /^(?:(\d{1,2})\s+)?[A-Za-z]+day,?\s+([A-Za-z]+)\s+(\d{1,2})\s+(\d{1,2}:\d{2}\s*[ap]\.?m\.?)\s+(\d+)\s*[–-]\s*(\d+)\s+(\d+)\s*$/i;
+// Y cuando un Book tiene una sola sesión, el Book va en la MISMA línea
+// ("1 1 Tuesday, November 3 1:00 pm 1 – 268 268", Breeding Stock 2026).
+const SESSION_LINE = /^(?:(\d{1,2}[A-Za-z]?)\s+)?(?:(\d{1,2})\s+)?[A-Za-z]+day,?\s+([A-Za-z]+)\s+(\d{1,2})\s+(\d{1,2}:\d{2}\s*[ap]\.?m\.?)\s+(\d+)\s*[–-]\s*(\d+)\s+(\d+)\s*$/i;
 
 // "2026 SEPTEMBER YEARLING SALE" — de acá sale el año real de la venta
 // (más confiable que asumir el `year` que llegó por parámetro, que es
@@ -132,7 +134,10 @@ export function parseHipGroupingText(rawText: string): ResolvedSaleDay[] {
 
     const sessionMatch = SESSION_LINE.exec(line);
     if (sessionMatch && year !== null) {
-      const [, sessionNumStr, monthName, dayStr, startTime, hipStart, hipEnd, headCountStr] = sessionMatch;
+      const [, firstNum, secondNum, monthName, dayStr, startTime, hipStart, hipEnd, headCountStr] = sessionMatch;
+      // Dos números = Book + Session en la misma línea; uno solo = Session.
+      const sessionNumStr = secondNum ?? firstNum;
+      if (secondNum && firstNum) currentBook = firstNum;
       const monthIndex = MONTHS[monthName.toLowerCase()];
       const day = parseInt(dayStr, 10);
       if (monthIndex === undefined || isNaN(day)) continue; // nunca se inventa una fecha

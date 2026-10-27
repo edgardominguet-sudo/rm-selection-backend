@@ -102,3 +102,15 @@ describe("Hip Summary de Keeneland de una sola jornada (sin número de sesión)"
     expect(days[0]).toMatchObject({ sessionNumber: 3, book: "1", hipRangeStart: "381", hipRangeEnd: "757", headCount: 377 });
   });
 });
+
+describe("Hip Summary de Keeneland con Book y Session en la misma línea", () => {
+  it("lee la sesión 1 de la Breeding Stock 2026 y las siguientes con su Book", () => {
+    const text = "2026 NOVEMBER BREEDING STOCK SALE\nNovember 3 - 11\nBook\nSession\nDate\n1 1 Tuesday, November 3 1:00 pm 1 - 268 268\n2\n2 Wednesday, November 4 10:00 am 301 – 719 419\n3 Thursday, November 5 10:00 am 720 – 1140 421\n";
+    const days = parseHipGroupingText(text);
+    expect(days.map((d) => [d.book, d.sessionNumber, d.hipRangeStart, d.hipRangeEnd])).toEqual([
+      ["1", 1, "1", "268"],
+      ["2", 2, "301", "719"],
+      ["2", 3, "720", "1140"],
+    ]);
+  });
+});
