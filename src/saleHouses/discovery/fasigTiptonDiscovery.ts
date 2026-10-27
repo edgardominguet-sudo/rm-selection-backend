@@ -1,5 +1,6 @@
 import { DiscoveredSaleAnnouncement, SaleDiscoveryClient } from "./types";
 import { findDateRange, stripHtmlTags, titleCaseSlug } from "./dateParsing";
+import { discoverDigitalSales } from "../fasigTiptonDigital";
 
 // Lee la página pública "Catalogues" de Fasig-Tipton por año — a diferencia
 // de Keeneland, esta página lista TODAS las ventas del año (pasadas y
@@ -86,6 +87,14 @@ export class FasigTiptonDiscoveryClient implements SaleDiscoveryClient {
           access: "PENDING_ID",
         });
       }
+    }
+
+    // Ventas DIGITALES (2026-10-27): otra plataforma, con catálogo propio y
+    // acceso FULL desde el día uno — ver fasigTiptonDigital.ts.
+    try {
+      results.push(...(await discoverDigitalSales()));
+    } catch (err) {
+      console.error("[discovery] Fasig-Tipton Digital:", err);
     }
 
     return results;

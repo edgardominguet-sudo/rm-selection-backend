@@ -27,6 +27,8 @@ export interface DiscoveredSaleAnnouncement {
   endDate?: Date;
   announcementUrl: string;
   access: "FULL" | "MANUAL_CSV" | "PENDING_ID" | "UNAVAILABLE";
+  /** Venta digital (puja en línea, sin remate presencial) — ver fasigTiptonDigital.ts. */
+  isDigital?: boolean;
   /** Solo Keeneland: para resolveSessionDates (Schedule of Sale). */
   scheduleYear?: number;
   scheduleSlug?: string;

@@ -3,6 +3,7 @@ import { fetchWithRetry } from "../util/httpRetry";
 import { resolveSaleDaysFromSessionDates } from "./sessionDateSaleDays";
 import { parseFoalingDate } from "./dateParsing";
 import { normalizeBredState } from "../catalogNames";
+import { fasigTiptonDigitalCatalog, isDigitalSaleId } from "./fasigTiptonDigital";
 
 // Forma cruda de la API interna de Fasig-Tipton
 // (GET https://www.fasigtipton.com/django/api/horses/?sale={saleID}).
@@ -164,6 +165,8 @@ export class FasigTiptonClient implements SaleHouseClient {
   }
 
   async fetchCatalog(externalSaleId: string): Promise<NormalizedHip[]> {
+    // Ventas digitales: otra plataforma (ver fasigTiptonDigital.ts).
+    if (isDigitalSaleId(externalSaleId)) return fasigTiptonDigitalCatalog.fetchCatalog(externalSaleId);
     const entries = await this.fetchRaw(externalSaleId);
     return entries.map(normalize);
   }
@@ -176,6 +179,7 @@ export class FasigTiptonClient implements SaleHouseClient {
     _hips?: NormalizedHip[],
     opts: { saleName?: string; startDate?: Date | null } = {}
   ): Promise<Map<string, Date>> {
+    if (isDigitalSaleId(externalSaleId)) return fasigTiptonDigitalCatalog.resolveSessionDates(externalSaleId);
     return (await this.resolveSessionDatesWithSource(externalSaleId, opts)).dates;
   }
 
@@ -270,6 +274,7 @@ export class FasigTiptonClient implements SaleHouseClient {
     externalSaleId: string,
     opts: { scheduleYear?: number | null; scheduleSlug?: string | null; saleName?: string; startDate?: Date | null }
   ): Promise<ResolvedSaleDay[]> {
+    if (isDigitalSaleId(externalSaleId)) return fasigTiptonDigitalCatalog.resolveSaleDays(externalSaleId);
     const { dates, source } = await this.resolveSessionDatesWithSource(externalSaleId, opts);
     const days = resolveSaleDaysFromSessionDates(dates, source);
     // Hora de inicio (2026-10-05, pedido de Ramon). Fasig-Tipton la publica

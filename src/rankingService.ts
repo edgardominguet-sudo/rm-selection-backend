@@ -1,5 +1,6 @@
 import { Sale } from "@prisma/client";
 import { canonicalizeNormalizedHip, pedigreePdfTemplateFrom } from "./catalogFormat";
+import { isDigitalSaleId } from "./saleHouses/fasigTiptonDigital";
 import { getSaleResults } from "./saleResultsService";
 import { consignorBaseName } from "./catalogNames";
 import { enrichGrandSiresFromPedigreePdfs } from "./grandSireEnrichment";
@@ -189,6 +190,7 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
         color: hip.color,
         bredState: hip.bredState,
         consignorBase: hip.consignorBase ?? consignorBaseName(hip.consignor) ?? undefined,
+        pedigreePdfUrl: hip.pedigreePdfUrl,
         sessionDate,
         mediaJson: hip.media as unknown as object,
         saleResultJson: (hip.saleResult ?? null) as unknown as object,
@@ -208,6 +210,7 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
         color: hip.color,
         bredState: hip.bredState,
         consignorBase: hip.consignorBase ?? consignorBaseName(hip.consignor) ?? undefined,
+        pedigreePdfUrl: hip.pedigreePdfUrl,
         sessionDate,
         mediaJson: hip.media as unknown as object,
         // Nunca se pierde un resultado/monto RNA ya conocido (2026-10-21).
@@ -485,7 +488,10 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   // Grand Sire (2026-09-28): un PDF de pedigree por padrillo que todavía no
   // lo tenga — ver grandSireEnrichment.ts. Solo para fuentes que publican
   // el PDF por HIP (hoy OBS). Nunca debe tirar abajo la sincronización.
-  if (hips.some((h) => h.pedigreePdfUrl)) {
+  // Solo OBS: su PDF trae el cruce con líneas de puntos que lee el parser.
+  // Keeneland y Fasig-Tipton Digital también publican PDF por HIP desde
+  // 2026-10-27, pero con otro formato — no se descargan para esto.
+  if (sale.house === "OBS" && hips.some((h) => h.pedigreePdfUrl)) {
     try {
       const summary = await enrichGrandSiresFromPedigreePdfs(sale.name, hips);
       console.log(`[grand-sire] "${sale.name}": ${JSON.stringify(summary)}`);
@@ -518,6 +524,10 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   // sessionDate resuelta (catálogo publicado pero sin fechas todavía),
   // no se toca lo que ya había — nunca se borra una fecha buena por una
   // desconocida.
+  // Venta digital: su rango es la ventana de puja (apertura -> cierre) que
+  // publica la casa; las fechas de sesión por lote son el día de CIERRE, así
+  // que no deben pisar la apertura (2026-10-27).
+  if (isDigitalSaleId(sale.externalSaleId)) return;
   const sortedSessionDates = [...sessionDates.values()].sort((a, b) => a.getTime() - b.getTime());
   const earliestSessionDate = sortedSessionDates[0];
   if (earliestSessionDate && earliestSessionDate.getTime() !== sale.startDate?.getTime()) {
@@ -1305,7 +1315,8 @@ export async function importNewlyPublishedCatalogs(excludeSaleIds: string[] = []
     where: {
       isActive: true,
       catalogAccess: "FULL",
-      startDate: { gt: now },
+      // Futuras, o digitales con la puja todavía abierta (2026-10-27).
+      OR: [{ startDate: { gt: now } }, { externalSaleId: { startsWith: "digital-" }, endDate: { gt: now } }],
       id: { notIn: excludeSaleIds },
       // Sin ningún HIP con fecha de sesión: cubre "sin catálogo" (0 HIPs)
       // y "catálogo cargado pero sin calendario todavía" (FT publica el

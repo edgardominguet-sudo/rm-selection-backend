@@ -48,7 +48,11 @@ export async function runSaleDiscovery(): Promise<DiscoveryRunSummary> {
     // reviva ni alerte ventas que ya pasaron, aunque el scraper las
     // encuentre igual (ej. el archivo de catálogos de Fasig-Tipton mezcla
     // pasadas y futuras del mismo año).
-    const upcoming = announcements.filter((a) => a.startDate.getTime() >= now.getTime());
+    // Una venta digital ya abierta (puja en curso) también se da de alta:
+    // cuenta mientras no haya cerrado.
+    const upcoming = announcements.filter((a) =>
+      a.isDigital ? (a.endDate ?? a.startDate).getTime() >= now.getTime() : a.startDate.getTime() >= now.getTime()
+    );
     found += upcoming.length;
 
     for (const announcement of upcoming) {
@@ -101,7 +105,11 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
       },
     },
   });
-  const sameEvent = candidatesNearby.find((s) => s.catalogAccess === "FULL" || s.catalogAccess === "MANUAL_CSV");
+  // Una venta digital y una presencial de la misma casa pueden caer en la
+  // misma semana y son ventas DISTINTAS — nunca se fusionan (2026-10-27).
+  const sameEvent = announcement.isDigital
+    ? undefined
+    : candidatesNearby.find((s) => !s.externalSaleId.startsWith("digital-") && (s.catalogAccess === "FULL" || s.catalogAccess === "MANUAL_CSV"));
   if (sameEvent) {
     return updateExistingDiscoveredSale(sameEvent, announcement);
   }

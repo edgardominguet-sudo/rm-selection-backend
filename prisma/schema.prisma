@@ -448,6 +448,9 @@ model Hip {
   sire              String?
   dam               String?
   damSire           String?
+  // URL exacta del PDF de pedigree de ESTE HIP tal como la publica la casa
+  // (Fasig-Tipton Digital la tiene por lote, sin patrón deducible). 2026-10-27.
+  pedigreePdfUrl    String?
 
   // Criador, año de nacimiento y color — NINGUNO de los dos viene en las
   // APIs de catálogo de Keeneland ni Fasig-Tipton (ver comentario en

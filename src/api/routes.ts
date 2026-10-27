@@ -117,6 +117,9 @@ router.get("/sales", async (_req, res) => {
     ...rest,
     endDate: endDate ?? rest.startDate,
     hipCount: _count.hips,
+    // "DIGITAL" = venta en línea (puja por días, sin remate presencial);
+    // la app la muestra con su etiqueta y la hora de cierre (2026-10-27).
+    format: rest.externalSaleId.startsWith("digital-") ? "DIGITAL" : "IN_PERSON",
     // Estado de ciclo de vida (2026-09-26, pedido explícito de Ramon) —
     // calculado en el momento de responder, nunca guardado (ver
     // getSaleLifecycleStatus, activeSaleService.ts) — con el endDate REAL
@@ -142,6 +145,23 @@ router.get("/sales", async (_req, res) => {
  * sincronizar el catálogo, con la URL real que publica la casa por HIP.
  * Busca por house+externalSaleId, o por house+nombre (la venta más reciente).
  */
+// PDF de pedigree de UN HIP (2026-10-27): para casas que lo publican por
+// lote sin patrón deducible (Fasig-Tipton Digital). null si no se conoce.
+router.get("/sales/hips/pedigree-pdf", async (req, res) => {
+  const house = String(req.query.house ?? "");
+  const externalSaleId = String(req.query.externalSaleId ?? "");
+  const hipNumber = String(req.query.hipNumber ?? "");
+  if ((house !== "KEENELAND" && house !== "FASIG_TIPTON" && house !== "OBS") || !externalSaleId || !hipNumber) {
+    res.status(400).json({ error: "Faltan house, externalSaleId o hipNumber." });
+    return;
+  }
+  const sale = await db.sale.findUnique({ where: { house_externalSaleId: { house, externalSaleId } }, select: { id: true } });
+  const hip = sale
+    ? await db.hip.findUnique({ where: { saleId_hipNumber: { saleId: sale.id, hipNumber } }, select: { pedigreePdfUrl: true } })
+    : null;
+  res.json({ url: hip?.pedigreePdfUrl ?? null });
+});
+
 router.get("/sales/pedigree-pdf-template", async (req, res) => {
   const house = String(req.query.house ?? "");
   const externalSaleId = req.query.externalSaleId ? String(req.query.externalSaleId) : null;

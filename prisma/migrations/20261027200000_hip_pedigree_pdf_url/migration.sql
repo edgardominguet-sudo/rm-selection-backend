@@ -1,0 +1,1 @@
+ALTER TABLE "Hip" ADD COLUMN IF NOT EXISTS "pedigreePdfUrl" TEXT;
