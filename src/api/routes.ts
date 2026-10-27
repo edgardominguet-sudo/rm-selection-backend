@@ -105,6 +105,7 @@ router.get("/sales", async (_req, res) => {
       // conoce (ver SaleAlertSaleInfo.swift, mismo patrón).
       lastCatalogCheckAt: true,
       announcementUrl: true,
+      pedigreePdfTemplate: true,
       _count: { select: { hips: true } },
     },
   });
@@ -131,6 +132,30 @@ router.get("/sales", async (_req, res) => {
     return 0;
   });
   res.json(withHipCount);
+});
+
+/**
+ * Plantilla de la URL del PDF de pedigree por HIP de una venta (2026-10-27,
+ * pedido de Ramon: "los pedigree están en mal formato" — las ventas de
+ * Keeneland que no son September/April no mostraban la página de pedigree
+ * porque la app solo conocía esas dos carpetas). La guarda el servidor al
+ * sincronizar el catálogo, con la URL real que publica la casa por HIP.
+ * Busca por house+externalSaleId, o por house+nombre (la venta más reciente).
+ */
+router.get("/sales/pedigree-pdf-template", async (req, res) => {
+  const house = String(req.query.house ?? "");
+  const externalSaleId = req.query.externalSaleId ? String(req.query.externalSaleId) : null;
+  const saleName = req.query.saleName ? String(req.query.saleName) : null;
+  if (house !== "KEENELAND" && house !== "FASIG_TIPTON" && house !== "OBS") {
+    res.status(400).json({ error: "house inválida." });
+    return;
+  }
+  const sale = externalSaleId
+    ? await db.sale.findUnique({ where: { house_externalSaleId: { house, externalSaleId } }, select: { pedigreePdfTemplate: true } })
+    : saleName
+      ? await db.sale.findFirst({ where: { house, name: saleName }, orderBy: { startDate: "desc" }, select: { pedigreePdfTemplate: true } })
+      : null;
+  res.json({ template: sale?.pedigreePdfTemplate ?? null });
 });
 
 /**

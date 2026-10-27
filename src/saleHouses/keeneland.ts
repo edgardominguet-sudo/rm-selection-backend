@@ -58,6 +58,11 @@ const CATALOG_BACKEND_SALE_ID: Record<string, string> = {
 // array. Puerto de RMSelection/Models/KeenelandHipCatalogEntry.swift.
 interface RawEntry {
     field_hip_number: string;
+    // URL exacta del PDF de pedigree del HIP (ej.
+    // https://secure.keeneland.com/sales/k326/pdfs/1.pdf). La carpeta cambia
+    // por venta y NO es deducible (Championship 2026 = d126), así que se usa
+    // tal cual la publica Keeneland.
+    field_pedigree?: string | null;
     title?: string | null;
     field_main_image?: string | null;
     field_sire?: string | null;
@@ -184,6 +189,7 @@ function normalize(entry: RawEntry): NormalizedHip {
         // "field_foaling_date" viene como "MM/DD/YYYY" (ej. "02/15/2025")
         // — ver dateParsing.ts.
         foalingDate: parseFoalingDate(entry.field_foaling_date),
+        pedigreePdfUrl: /^https:\/\/[^\s]+\.pdf$/i.test(entry.field_pedigree?.trim() ?? "") ? entry.field_pedigree!.trim() : undefined,
         media,
         saleResult: hasSaleResult
           ? {

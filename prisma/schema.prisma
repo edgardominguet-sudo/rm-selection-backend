@@ -254,6 +254,12 @@ model Sale {
   // que el usuario cargue nada a mano (ver saleHouses/keenelandSchedule.ts).
   scheduleYear       Int?
   scheduleSlug       String?
+  // Plantilla de la URL del PDF de pedigree por HIP, tal como la publica la
+  // casa ("https://secure.keeneland.com/sales/k326/pdfs/{hip}.pdf"). Se
+  // completa sola al sincronizar el catálogo (ver pedigreePdfTemplateFrom,
+  // catalogFormat.ts) — la app la usa para mostrar la página de pedigree de
+  // cualquier venta sin tablas fijas por tipo de venta (2026-10-27).
+  pedigreePdfTemplate String?
   isActive           Boolean    @default(true)
   // Último momento en que se volvió a consultar el catálogo completo de
   // esta venta contra la casa de ventas. El scheduler decide CUÁNDO toca

@@ -100,3 +100,21 @@ export function canonicalizeNormalizedHip(hip: NormalizedHip): NormalizedHip {
     color: canonicalColor(hip.color),
   };
 }
+
+/**
+ * Plantilla de la URL del PDF de pedigree por HIP de una venta, a partir de
+ * las URLs reales que publicó la casa ("…/pdfs/1.pdf" -> "…/pdfs/{hip}.pdf").
+ * Solo se acepta si la URL termina en el número del propio HIP — nunca se
+ * inventa. null si ningún HIP la trae.
+ */
+export function pedigreePdfTemplateFrom(hips: Array<{ hipNumber: string; pedigreePdfUrl?: string }>): string | null {
+  for (const hip of hips) {
+    const url = hip.pedigreePdfUrl?.trim();
+    if (!url) continue;
+    const suffix = `/${hip.hipNumber}.pdf`;
+    if (url.toLowerCase().endsWith(suffix.toLowerCase())) {
+      return `${url.slice(0, url.length - suffix.length)}/{hip}.pdf`;
+    }
+  }
+  return null;
+}

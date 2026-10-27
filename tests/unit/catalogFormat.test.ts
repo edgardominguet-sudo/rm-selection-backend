@@ -114,3 +114,19 @@ describe("Hip Summary de Keeneland con Book y Session en la misma línea", () =>
     ]);
   });
 });
+
+import { pedigreePdfTemplateFrom } from "../../src/catalogFormat";
+
+describe("plantilla del PDF de pedigree por HIP", () => {
+  it("sale de la URL real del HIP (Keeneland usa carpetas distintas por venta)", () => {
+    expect(pedigreePdfTemplateFrom([{ hipNumber: "1", pedigreePdfUrl: "https://secure.keeneland.com/sales/k326/pdfs/1.pdf" }])).toBe(
+      "https://secure.keeneland.com/sales/k326/pdfs/{hip}.pdf"
+    );
+    expect(pedigreePdfTemplateFrom([{ hipNumber: "4001", pedigreePdfUrl: "https://secure.keeneland.com/sales/k626/pdfs/4001.pdf" }])).toBe(
+      "https://secure.keeneland.com/sales/k626/pdfs/{hip}.pdf"
+    );
+  });
+  it("no inventa nada si la URL no corresponde al HIP", () => {
+    expect(pedigreePdfTemplateFrom([{ hipNumber: "2", pedigreePdfUrl: "https://x.com/pdfs/1.pdf" }, { hipNumber: "3" }])).toBeNull();
+  });
+});

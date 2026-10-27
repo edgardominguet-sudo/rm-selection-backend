@@ -1,0 +1,1 @@
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "pedigreePdfTemplate" TEXT;

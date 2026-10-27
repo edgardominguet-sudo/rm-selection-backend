@@ -1,5 +1,5 @@
 import { Sale } from "@prisma/client";
-import { canonicalizeNormalizedHip } from "./catalogFormat";
+import { canonicalizeNormalizedHip, pedigreePdfTemplateFrom } from "./catalogFormat";
 import { getSaleResults } from "./saleResultsService";
 import { consignorBaseName } from "./catalogNames";
 import { enrichGrandSiresFromPedigreePdfs } from "./grandSireEnrichment";
@@ -160,6 +160,12 @@ export async function upsertNormalizedHips(saleId: string, hips: NormalizedHip[]
   // `select` parcial) tiene que cambiar. Solo hace falta para la base
   // histórica permanente (ver recordOfficialSaleResult, más abajo).
   const sale = await db.sale.findUniqueOrThrow({ where: { id: saleId } });
+  // Plantilla del PDF de pedigree por HIP (2026-10-27): la app la usa para
+  // mostrar la página de pedigree de cualquier venta (ver /sales/pedigree-pdf-template).
+  const pedigreeTemplate = pedigreePdfTemplateFrom(hips);
+  if (pedigreeTemplate && pedigreeTemplate !== sale.pedigreePdfTemplate) {
+    await db.sale.update({ where: { id: saleId }, data: { pedigreePdfTemplate: pedigreeTemplate } });
+  }
   let created = 0;
   let updated = 0;
 
