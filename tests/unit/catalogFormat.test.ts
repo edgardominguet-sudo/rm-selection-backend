@@ -85,3 +85,20 @@ describe("ID interno del catálogo de Keeneland desde su página pública", () =
     expect(parseKeenelandCatalogIds("<html></html>").size).toBe(0);
   });
 });
+
+import { parseHipGroupingText } from "../../src/saleHouses/keenelandHipGrouping";
+
+describe("Hip Summary de Keeneland de una sola jornada (sin número de sesión)", () => {
+  it("lee la jornada de la Horses of Racing Age 2026 (texto real del PDF)", () => {
+    const text = "\n\nUpdated 10/20/26 \n \n2026 NOVEMBER HORSES OF RACING AGE SALE \nNovember 12 \nDate \nStart \nTime \nHip # \n# \nHead \nThursday, November 12 12:00 pm 4001 - 4128 128 \nTotal Head – 128 \n \nSale Begins with the letter E \n";
+    const days = parseHipGroupingText(text);
+    expect(days).toHaveLength(1);
+    expect(days[0]).toMatchObject({ sessionNumber: 1, hipRangeStart: "4001", hipRangeEnd: "4128", headCount: 128, startTimeLabel: "12:00 pm" });
+    expect(days[0].date.toISOString()).toBe("2026-11-12T16:00:00.000Z");
+  });
+
+  it("las ventas con número de sesión siguen igual", () => {
+    const days = parseHipGroupingText("2026 SEPTEMBER YEARLING SALE\n1\n3 Wednesday, September 16 11:00 am 381 – 757 377\n");
+    expect(days[0]).toMatchObject({ sessionNumber: 3, book: "1", hipRangeStart: "381", hipRangeEnd: "757", headCount: 377 });
+  });
+});

@@ -107,7 +107,9 @@ const BOOK_LINE = /^(\d{1,2}[A-Za-z]?)$/;
 
 // Línea de una sesión real: "3 Wednesday, September 16 11:00 am 381 – 757 377"
 // => sessionNumber, weekday(ignorado), month, day, startTime, hipStart, hipEnd, headCount.
-const SESSION_LINE = /^(\d{1,2})\s+[A-Za-z]+day,?\s+([A-Za-z]+)\s+(\d{1,2})\s+(\d{1,2}:\d{2}\s*[ap]\.?m\.?)\s+(\d+)\s*[–-]\s*(\d+)\s+(\d+)\s*$/i;
+// El número de sesión es opcional: una venta de una sola jornada lo omite
+// ("Thursday, November 12 12:00 pm 4001 - 4128 128", Horses of Racing Age 2026).
+const SESSION_LINE = /^(?:(\d{1,2})\s+)?[A-Za-z]+day,?\s+([A-Za-z]+)\s+(\d{1,2})\s+(\d{1,2}:\d{2}\s*[ap]\.?m\.?)\s+(\d+)\s*[–-]\s*(\d+)\s+(\d+)\s*$/i;
 
 // "2026 SEPTEMBER YEARLING SALE" — de acá sale el año real de la venta
 // (más confiable que asumir el `year` que llegó por parámetro, que es
@@ -140,7 +142,7 @@ export function parseHipGroupingText(rawText: string): ResolvedSaleDay[] {
       days.push({
         date,
         book: currentBook,
-        sessionNumber: parseInt(sessionNumStr, 10),
+        sessionNumber: sessionNumStr ? parseInt(sessionNumStr, 10) : days.length + 1,
         startTimeLabel: startTime.replace(/\s+/g, " ").trim(),
         hipRangeStart: hipStart,
         hipRangeEnd: hipEnd,
