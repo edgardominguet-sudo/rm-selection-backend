@@ -29,6 +29,12 @@ export interface DiscoveredSaleAnnouncement {
   access: "FULL" | "MANUAL_CSV" | "PENDING_ID" | "UNAVAILABLE";
   /** Venta digital (puja en línea, sin remate presencial) — ver fasigTiptonDigital.ts. */
   isDigital?: boolean;
+  /**
+   * Venta ya terminada, del año en curso, con ID real de catálogo: se da de
+   * alta igual para tener su catálogo y resultados (ver
+   * saleDiscoveryService.runSaleDiscovery). Hoy solo OBS.
+   */
+  historicalBackfill?: boolean;
   /** Solo Keeneland: para resolveSessionDates (Schedule of Sale). */
   scheduleYear?: number;
   scheduleSlug?: string;

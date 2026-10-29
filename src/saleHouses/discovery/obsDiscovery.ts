@@ -1,5 +1,7 @@
 import { DiscoveredSaleAnnouncement, SaleDiscoveryClient } from "./types";
 import { findDateRange, stripHtmlTags } from "./dateParsing";
+import { db } from "../../db";
+import { fetchWithRetry } from "../../util/httpRetry";
 
 // OBS (Ocala Breeders' Sales) no tiene ninguna API de catálogo estructurada
 // conocida — a diferencia de Fasig-Tipton y Keeneland, su plataforma de
@@ -44,7 +46,27 @@ const ANNOUNCEMENT_KEYWORDS = /\b(sale|catalogue|catalog)\b/i;
 const YEAR_IN_TITLE = /\b(20\d{2})\b/;
 
 export class OBSDiscoveryClient implements SaleDiscoveryClient {
-  async discoverAnnouncedSales(_now: Date): Promise<DiscoveredSaleAnnouncement[]> {
+  async discoverAnnouncedSales(now: Date): Promise<DiscoveredSaleAnnouncement[]> {
+    // 1) Fuente principal (2026-10-28): la propia API de catálogo de OBS.
+    //    Trae el ID REAL de cada venta (FULL desde el primer momento) y las
+    //    ventas ya terminadas del año, que el blog nunca vuelve a anunciar.
+    let fromApi: DiscoveredSaleAnnouncement[] = [];
+    try {
+      fromApi = await discoverFromObsApi(now);
+    } catch (err) {
+      console.error("[obs-discovery] Error leyendo la API de OBS:", err);
+    }
+    // 2) Respaldo: el blog (RSS). Un anuncio que cae a ±3 días de una venta
+    //    que la API ya trajo es la misma venta — no se duplica.
+    const fromBlog = await this.discoverFromBlog();
+    const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+    const blogOnly = fromBlog.filter(
+      (b) => !fromApi.some((a) => Math.abs(a.startDate.getTime() - b.startDate.getTime()) <= THREE_DAYS_MS)
+    );
+    return [...fromApi, ...blogOnly];
+  }
+
+  private async discoverFromBlog(): Promise<DiscoveredSaleAnnouncement[]> {
     let xml: string;
     try {
       const response = await fetch(FEED_URL, { headers: { Accept: "application/rss+xml, text/xml" } });
@@ -210,4 +232,161 @@ export function cleanObsSaleName(rawTitle: string): string {
     .replace(/\s{2,}/g, " ")
     .trim();
   return cleaned ? `OBS ${cleaned}` : title;
+}
+
+
+// ---------------------------------------------------------------------------
+// Descubrimiento por la API de catálogo de OBS (2026-10-28, Ramon: "las ventas
+// finalizadas de OBS, marzo, abril y junio, están en la lista pero no tienen
+// información").
+//
+// Causa: OBS solo se descubría por su blog, que (a) no trae el ID de catálogo
+// (las ventas quedaban MANUAL_CSV) y (b) solo sirve para ventas futuras. Las
+// ventas de 2YO de marzo/abril/junio nunca entraron al servidor, y la app
+// solo mostraba su nombre fijo, sin datos.
+//
+// La API pública de OBS (la misma que ya usa obs.ts para el catálogo) trae
+// en cada venta `next_sale_id` / `previous_sale_id`: una cadena exacta de
+// ventas. Se recorre desde la última venta conocida hacia adelante (ventas
+// nuevas) y hacia atrás hasta el 1 de enero del año en curso (ventas ya
+// terminadas que falten). Nada se adivina: solo IDs que OBS mismo enlaza.
+// ---------------------------------------------------------------------------
+
+const OBS_API_BASE = "https://obssales.com/wp-json/obs-catalog-wp-plugin/v1";
+/** Primera venta de 2026 en la API de OBS (Winter Mixed) — punto de partida si el servidor no conoce ninguna. */
+const OBS_SEED_SALE_ID = "147";
+const MAX_CHAIN_HOPS = 12;
+// El recorrido hacia atrás (ventas ya terminadas) se hace una sola vez por
+// año y por arranque del servidor: una vez completo, no se vuelve a pedir
+// ningún catálogo viejo a OBS cada 6 h.
+let backfillDoneForYear: number | null = null;
+
+export interface ObsApiSaleHeader {
+  sale_id: string;
+  sale_name?: string | null;
+  sale_starts?: string | null;
+  sale_ends?: string | null;
+  is_digital?: string | number | null;
+  sale_category?: string | null;
+  next_sale_id?: string | null;
+  previous_sale_id?: string | null;
+}
+
+/** "2026-03-10 04:00:00" (hora del este de OBS) -> mediodía UTC de ese día. */
+function obsDate(raw: string | null | undefined): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw ?? "");
+  if (!m) return null;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0));
+}
+
+const MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+
+/**
+ * Nombre corto, igual estilo que el resto ("OBS Octubre Yearlings"): mes de
+ * la venta (por fecha real, no por el nombre — "Spring" es abril) + tipo.
+ */
+export function obsSaleDisplayName(sale: ObsApiSaleHeader): string {
+  const start = obsDate(sale.sale_starts);
+  const rawName = (sale.sale_name ?? "").trim();
+  const category = (sale.sale_category ?? "").toLowerCase();
+  let kind: string | null = null;
+  if (/yearling/i.test(rawName) || category === "yearling") kind = "Yearlings";
+  else if (/2\s*-?\s*yos?\b|two[- ]year[- ]olds?/i.test(rawName) || category === "2yo") kind = "2YO";
+  else if (/mixed/i.test(rawName) || category === "mixed") kind = "Mixta";
+  else if (/racing age/i.test(rawName)) kind = "Horses of Racing Age";
+  if (start && kind) return `OBS ${MONTHS_ES[start.getUTCMonth()]} ${kind}`;
+  return rawName ? `OBS ${rawName.replace(/^20\d{2}\s+/, "")}` : `OBS ${sale.sale_id}`;
+}
+
+/** Pura (sin red): de la cabecera de una venta de la API al anuncio. null si no sirve. */
+export function obsAnnouncementFromApi(sale: ObsApiSaleHeader, now: Date): DiscoveredSaleAnnouncement | null {
+  if (String(sale.is_digital ?? "0") === "1") return null; // las digitales de OBS van por otra plataforma
+  const start = obsDate(sale.sale_starts);
+  if (!start) return null;
+  const end = obsDate(sale.sale_ends) ?? start;
+  const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+  const isPast = end.getTime() < now.getTime();
+  return {
+    name: obsSaleDisplayName(sale),
+    externalSaleId: String(sale.sale_id),
+    startDate: start,
+    endDate: end,
+    announcementUrl: `https://obssales.com/catalog/#/${sale.sale_id}`,
+    access: "FULL",
+    // Ya terminada pero de este año: se da de alta igual (con su catálogo y
+    // resultados) — ver saleDiscoveryService.runSaleDiscovery.
+    historicalBackfill: isPast && start.getTime() >= startOfYear.getTime() ? true : undefined,
+  };
+}
+
+async function fetchObsSaleHeader(saleId: string): Promise<ObsApiSaleHeader | null> {
+  const response = await fetchWithRetry(`${OBS_API_BASE}/horse-sales/${encodeURIComponent(saleId)}?is_digital=false`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) return null;
+  const text = await response.text();
+  if (!text.trim()) return null;
+  try {
+    const parsed = JSON.parse(text) as ObsApiSaleHeader & { sale_hip?: unknown };
+    if (!parsed || !parsed.sale_id) return null;
+    return {
+      sale_id: String(parsed.sale_id),
+      sale_name: parsed.sale_name,
+      sale_starts: parsed.sale_starts,
+      sale_ends: parsed.sale_ends,
+      is_digital: parsed.is_digital,
+      sale_category: parsed.sale_category,
+      next_sale_id: parsed.next_sale_id,
+      previous_sale_id: parsed.previous_sale_id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function validId(id: string | null | undefined): string | null {
+  const value = (id ?? "").trim();
+  return /^\d+$/.test(value) && value !== "0" ? value : null;
+}
+
+async function discoverFromObsApi(now: Date): Promise<DiscoveredSaleAnnouncement[]> {
+  const known = await db.sale.findMany({ where: { house: "OBS" }, select: { externalSaleId: true } });
+  const knownIds: string[] = known.map((s: { externalSaleId: string }) => s.externalSaleId).filter((id: string) => /^\d+$/.test(id));
+  const newest = knownIds.sort((a, b) => Number(b) - Number(a))[0] ?? OBS_SEED_SALE_ID;
+  const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+
+  const headers = new Map<string, ObsApiSaleHeader>();
+  const anchor = await fetchObsSaleHeader(newest);
+  if (!anchor) return [];
+  headers.set(anchor.sale_id, anchor);
+
+  // Hacia adelante: ventas nuevas.
+  let cursor = validId(anchor.next_sale_id);
+  for (let hop = 0; cursor && hop < MAX_CHAIN_HOPS && !headers.has(cursor); hop++) {
+    const header = await fetchObsSaleHeader(cursor);
+    if (!header) break;
+    headers.set(header.sale_id, header);
+    cursor = validId(header.next_sale_id);
+  }
+
+  // Hacia atrás: ventas de este año que el servidor no tenga. Las que ya
+  // conoce no se vuelven a pedir (salvo para seguir la cadena).
+  if (backfillDoneForYear !== now.getUTCFullYear()) {
+    cursor = validId(anchor.previous_sale_id);
+    let completed = true;
+    for (let hop = 0; cursor && !headers.has(cursor); hop++) {
+      if (hop >= MAX_CHAIN_HOPS) { completed = false; break; }
+      const header = await fetchObsSaleHeader(cursor);
+      if (!header) { completed = false; break; }
+      const start = obsDate(header.sale_starts);
+      if (!start || start.getTime() < startOfYear.getTime()) break;
+      headers.set(header.sale_id, header);
+      cursor = validId(header.previous_sale_id);
+    }
+    if (completed) backfillDoneForYear = now.getUTCFullYear();
+  }
+
+  return [...headers.values()]
+    .map((h) => obsAnnouncementFromApi(h, now))
+    .filter((a): a is DiscoveredSaleAnnouncement => a !== null);
 }

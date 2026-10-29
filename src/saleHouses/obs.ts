@@ -74,6 +74,7 @@ interface RawHip {
   post_sale_indicator?: string | null;
   photo_link?: string | null;
   walk_video_link?: string | null;
+  video_link?: string | null;
   // Booleans ya calculados por OBS mismo para el estado de cada Hip — más
   // confiables que tratar de inferirlo a mano de los campos crudos de
   // arriba (ver buildSaleResult). No siempre viene presente en cada Hip
@@ -85,12 +86,12 @@ interface RawHip {
   } | null;
 }
 
-interface RawSaleMetaRow {
+export interface RawSaleMetaRow {
   meta_key: string;
   meta_value: string;
 }
 
-interface RawSaleResponse {
+export interface RawSaleResponse {
   sale_id: string;
   sale_starts?: string | null;
   sale_ends?: string | null;
@@ -104,6 +105,9 @@ function buildMedia(entry: RawHip): CatalogMediaItem[] {
   // OBS October no trae un video de "under tack show" separado (esta venta
   // no es una de 2 años bajo silla) — solo walk_video_link, verificado
   // contra los nombres de campo de los 378 Hips reales.
+  // Ventas de 2 años (March/Spring/June): `video_link` es el video del
+  // Under Tack (breeze) — verificado 2026-10-28 con la venta 149.
+  if (entry.video_link) items.push({ kind: "video", url: entry.video_link, caption: "Under Tack" });
   if (entry.walk_video_link) items.push({ kind: "video", url: entry.walk_video_link, caption: "Walking Video" });
   return items;
 }
@@ -325,7 +329,7 @@ const OBS_MONTHS: Record<string, number> = {
 };
 
 /** "AAAA-MM-DD" -> hora de inicio tal como la publica OBS ("12:00 pm"). */
-function parseObsStartTimes(sale: RawSaleResponse): Map<string, string> {
+export function parseObsStartTimes(sale: RawSaleResponse): Map<string, string> {
   const result = new Map<string, string>();
   const header = sale.sale_meta?.find((m) => m.meta_key === "sale_info_header")?.meta_value;
   if (!header) return result;
@@ -341,6 +345,20 @@ function parseObsStartTimes(sale: RawSaleResponse): Map<string, string> {
     if (!month) continue;
     const key = `${m[3]}-${String(month).padStart(2, "0")}-${String(Number(m[2])).padStart(2, "0")}`;
     result.set(key, m[4].replace(/\s+/g, " ").trim());
+  }
+  // Formato de las ventas de 2 años (2026-10-28): "Sale Dates: March 10th -
+  // 12th, 2026 at 11:00 am (...)" — misma hora para cada día del rango.
+  const range = /Sale Dates?:\s*([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*[-–]\s*(\d{1,2})(?:st|nd|rd|th)?)?,?\s+(\d{4})\s+at\s+(\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?)/i.exec(text);
+  if (range) {
+    const month = OBS_MONTHS[range[1].toLowerCase()];
+    const first = Number(range[2]);
+    const last = range[3] ? Number(range[3]) : first;
+    if (month && last >= first && last - first < 10) {
+      for (let day = first; day <= last; day++) {
+        const key = `${range[4]}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        if (!result.has(key)) result.set(key, range[5].replace(/\s+/g, " ").trim());
+      }
+    }
   }
   return result;
 }

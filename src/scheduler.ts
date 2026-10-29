@@ -8,6 +8,7 @@ import {
   processSale,
   syncCatalogsForActiveSales,
   importNewlyPublishedCatalogs,
+  importCompletedSaleCatalogsOnce,
   ensureSaleDaysForAllFullAccessSales,
   syncLivePricesForActiveSessions,
   AnalysisBudget,
@@ -222,6 +223,11 @@ export async function runCatalogWatch(trigger: string): Promise<void> {
       await importNewlyPublishedCatalogs();
     } catch (err) {
       console.error(`[catalog-watch][${trigger}] Error importando catálogos nuevos:`, err);
+    }
+    try {
+      await importCompletedSaleCatalogsOnce();
+    } catch (err) {
+      console.error(`[catalog-watch][${trigger}] Error importando ventas terminadas sin catálogo:`, err);
     }
   } finally {
     catalogWatchIsRunning = false;

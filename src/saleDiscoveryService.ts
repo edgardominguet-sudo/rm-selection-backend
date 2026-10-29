@@ -50,8 +50,14 @@ export async function runSaleDiscovery(): Promise<DiscoveryRunSummary> {
     // pasadas y futuras del mismo año).
     // Una venta digital ya abierta (puja en curso) también se da de alta:
     // cuenta mientras no haya cerrado.
+    // Excepción (2026-10-28): ventas ya terminadas DEL AÑO EN CURSO con ID
+    // real de catálogo (historicalBackfill, hoy OBS por su API) — están en
+    // la lista de la app y deben tener su catálogo y resultados. Su
+    // catálogo se baja una sola vez (importCompletedSaleCatalogsOnce); nunca
+    // fotos/videos en barrido ni análisis IA.
     const upcoming = announcements.filter((a) =>
-      a.isDigital ? (a.endDate ?? a.startDate).getTime() >= now.getTime() : a.startDate.getTime() >= now.getTime()
+      a.historicalBackfill === true ||
+      (a.isDigital ? (a.endDate ?? a.startDate).getTime() >= now.getTime() : a.startDate.getTime() >= now.getTime())
     );
     found += upcoming.length;
 
@@ -79,6 +85,25 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
     where: { house_externalSaleId: { house, externalSaleId: announcement.externalSaleId } },
   });
   if (existing) {
+    // Venta que solo estaba guardada como HISTORIAL (inactiva, sin fotos ni
+    // videos — ver historicalSaleBackfill.ts) y que ahora la lista de la app
+    // necesita completa (2026-10-28, OBS Winter/March/Spring/June): se
+    // activa y se marca para bajar su catálogo completo una sola vez.
+    if (!existing.isActive && announcement.historicalBackfill && announcement.access === "FULL") {
+      await db.sale.update({
+        where: { id: existing.id },
+        data: {
+          isActive: true,
+          name: announcement.name,
+          startDate: announcement.startDate,
+          endDate: announcement.endDate ?? announcement.startDate,
+          catalogAccess: "FULL",
+          announcementUrl: announcement.announcementUrl,
+          lastCatalogCheckAt: null,
+        },
+      });
+      return true;
+    }
     return updateExistingDiscoveredSale(existing, announcement);
   }
 
@@ -112,6 +137,26 @@ async function registerDiscoveredSale(house: SaleHouse, announcement: Discovered
     : candidatesNearby.find((s) => !s.externalSaleId.startsWith("digital-") && (s.catalogAccess === "FULL" || s.catalogAccess === "MANUAL_CSV"));
   if (sameEvent) {
     return updateExistingDiscoveredSale(sameEvent, announcement);
+  }
+  // La misma venta ya estaba dada de alta con un ID SINTÉTICO (anuncio de
+  // blog, sin catálogo) y ahora llega con su ID real: se completa esa fila
+  // (pasa a FULL) en vez de crear otra (2026-10-28).
+  const syntheticTwin =
+    announcement.access === "FULL" && !announcement.isDigital
+      ? candidatesNearby.find((s) => s.catalogAccess !== "FULL" && !/^\d+$/.test(s.externalSaleId) && !s.externalSaleId.startsWith("digital-"))
+      : undefined;
+  if (syntheticTwin) {
+    await db.sale.update({
+      where: { id: syntheticTwin.id },
+      data: {
+        externalSaleId: announcement.externalSaleId,
+        catalogAccess: "FULL",
+        name: announcement.name,
+        endDate: announcement.endDate ?? syntheticTwin.endDate ?? announcement.startDate,
+        lastCatalogCheckAt: null,
+      },
+    });
+    return false;
   }
 
   await db.$transaction(async (tx) => {

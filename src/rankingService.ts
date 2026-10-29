@@ -443,7 +443,7 @@ export async function ensureSaleDaysPopulated(sale: Sale, client: SaleHouseClien
  * que pueden seguir llamándola en cualquier momento a pedido explícito del
  * usuario (eso no es "automático en segundo plano", es una acción manual).
  */
-export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } = {}): Promise<void> {
+export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean; historicalImport?: boolean } = {}): Promise<void> {
   // GUARD (2026-09-26, pedido explícito de Ramon, defensa en profundidad):
   // esta venta ya terminó (ver getSaleLifecycleStatus, activeSaleService.ts)
   // -- no se sincroniza más contra la casa de ventas. Chequeo propio de esta
@@ -452,7 +452,9 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   // propio estado antes de trabajar. Los datos ya guardados se conservan tal
   // cual, como historial.
   const lifecycleStatus = getSaleLifecycleStatus(sale);
-  if (lifecycleStatus === "COMPLETED") {
+  // Única excepción: la importación inicial (una sola vez) de una venta
+  // terminada que nunca tuvo catálogo — ver importCompletedSaleCatalogsOnce.
+  if (lifecycleStatus === "COMPLETED" && !opts.historicalImport) {
     console.log(`[catalog-sync] "${sale.name}" (${sale.house}) ya está COMPLETED -- no se sincroniza más. Datos existentes se conservan como historial.`);
     return;
   }
@@ -491,7 +493,7 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   // Solo OBS: su PDF trae el cruce con líneas de puntos que lee el parser.
   // Keeneland y Fasig-Tipton Digital también publican PDF por HIP desde
   // 2026-10-27, pero con otro formato — no se descargan para esto.
-  if (sale.house === "OBS" && hips.some((h) => h.pedigreePdfUrl)) {
+  if (sale.house === "OBS" && !opts.historicalImport && hips.some((h) => h.pedigreePdfUrl)) {
     try {
       const summary = await enrichGrandSiresFromPedigreePdfs(sale.name, hips);
       console.log(`[grand-sire] "${sale.name}": ${JSON.stringify(summary)}`);
@@ -507,7 +509,7 @@ export async function syncCatalog(sale: Sale, opts: { forcePdfProbe?: boolean } 
   // el intervalo largo de re-chequeo de catálogo completo. Ver comentario
   // completo en processSale.
 
-  if (hipCountBefore === 0 && hips.length > 0) {
+  if (hipCountBefore === 0 && hips.length > 0 && !opts.historicalImport) {
     await db.saleAlert.create({
       data: {
         saleId: sale.id,
@@ -1364,6 +1366,47 @@ export async function importNewlyPublishedCatalogs(excludeSaleIds: string[] = []
       } catch (updateErr) {
         console.error(`[daily-sync][new-catalogs] Error actualizando lastCatalogCheckAt de "${sale.name}":`, updateErr);
       }
+    }
+  }
+}
+
+/**
+ * Ventas YA TERMINADAS que están en la lista pero nunca tuvieron catálogo
+ * (2026-10-28, Ramon: "las ventas finalizadas de OBS, marzo, abril y junio,
+ * están en la lista pero no tienen información"). Se baja su catálogo con
+ * resultados (precio, comprador, RNA, OUT, PS), fotos/videos tal como los
+ * publica la casa y su calendario — UNA sola vez: en cuanto la venta tiene
+ * HIPs sale de esta lista. Nunca barrido de media, ni análisis IA, ni Grand
+ * Sire masivo, ni re-sincronización periódica (la venta sigue COMPLETED).
+ * Solo ventas de los últimos 13 meses con ID real de catálogo (FULL).
+ */
+export async function importCompletedSaleCatalogsOnce(now: Date = new Date()): Promise<void> {
+  const since = new Date(now.getTime() - 400 * 24 * 60 * 60 * 1000);
+  const candidates = await db.sale.findMany({
+    // Sin HIPs, o marcada para importación completa (lastCatalogCheckAt null:
+    // venta de historial recién activada — ver saleDiscoveryService).
+    where: {
+      isActive: true,
+      catalogAccess: "FULL",
+      startDate: { gte: since, lt: now },
+      OR: [{ hips: { none: {} } }, { lastCatalogCheckAt: null }],
+    },
+    orderBy: { startDate: "asc" },
+  });
+  const completed = candidates.filter((sale) => getSaleLifecycleStatus(sale, now) === "COMPLETED");
+  for (const sale of completed) {
+    try {
+      await syncCatalog(sale, { historicalImport: true });
+      const count = await db.hip.count({ where: { saleId: sale.id } });
+      if (count > 0) await db.sale.update({ where: { id: sale.id }, data: { lastCatalogCheckAt: new Date() } });
+      console.log(`[historical-import] "${sale.name}" (${sale.house}/${sale.externalSaleId}): ${count} HIPs con resultados.`);
+      if (count > 0) {
+        const refreshed = await db.sale.findUniqueOrThrow({ where: { id: sale.id } });
+        await ensureSaleDaysPopulated(refreshed, clientFor(refreshed.house));
+      }
+    } catch (err) {
+      if (err instanceof CatalogNotYetPublishedError) continue;
+      console.error(`[historical-import] Error importando "${sale.name}":`, err);
     }
   }
 }
